@@ -18,13 +18,13 @@ The swarm reads this file at task-startup to identify the ready set (stories who
 | Story | Status | Merged-At | PR | Layer Coverage | Notes |
 |---|---|---|---|---|---|
 | 0.1 | merged | 2026-07-08T15:05Z | #1 | L0:24 L1:6 | Workspace skeleton; 12 crates (11 lib + 1 bin). Story-prose count corrected to 12. |
-| 0.2 | pending | — | — | — | — |
-| 0.3 | pending | — | — | — | — |
-| 0.4 | pending | — | — | — | — |
-| 0.5 | pending | — | — | — | — |
-| 0.6 | pending | — | — | — | — |
-| 0.7 | pending | — | — | — | — |
-| 1.1 | pending | — | — | — | — |
+| 0.2 | merged | 2026-07-09T03:30Z | #2 | L0:13 L1:6 | CI workflow (ci.yml) + parse_threshold NFR-1 gate. sidebar-app now mixed lib+bin. |
+| 0.3 | pending | — | — | — | **HITL-gated (G11)** — awaiting user approval on initial supply-chain policy. |
+| 0.4 | merged | 2026-07-09T04:10Z | #4 | L1:3 | rust-toolchain.toml (channel 1.95) + [profile.release]. 3 new contract tests. |
+| 0.5 | pending | — | — | — | **HITL-gated (G11)** — awaiting user decision on MIT vs MPL-2.0 license. |
+| 0.6 | merged | 2026-07-09T03:50Z | #3 | L0:8 | Shared Error type in sidebar-domain::error (thiserror). 10 variants. |
+| 0.7 | merged | 2026-07-09T04:30Z | #5 | L1:6 | Dev-env scripts integration tests + llvm-tools toolchain fix. |
+| 1.1 | pending | — | — | — | Ready (Depends-On [0.1] merged). |
 | 1.2 | pending | — | — | — | — |
 | 1.3 | pending | — | — | — | — |
 | 1.4 | pending | — | — | — | — |
@@ -79,9 +79,9 @@ The swarm reads this file at task-startup to identify the ready set (stories who
 
 ## Summary
 - Total stories: 59
-- Merged: 0 / 59 (0.0%)
-- Ready for pickup: 0 (depends on Epic 0 bootstrap)
-- Blocked on HITL: 0
+- Merged: 5 / 59 (8.5%) — Stories 0.1, 0.2, 0.4, 0.6, 0.7
+- Ready for pickup: {1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 2.1, 2.2, 2.3} (Epic 1+2 unblocked)
+- Blocked on HITL: 2 — Stories 0.3 (supply-chain policy), 0.5 (license choice)
 - Long-term blocked: 0
 
 ## Critical path remaining
