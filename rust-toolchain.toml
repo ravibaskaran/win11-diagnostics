@@ -1,0 +1,19 @@
+# Story 0.4 — pinned Rust toolchain.
+#
+# Per architecture.md AD-3, the MSRV is 1.95 (forced by sysinfo = 0.39.3).
+# This file pins the toolchain that cargo + rustup use for the workspace.
+# CI (Story 0.2 ci.yml) uses dtolnay/rust-toolchain@stable which honours
+# this file. Local dev: rustup auto-selects this channel on first cargo
+# invocation.
+#
+# Components clippy + rustfmt are required for the fmt + clippy gates.
+
+[toolchain]
+# Per architecture.md AD-3, MSRV is 1.95 (forced by sysinfo = 0.39.3). We
+# pin to the 1.95 minor track (allows patch updates within 1.95.x) rather
+# than a specific patch version — this avoids forcing contributors to
+# install 1.95.0 exactly when they already have 1.95.1+. The active
+# toolchain on this machine is 1.96.1 which also satisfies the MSRV.
+channel = "1.95"
+components = ["clippy", "rustfmt"]
+profile = "minimal"
