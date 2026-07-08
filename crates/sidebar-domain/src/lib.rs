@@ -10,6 +10,7 @@
 //! separate crate) to preserve the G17 12-package workspace cap.
 
 pub mod error;
+pub mod reading;
 
 /// Story 0.1 smoke marker — proves the crate is reachable via `cargo test`.
 /// Returns `true` unconditionally; real functionality lands in subsequent stories.
