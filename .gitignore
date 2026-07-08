@@ -1,0 +1,59 @@
+# Build artifacts
+/target/
+**/*.rs.bk
+
+# IDE
+.vscode/
+.idea/
+
+# Agent tooling state — NOT for the public repo (local session state only)
+.atl/
+.engram/
+
+# Coverage / bench output
+/coverage/
+*.lcov
+criterion/
+
+# Cargo lock is committed for binary projects (per guardrails.md G18)
+# (no Cargo.lock ignore)
+
+# Project-local tooling downloads (Story 0.7) — relocatable, but large + binary.
+# Re-fetch via scripts/fetch_ohm.ps1 + the documented commands after cloning.
+/tools/cargo-bin/*.exe
+/tools/ci/*.exe
+/tools/sqlite/*.exe
+/resources/*.exe
+/resources/*.dll
+/resources/*.pdb
+/resources/*.xml
+/resources/*.config
+/resources/*.[0-9]*/
+/resources/de/
+/resources/es/
+/resources/fr/
+/resources/it/
+/resources/ja/
+/resources/pl/
+/resources/ru/
+/resources/sv/
+/resources/tr/
+/resources/zh-CN/
+/resources/zh-Hant/
+/resources/Aga.Controls.*
+/resources/BlackSharp.*
+/resources/DiskInfoToolkit.*
+/resources/HidSharp.*
+/resources/LibreHardwareMonitorLib.*
+/resources/Microsoft.*
+/resources/OxyPlot.*
+/resources/RAMSPDToolkit-NDD.*
+/resources/System.*
+
+# Keep these (small text files, version-controlled):
+!resources/ohm.sha256
+!resources/LibreHardwareMonitor.LICENSE.txt
+
+# OS junk
+Thumbs.db
+.DS_Store
