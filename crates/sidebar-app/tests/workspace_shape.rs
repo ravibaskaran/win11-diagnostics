@@ -97,9 +97,16 @@ fn workspace_contains_all_expected_crates_by_name() {
 }
 
 #[test]
-fn workspace_has_exactly_one_binary_crate() {
-    // Per architecture.md §4: sidebar-app is the sole binary crate; the
-    // other 10 are libraries. Catches accidental [[bin]] additions.
+fn workspace_has_exactly_one_application_binary_crate() {
+    // Per architecture.md §4: sidebar-app is the sole *application* binary
+    // crate; the other 10 are libraries. Utility binaries (like
+    // parse_threshold, added in Story 0.2 for NFR-1 bench parsing) live as
+    // additional [[bin]] targets UNDER sidebar-app, not as separate crates.
+    //
+    // Contract refinement (Story 0.2): the rule is "exactly 1 package whose
+    // name is sidebar-app has a binary target," NOT "exactly 1 binary target
+    // total." This keeps the workspace at 12 packages (G17 cap) while
+    // allowing developer tooling binaries.
     let metadata = cargo_metadata::MetadataCommand::new()
         .exec()
         .expect("cargo metadata failed");
@@ -110,27 +117,30 @@ fn workspace_has_exactly_one_binary_crate() {
         .map(|id| id.repr.as_str())
         .collect();
 
-    let bin_targets: Vec<&str> = metadata
+    // Packages (not individual targets) that produce at least one binary.
+    let bin_packages: Vec<&str> = metadata
         .packages
         .iter()
         .filter(|p| workspace_member_ids.contains(p.id.repr.as_str()))
-        .flat_map(|p| {
+        .filter(|p| {
             p.targets
                 .iter()
-                .filter(|t| t.kind.contains(&cargo_metadata::TargetKind::Bin))
-                .map(|_| p.name.as_str())
+                .any(|t| t.kind.contains(&cargo_metadata::TargetKind::Bin))
         })
+        .map(|p| p.name.as_str())
         .collect();
 
     assert_eq!(
-        bin_targets.len(),
+        bin_packages.len(),
         1,
-        "Story 0.1 contract violation: expected exactly 1 binary crate, found {}. \
-         sidebar-app is the sole binary per architecture.md §4.",
-        bin_targets.len()
+        "Story 0.1/0.2 contract: expected exactly 1 package producing binaries, found {}: {:?}. \
+         Only sidebar-app may produce binaries (utility bins like parse_threshold live \
+         under sidebar-app/src/bin/, not as separate packages).",
+        bin_packages.len(),
+        bin_packages
     );
     assert_eq!(
-        bin_targets[0], "sidebar-app",
-        "The single binary crate must be named 'sidebar-app'"
+        bin_packages[0], "sidebar-app",
+        "The sole binary-producing package must be named 'sidebar-app'"
     );
 }

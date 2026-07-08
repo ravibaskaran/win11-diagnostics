@@ -1,0 +1,123 @@
+# Story 0.2 — Continuous Integration gate.
+#
+# Runs the full L0..L3 regression matrix on every PR + on every push to main.
+# Gates: fmt → clippy → deny (advisory until Story 0.3 lands deny.toml) →
+# audit → test (L0+L1) → bench (L3, deferred until Story 10.1 lands
+# benches/poll_cost.rs).
+#
+# Cited:
+#   - architecture.md §11.4 (CI vs Release separation)
+#   - guardrails.md G18/G22/G25
+#   - nfr-thresholds.md T-22 (per-layer budgets), T-41 (aggregate ≤750s)
+#   - Story 0.2 Technical Context
+#
+# Egress allowlist per G16: cargo (crates.io), github.com, rustsec advisories.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel in-progress runs on the same PR — saves Actions minutes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+  # Avoid exFAT-style hard-link warnings on self-hosted runners; harmless on
+  # github-hosted runners. Match the [profile.dev] setting in Cargo.toml.
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  fmt:
+    name: "cargo fmt (T-22 budget: 60s)"
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: cargo fmt --all -- --check
+        run: cargo fmt --all -- --check
+
+  clippy:
+    name: "cargo clippy -D warnings (T-22 budget: 180s)"
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  deny:
+    name: "cargo deny (advisory until Story 0.3)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    continue-on-error: true  # Story 0.3 lands deny.toml + removes this line
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check bans licenses advisories sources
+          arguments: --workspace
+
+  audit:
+    name: "cargo audit (RUSTSEC advisories)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  test:
+    name: "cargo test --workspace --all-targets (L0+L1, T-22 budget: 120s)"
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test --workspace --all-targets
+        run: cargo test --workspace --all-targets
+
+  bench:
+    name: "cargo bench (L3, deferred until Story 10.1)"
+    runs-on: windows-latest
+    timeout-minutes: 20
+    # Story 10.1 lands benches/poll_cost.rs. We can't use hashFiles() at
+    # job-level (actionlint restriction), so the first step checks for the
+    # file and skips the rest via a conditional on each subsequent step.
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for benches/poll_cost.rs
+        id: bench_exists
+        shell: bash
+        run: |
+          if [ -f "benches/poll_cost.rs" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Story 10.1 not yet merged — skipping bench gate."
+          fi
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.bench_exists.outputs.exists == 'true'
+      - uses: Swatinem/rust-cache@v2
+        if: steps.bench_exists.outputs.exists == 'true'
+      - name: cargo bench --bench poll_cost
+        if: steps.bench_exists.outputs.exists == 'true'
+        run: cargo bench --bench poll_cost
+      - name: parse_threshold NFR-1 gate
+        if: steps.bench_exists.outputs.exists == 'true'
+        run: cargo run -p sidebar-app --bin parse_threshold -- target/criterion 10
