@@ -1,0 +1,15 @@
+[package]
+name = "sidebar-adapter-nvml"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "sidebar crate: sidebar-adapter-nvml (Story 0.1 stub)"
+
+# Story 0.1 stub — no dependencies yet. Real deps land in the stories that
+# need them per the critical path (architecture.md §4).
+
+[lints]
+workspace = true

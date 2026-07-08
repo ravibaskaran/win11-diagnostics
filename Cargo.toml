@@ -1,0 +1,109 @@
+# sidebar workspace manifest — Story 0.1
+#
+# This is the root of the sidebar Cargo workspace. It declares the member
+# crates (10 libraries + 1 binary), shared dependency versions, and
+# workspace-wide lint policy. Per-crate manifests live under crates/*/.
+#
+# Cross-references:
+#   - architecture.md §4 (crate layout)
+#   - Story 0.1 Technical Context (version pins, MSRV, edition)
+#   - guardrails.md G3/G18 (license-comment requirement on every dep)
+#   - nfr-thresholds.md T-32 (allowed license list)
+#   - nfr-thresholds.md T-44 (dev-env prerequisites)
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/sidebar-domain",
+    "crates/sidebar-sensor",
+    "crates/sidebar-adapter-sysinfo",
+    "crates/sidebar-adapter-nvml",
+    "crates/sidebar-adapter-battery",
+    "crates/sidebar-adapter-ohm",
+    "crates/sidebar-adapter-pdh",
+    "crates/sidebar-adapter-net",
+    "crates/sidebar-persistence",
+    "crates/sidebar-bandwidth",
+    "crates/sidebar-platform",
+    "crates/sidebar-app",
+]
+
+[workspace.package]
+version = "0.0.0"            # bumped on first release tag (Story 9.2)
+edition = "2021"             # OQ-2/OQ-3 — stay on 2021 for v1
+rust-version = "1.95"        # MSRV forced by sysinfo 0.39.3 (architecture.md AD-3)
+license = "MPL-2.0"          # decision per PRD §9 OQ-1; matches bundled LHM
+repository = "https://github.com/ravibaskaran/win11-diagnostics"
+homepage = "https://github.com/ravibaskaran/win11-diagnostics"
+description = "Windows 11 hardware diagnostics sidebar — Rust clone of SidebarDiagnostics"
+publish = false              # not yet released; flip when first version tags
+
+# ---------------------------------------------------------------------------
+# Shared dependency versions — pinned at the workspace level so all crates
+# use the same major.minor. Per-crate [dependencies] reference these via
+# `foo.workspace = true`. Every line carries a license comment per G3/G18.
+# Licenses cross-checked against T-32 allowlist (MIT, Apache-2.0, MPL-2.0,
+# BSD-3-Clause, ISC, Zlib, Unicode-DFS-2016, CC0-1.0).
+# ---------------------------------------------------------------------------
+
+[workspace.dependencies]
+# Pure-Rust crates
+sysinfo = "0.39.3"           # MIT — CPU/RAM/disk/process telemetry (forces MSRV 1.95)
+nvml-wrapper = "0.12.0"      # MIT OR Apache-2.0 — NVIDIA GPU (NVIDIA-only)
+ureq = "2.12"                # MIT OR Apache-2.0 — sync HTTP client for LHM /data.json (AD-2)
+serde_json = "1"             # MIT OR Apache-2.0 — LHM JSON tree parsing
+starship-battery = "0.10"    # MIT OR Apache-2.0 — battery state
+windows = "0.62.2"           # MIT OR Apache-2.0 — Win32 FFI (GetIfEntry2, ShellExecuteW, etc.)
+egui = "0.35"                # MIT — immediate-mode GUI
+eframe = "0.35"              # MIT — egui desktop shell
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "net", "io-util"] }  # MIT — async runtime (AD-6)
+rusqlite = { version = "0.32", features = ["bundled"] }  # MIT — SQLite bindings; `bundled` compiles sqlite3 in (~1 MB, T-6)
+toml = "0.8"                 # MIT OR Apache-2.0 — config.toml parse (AD-9)
+serde = { version = "1", features = ["derive"] }  # MIT OR Apache-2.0 — serialization
+mockall = "0.12"             # MIT OR Apache-2.0 — trait mocking (SensorProvider, Clock)
+tracing = "0.1"              # MIT — structured logging
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }  # MIT — log subscriber
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }  # MIT OR Apache-2.0 — NaiveDate for billing (Story 1.4)
+thiserror = "1"              # MIT OR Apache-2.0 — Error derive (sidebar-domain::error, Story 0.6)
+tokio-util = "0.7"           # MIT — CancellationToken (Story 7.5 shutdown)
+
+# Dev-only (test fixtures + benches)
+criterion = "0.5"            # MIT OR Apache-2.0 — NFR-1 perf bench (Story 10.1)
+proptest = "1"               # MIT OR Apache-2.0 — property tests (Story 1.4, 5.1)
+tempfile = "3"               # MIT OR Apache-2.0 — TempDir fixture (F1)
+insta = "1.40"               # MIT OR Apache-2.0 — UI snapshot tests (F8, Story 11.3)
+egui_kittest = "0.35"        # MIT — egui snapshot harness (F8, Story 11.3)
+cargo_metadata = "0.19"      # MIT — workspace introspection (workspace-shape tests)
+semver = "1"                 # MIT OR Apache-2.0 — version parsing (MSRV contract test)
+
+# ---------------------------------------------------------------------------
+# Workspace-wide lint policy (guardrails.md G2 + G18).
+# `undocumented_unsafe_blocks = "deny"` enforces G2's SAFETY-comment rule.
+# ---------------------------------------------------------------------------
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+rust_2018_idioms = { level = "deny", priority = -1 }
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "deny"
+dbg_macro = "deny"
+todo = "deny"
+# Pedantic lints left at warn so they're visible but don't block PRs.
+pedantic = { level = "warn", priority = -1 }
+must_use_candidate = "allow"   # too noisy on early-stage code
+missing_errors_doc = "allow"   # docs added incrementally
+module_name_repetitions = "allow"
+doc_markdown = "allow"         # we intentionally use camelCase type names in prose
+
+# ---------------------------------------------------------------------------
+# Dev profile: incremental compilation disabled because D: is exFAT and
+# doesn't support hard links (which incremental relies on). The warnings
+# are otherwise harmless, but disabling incremental silences them and
+# avoids exFAT-specific cache corruption risk.
+# Release-profile tuning is deferred to Story 0.4 (per its Technical Context).
+# ---------------------------------------------------------------------------
+
+[profile.dev]
+incremental = false
