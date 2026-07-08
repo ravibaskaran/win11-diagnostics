@@ -15,5 +15,9 @@
 # install 1.95.0 exactly when they already have 1.95.1+. The active
 # toolchain on this machine is 1.96.1 which also satisfies the MSRV.
 channel = "1.95"
-components = ["clippy", "rustfmt"]
+# clippy + rustfmt: required for the fmt + clippy gates (Story 0.2 CI).
+# llvm-tools: required by cargo-llvm-cov for coverage instrumentation
+# (T-43, Story 11.2 regression gate). Declaring it here ensures it's
+# auto-installed when rustup provisions the toolchain.
+components = ["clippy", "rustfmt", "llvm-tools"]
 profile = "minimal"

@@ -21,6 +21,7 @@ cargo_metadata = { workspace = true }   # MIT — workspace introspection
 semver = { workspace = true }           # MIT/Apache-2.0 — version parsing
 tempfile = { workspace = true }         # MIT/Apache-2.0 — TempDir for parse_threshold tests (F1)
 toml = { workspace = true }             # MIT/Apache-2.0 — parse Cargo.toml in profile_contract test
+which = "7"                             # MIT — locate pwsh.exe in dev_env_scripts test
 
 [lints]
 workspace = true
