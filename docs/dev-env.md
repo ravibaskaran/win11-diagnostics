@@ -1,8 +1,42 @@
 # Development Environment — sidebar
 
-**Status:** Inventoried 2026-07-07, **fully provisioned 2026-07-08** (LHM v0.9.6 HTTP migration + all tools downloaded). `scripts/verify-dev-env.ps1` reports 15/15 green on this machine.
+**Status:** Inventoried 2026-07-07, **fully provisioned 2026-07-08** (LHM v0.9.6 HTTP migration + all tools downloaded), **end-to-end certified 2026-07-08** (toolchain proven to compile + link a real `windows = 0.62` crate; LHM HTTP-endpoint behavior verified). `scripts/verify-dev-env.ps1` reports 16/16 green (15 OK + 1 expected NVIDIA-absent WARN) on this machine.
 
 **Design goals:** (1) isolated from the system where possible, (2) relocatable — moving `D:\dev\sidebar\` to another Win11 machine should work after one activation step, (3) minimal redundant downloads of tools already installed.
+
+---
+
+## 0. End-to-end certification (2026-07-08)
+
+Beyond the 16 `verify-dev-env.ps1` checks (which confirm presence + version), the dev env was certified end-to-end:
+
+| Certification | Result | Notes |
+|---|---|---|
+| **Rust toolchain compiles a real crate** | ✅ PASS | Built a minimal `smoketest` crate using `windows = 0.62` with the `Win32_System_SystemInformation` feature; `cargo build --release` succeeded; `GetTickCount64()` FFI call returned `589356734`. This proves the MSVC linker + Windows SDK + windows-crate FFI path works. |
+| **cargo subcommands run** | ✅ PASS | cargo-deny 0.19.9, cargo-audit 0.22.2, cargo-llvm-cov 0.8.7, cargo-nextest 0.9.140 all invoke cleanly. |
+| **CI tools run** | ✅ PASS | actionlint 1.7.12, wingetcreate 1.12.8.0 verified. |
+| **SQLite runs** | ✅ PASS | sqlite3 3.53.3 — ready to debug `bandwidth.db`. |
+| **Bundled LHM v0.9.6 binary launches** | ✅ PASS | Process starts, runs .NET 10, no crash. |
+| **LHM HTTP endpoint reachable on port 17127** | ⚠️ **REQUIRES CONFIG WRITE FIRST** | See §0.1 below — LHM's HTTP server is OFF by default. |
+| **`scripts/verify-dev-env.ps1 -Json`** | ✅ PASS | 15 OK + 1 WARN, exit 0, machine-readable JSON well-formed. |
+| **`scripts/env.ps1` no persistent mutation** | ✅ PASS | Verified zero persistent PATH changes at User + Machine scope after multiple invocations. |
+| **Git ↔ GitHub sync** | ✅ PASS | Local HEAD = remote HEAD after each push. |
+
+### 0.1 LHM HTTP-endpoint finding (critical for Story 6.4)
+
+LHM v0.9.6's HTTP server (`/data.json`, `/metrics`) is **OFF by default**. Verified from source:
+- `MainForm.cs`: `_runWebServer = new UserOption("runWebServerMenuItem", false, ...)` — starts false.
+- `MainForm.cs`: `Server = new HttpServer(..., _settings.GetValue("listenerPort", 8085), ...)` — default port 8085.
+
+**Implication for Story 6.4 (`OhmSupervisor`):** before launching `LibreHardwareMonitor.exe`, sidebar MUST patch the LHM config file (`resources/LibreHardwareMonitor.exe.config`) to set:
+- `runWebServerMenuItem = true` (enables the HTTP server)
+- `listenerPort = <chosen>` (default 17127 per T-45)
+
+Without `runWebServerMenuItem=true`, LHM starts cleanly but listens on **zero ports** — sidebar's probe gets connection-refused and incorrectly concludes "Full mode unavailable." This is the #1 integration gotcha and is now documented in Story 6.4's Technical Context as a Verified-fact note, with a dedicated test case (#11) asserting the config-write includes both keys.
+
+**Verified LHM config file location:** `Path.ChangeExtension(Application.ExecutablePath, ".config")` per `MainForm.cs:75` — i.e. `resources/LibreHardwareMonitor.exe.config`, alongside the exe. (NOT `%LOCALAPPDATA%`; LHM uses local-dir config.)
+
+The config file format is XML (LHM's `PersistentSettings` class). sidebar will load the shipped `.exe.config`, mutate the two keys, and write back before launch.
 
 ---
 
