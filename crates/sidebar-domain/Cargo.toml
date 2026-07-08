@@ -6,10 +6,12 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
-description = "sidebar crate: sidebar-domain (Story 0.1 stub)"
+description = "sidebar domain types + pure logic + shared Error (Story 0.6)"
 
-# Story 0.1 stub — no dependencies yet. Real deps land in the stories that
-# need them per the critical path (architecture.md §4).
+# Story 0.6 adds thiserror for the shared Error enum. No other deps —
+# sidebar-domain stays pure-Rust (no IO) per architecture.md AD-4.
+[dependencies]
+thiserror = { workspace = true }       # MIT/Apache-2.0 — Error derive
 
 [lints]
 workspace = true
