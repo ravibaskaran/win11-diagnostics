@@ -29,10 +29,10 @@ The swarm reads this file at task-startup to identify the ready set (stories who
 | 1.3 | merged | 2026-07-09T05:50Z | #9 | L0:25 | NFR-8 format module (9 fns + 2 enums). All 10 §7.1 exact-match cases verified. |
 | 1.4 | pending | — | — | — | — |
 | 1.5 | pending | — | — | — | — |
-| 1.6 | pending | — | — | — | — |
-| 2.1 | pending | — | — | — | — |
-| 2.2 | pending | — | — | — | — |
-| 2.3 | pending | — | — | — | — |
+| 1.6 | merged | 2026-07-09T07:10Z | #11 | L0:13 | top_n aggregation + RollingWindow sparkline. |
+| 2.1 | merged | 2026-07-09T07:40Z | #12 | L0:5 | SensorProvider trait + automock. Send+Sync proven. |
+| 2.2 | merged | 2026-07-09T07:40Z | #12 | L0:4 | SensorDescriptor + CostClass + ProviderTier. |
+| 2.3 | merged | 2026-07-09T07:40Z | #12 | L0:10 | classify_for_v1 gate. Filters Heavy/Deferred + tier. |
 | 3.1 | pending | — | — | — | — |
 | 3.2 | pending | — | — | — | — |
 | 3.2b | pending | — | — | — | — |
@@ -79,8 +79,8 @@ The swarm reads this file at task-startup to identify the ready set (stories who
 
 ## Summary
 - Total stories: 59
-- Merged: 8 / 59 (13.6%) — Stories 0.1, 0.2, 0.4, 0.6, 0.7, 1.1, 1.2, 1.3
-- Ready for pickup: {1.4, 1.5, 1.6, 2.1, 2.2, 2.3}
+- Merged: 12 / 59 (20.3%) — Stories 0.1, 0.2, 0.4, 0.6, 0.7, 1.1, 1.2, 1.3, 1.6, 2.1, 2.2, 2.3
+- Ready for pickup: {1.4 (HITL), 1.5 (blocked on 1.4)}
 - Blocked on HITL: 2 — Stories 0.3 (supply-chain policy), 0.5 (license choice)
 - Long-term blocked: 0
 
