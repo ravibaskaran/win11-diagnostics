@@ -24,9 +24,9 @@ The swarm reads this file at task-startup to identify the ready set (stories who
 | 0.5 | pending | — | — | — | **HITL-gated (G11)** — awaiting user decision on MIT vs MPL-2.0 license. |
 | 0.6 | merged | 2026-07-09T03:50Z | #3 | L0:8 | Shared Error type in sidebar-domain::error (thiserror). 10 variants. |
 | 0.7 | merged | 2026-07-09T04:30Z | #5 | L1:6 | Dev-env scripts integration tests + llvm-tools toolchain fix. |
-| 1.1 | pending | — | — | — | Ready (Depends-On [0.1] merged). |
+| 1.1 | merged | 2026-07-09T05:20Z | #8 | L0:9 | Core reading types (MetricKind×35, Unit×14, SensorId, Reading, BatteryState). |
 | 1.2 | pending | — | — | — | — |
-| 1.3 | pending | — | — | — | — |
+| 1.3 | merged | 2026-07-09T05:50Z | #9 | L0:25 | NFR-8 format module (9 fns + 2 enums). All 10 §7.1 exact-match cases verified. |
 | 1.4 | pending | — | — | — | — |
 | 1.5 | pending | — | — | — | — |
 | 1.6 | pending | — | — | — | — |
@@ -79,8 +79,8 @@ The swarm reads this file at task-startup to identify the ready set (stories who
 
 ## Summary
 - Total stories: 59
-- Merged: 5 / 59 (8.5%) — Stories 0.1, 0.2, 0.4, 0.6, 0.7
-- Ready for pickup: {1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 2.1, 2.2, 2.3} (Epic 1+2 unblocked)
+- Merged: 7 / 59 (11.9%) — Stories 0.1, 0.2, 0.4, 0.6, 0.7, 1.1, 1.3
+- Ready for pickup: {1.2, 1.4, 1.5, 1.6, 2.1, 2.2, 2.3}
 - Blocked on HITL: 2 — Stories 0.3 (supply-chain policy), 0.5 (license choice)
 - Long-term blocked: 0
 
