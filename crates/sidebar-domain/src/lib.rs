@@ -6,8 +6,10 @@
 //! contract that makes strict TDD feasible for ~80% of the codebase
 //! (architecture.md AD-4).
 //!
-//! This file is a Story 0.1 stub — only the smoke marker is present.
-//! Real types land in Stories 1.1..1.6.
+//! Story 0.6 also places the shared `Error` enum here (rather than in a
+//! separate crate) to preserve the G17 12-package workspace cap.
+
+pub mod error;
 
 /// Story 0.1 smoke marker — proves the crate is reachable via `cargo test`.
 /// Returns `true` unconditionally; real functionality lands in subsequent stories.
