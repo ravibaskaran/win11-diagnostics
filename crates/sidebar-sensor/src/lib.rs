@@ -1,7 +1,12 @@
-//! `sidebar-sensor` — SensorProvider trait + cost classifier (keystone abstraction, AD-4/AD-5).
+//! `sidebar-sensor` — SensorProvider trait + cost classifier (keystone, AD-4/AD-5).
 //!
-//! Story 0.1 stub. Real functionality lands in subsequent stories per the
-//! backlog critical path.
+//! The `SensorProvider` trait is the single contract every adapter implements.
+//! The `classify_for_v1` gate filters providers by cost class (NFR-1) and
+//! tier before they enter the v1 registry.
+
+pub mod classifier;
+pub mod descriptor;
+pub mod provider;
 
 /// Story 0.1 smoke marker — proves the crate is reachable via `cargo test`.
 #[must_use]
@@ -13,13 +18,11 @@ pub fn crate_present() -> bool {
 mod tests {
     use super::crate_present;
 
-    /// Story 0.1 Happy Path #1. Cited: G17 (no empty stubs).
     #[test]
     fn crate_present_returns_true() {
-        assert!(crate_present(), "crate_present() must return true");
+        assert!(crate_present());
     }
 
-    /// Story 0.1 idempotency. Cited: fixture F6.
     #[test]
     fn crate_present_is_idempotent() {
         assert_eq!(crate_present(), crate_present());
