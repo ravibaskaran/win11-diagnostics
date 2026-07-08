@@ -102,8 +102,28 @@ doc_markdown = "allow"         # we intentionally use camelCase type names in pr
 # doesn't support hard links (which incremental relies on). The warnings
 # are otherwise harmless, but disabling incremental silences them and
 # avoids exFAT-specific cache corruption risk.
-# Release-profile tuning is deferred to Story 0.4 (per its Technical Context).
 # ---------------------------------------------------------------------------
 
 [profile.dev]
 incremental = false
+
+# ---------------------------------------------------------------------------
+# Release profile (Story 0.4) — tuned for NFR-3 (cold-start <2s) + NFR-4
+# (RSS <80 MiB). lto=fat + codegen-units=1 maximize runtime perf at the
+# cost of ~30s longer release builds.
+#
+# CRITICAL: panic = "unwind" (the default) is REQUIRED for guardrail G15
+# (panic-safety). The poller wraps each provider call in
+# std::panic::catch_unwind; a panicking adapter MUST NOT tear down the
+# process. Setting panic = "abort" would silently disable catch_unwind
+# and convert every adapter panic into a host crash — explicitly rejected
+# per Story 0.4 Technical Context. Do NOT change this without architect
+# sign-off (G19).
+# ---------------------------------------------------------------------------
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "unwind"
+strip = "symbols"
