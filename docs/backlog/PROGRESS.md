@@ -17,7 +17,7 @@ The swarm reads this file at task-startup to identify the ready set (stories who
 
 | Story | Status | Merged-At | PR | Layer Coverage | Notes |
 |---|---|---|---|---|---|
-| 0.1 | pending | — | — | — | — |
+| 0.1 | merged | 2026-07-08T15:05Z | #1 | L0:24 L1:6 | Workspace skeleton; 12 crates (11 lib + 1 bin). Story-prose count corrected to 12. |
 | 0.2 | pending | — | — | — | — |
 | 0.3 | pending | — | — | — | — |
 | 0.4 | pending | — | — | — | — |
