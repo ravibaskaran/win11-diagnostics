@@ -1,0 +1,54 @@
+# Story 0.3 — cargo-deny supply-chain policy.
+#
+# Configures `cargo deny check` which is run as a hard CI gate (Story 0.2
+# ci.yml removes `continue-on-error: true` once this file lands). Encodes
+# the T-32 license allowlist + T-33 RUSTSEC advisory policy.
+#
+# Cited: Story 0.3, guardrails.md G3/G18, nfr-thresholds.md T-32/T-33.
+#
+# Schema note: cargo-deny 0.19 changed the [advisories] schema (PR #611).
+# The old `vulnerability`/`unmaintained`/`notice` keys are gone; we use
+# the new `version` + `yanked` + `ignore` keys.
+
+[licenses]
+# T-32 allowlist. Adding requires architect sign-off (G19).
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MPL-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "CC0-1.0",
+    "Unlicense",
+]
+confidence-threshold = 0.93
+
+[bans]
+# Warn on multiple major versions (G3/G18 smell, not a hard fail).
+multiple-versions = "warn"
+wildcards = "warn"
+highlight = "all"
+
+[advisories]
+# Always-fail on actual vulnerabilities (T-33). The default behaviour is
+# already deny; this makes it explicit.
+version = 2
+# Yanked crate versions are a hard fail.
+yanked = "deny"
+# To mute a specific advisory, add its RUSTSEC ID with a comment explaining
+# why + an expiry date (T-33 requires both).
+ignore = [
+    # Example:
+    # "RUSTSEC-2024-XXXX",  # upstream fix pending; no MSRV-compatible fix; recheck 2026-10-01
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

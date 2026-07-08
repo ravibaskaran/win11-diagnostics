@@ -60,10 +60,10 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
   deny:
-    name: "cargo deny (advisory until Story 0.3)"
+    name: "cargo deny (T-32 licenses + T-33 advisories + bans + sources)"
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    continue-on-error: true  # Story 0.3 lands deny.toml + removes this line
+    # Story 0.3 landed deny.toml — this is now a hard gate (was advisory).
     steps:
       - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v2
