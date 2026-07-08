@@ -9,9 +9,11 @@
 //! Story 0.6 also places the shared `Error` enum here (rather than in a
 //! separate crate) to preserve the G17 12-package workspace cap.
 
+pub mod aggregate;
 pub mod alert;
 pub mod error;
 pub mod format;
+pub mod graph;
 pub mod reading;
 pub mod smooth;
 pub mod snapshot;
