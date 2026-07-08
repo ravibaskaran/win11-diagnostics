@@ -1,0 +1,21 @@
+[package]
+name = "sidebar-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "sidebar binary — Win11 hardware diagnostics sidebar (Story 0.1 stub)"
+
+# Story 0.1 stub — no runtime deps yet. Real wiring lands in Epic 7 + Epic 8.
+
+# Dev-only deps for workspace-level integration tests (tests/*.rs in this
+# crate). These assert contracts about the workspace SHAPE, not about
+# sidebar-app's own behavior.
+[dev-dependencies]
+cargo_metadata = { workspace = true }   # MIT — workspace introspection
+semver = { workspace = true }           # MIT/Apache-2.0 — version parsing
+
+[lints]
+workspace = true

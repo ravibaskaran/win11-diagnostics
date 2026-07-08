@@ -1,26 +1,28 @@
-//! Story 0.1 — Dependency conflict boundary test (RED phase).
+//! Story 0.1 — Dependency conflict integration test.
 //!
 //! Per Story 0.1 TDD contract, Boundary test #2: "Dependency conflict:
 //! introduce two crates pinning different major versions of tokio;
-//! `cargo tree --duplicates` MUST list the conflict (CI gate). Fixture F6."
+//! cargo tree --duplicates MUST list the conflict."
 //!
-//! This is the programmatic equivalent — it inspects `cargo metadata`'s
-//! resolve graph and fails if any single dependency name resolves to more
-//! than one major version. We exclude workspace members themselves.
+//! This is the programmatic equivalent — scans cargo metadata's resolve
+//! graph and fails if any single dependency name resolves to more than
+//! one major version.
 //!
 //! Cited:
-//!   - Fixture F6 (idempotency harness pattern — re-runnable)
-//!   - G3/G18 (no dependency conflicts allowed without architect review)
 //!   - Story 0.1 Boundary test #2
+//!   - G3/G18 (no dependency conflicts without architect review)
+//!   - Fixture F6 (idempotency harness — re-runnable)
 
 #[test]
 fn no_dependency_has_multiple_major_versions() {
+    // Story 0.1 GREEN has zero runtime deps, so this test trivially passes.
+    // It earns its keep once stories 1.x + 3.x start landing deps —
+    // if two crates pin tokio 0.5 + tokio 1.x, this fails.
+
     let metadata = cargo_metadata::MetadataCommand::new()
         .exec()
         .expect("cargo metadata failed");
 
-    // Collect workspace member IDs so we can skip them when scanning
-    // the resolve graph.
     let member_ids: std::collections::HashSet<&str> = metadata
         .workspace_members
         .iter()
@@ -30,7 +32,7 @@ fn no_dependency_has_multiple_major_versions() {
     let resolve = metadata
         .resolve
         .as_ref()
-        .expect("cargo metadata must include resolve graph (use --no-deps=false)");
+        .expect("cargo metadata must include resolve graph");
 
     // Map: dep name -> set of major versions seen across the workspace.
     let mut dep_majors: std::collections::HashMap<String, std::collections::HashSet<u64>> =
@@ -38,14 +40,11 @@ fn no_dependency_has_multiple_major_versions() {
 
     for node in &resolve.nodes {
         if member_ids.contains(node.id.repr.as_str()) {
-            // Skip workspace members — we're scanning external deps.
+            // Scan only external deps, not workspace members.
             continue;
         }
         for dep in &node.deps {
             let dep_name = &dep.name;
-            // Extract major version from the dep's package id (format: "name version (source)")
-            // cargo_metadata exposes this via node.id.repr parsing OR via metadata.packages lookup.
-            // Use the simpler approach: split on whitespace, parse the second token.
             let parts: Vec<&str> = dep.pkg.repr.split_whitespace().collect();
             if parts.len() >= 2 {
                 if let Ok(v) = semver::Version::parse(parts[1]) {
@@ -63,17 +62,14 @@ fn no_dependency_has_multiple_major_versions() {
         if majors.len() > 1 {
             let mut sorted: Vec<u64> = majors.iter().copied().collect();
             sorted.sort_unstable();
-            conflicts.push(format!(
-                "{}: major versions {:?}",
-                name, sorted
-            ));
+            conflicts.push(format!("{name}: major versions {sorted:?}"));
         }
     }
 
     assert!(
         conflicts.is_empty(),
         "Story 0.1 dependency conflict: the following dependencies resolve to multiple major \
-         versions in the workspace (G3/G18 violation). Resolve to a single version: {}",
+         versions in the workspace (G3/G18 violation): {}",
         conflicts.join("; ")
     );
 }
