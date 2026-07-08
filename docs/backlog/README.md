@@ -10,7 +10,7 @@
 |---|---|---|
 | `README.md` | This index. | 1 |
 | `guardrails.md` | Cross-cutting rules G1–G27. | 2 — ingest as system prompt |
-| `nfr-thresholds.md` | Single source of truth for every numeric NFR boundary (T-1–T-44, incl. dev-env prerequisites T-44 + coverage tool T-43 + generalized reference HW T-31). | 3 — reference |
+| `nfr-thresholds.md` | Single source of truth for every numeric NFR boundary (T-1–T-45, incl. LHM HTTP port T-45, dev-env prerequisites T-44, coverage tool T-43, generalized reference HW T-31). | 3 — reference |
 | `tdd-fixtures.md` | Setup/teardown patterns F1–F14. | 4 — reference |
 | `regression-harness.md` | Test layer model (L0–L4), regression contract (8-point DoD), story wiring metadata schema, critical path, swarm loop. | 5 — reference |
 | `PROGRESS.md` | Auto-updated story tracker (Story 11.4). Swarm reads this at task-startup. | — runtime |

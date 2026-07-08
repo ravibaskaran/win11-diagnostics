@@ -1277,26 +1277,26 @@ Epic 10 (Verify)
 - **Explicit Swarm Guardrails:** HITL on any change to the regression contract (G19).
 
 ### STORY 11.3: UI Snapshot Harness (`insta` + `egui_kittest`)
-- **User Story:** As the QA Infra Agent, I want the UI snapshot infrastructure (`insta` + `egui_kittest`) wired into L2 so GUI stories (Epic 8) have visual regression protection.
-- **Technical Context:** `regression-harness.md` §6.3 + F8 + F14. `insta = 1.40  # MIT/Apache-2.0`, `egui_kittest = 0.35  # MIT`. Snapshots in `crates/sidebar-app/tests/snapshots/*.snap`. New snapshots trigger `requires-hitl-snapshot` label.
+- **User Story:** As the QA Infra Agent, I want the UI snapshot infrastructure (`insta` + `egui_kittest`) wired into L2 with a self-contained reference snapshot, so GUI stories (Epic 8) can add their own snapshots on top without a circular dependency on 8.1.
+- **Technical Context:** `regression-harness.md` §6.3 + F8 + F14. `insta = 1.40  # MIT/Apache-2.0`, `egui_kittest = 0.35  # MIT`. Snapshots in `crates/sidebar-app/tests/snapshots/*.snap`. New snapshots trigger `requires-hitl-snapshot` label. **Self-contained bootstrap:** this story ships a *reference* snapshot that renders a trivial egui label (e.g. `ui.label("sidebar snapshot harness OK");`) — it does NOT depend on any GUI story being merged first. This breaks what would otherwise be a cycle (8.1 needs insta; 11.3 needs something to snapshot). Subsequent GUI stories (8.x) add their own snapshots on top of this harness.
 - **Wiring:**
   - **Layer:** ui
-  - **Depends-On:** [0.1, 11.1] AND at least one GUI story merged (8.1 minimum) to have something to snapshot
+  - **Depends-On:** [0.1, 11.1]
   - **Blocks:** [8.2, 8.3, 8.4, 8.5, 8.6, 8.7, 8.8, 8.9, 8.10] (these stories rely on the snapshot infrastructure)
   - **Next:** 8.2
   - **Parallel-With:** [11.4]
-  - **DoD:** `cargo insta test` passes; an intentional snapshot change requires HITL review (`cargo insta accept`).
+  - **DoD:** `cargo insta test` passes against the self-contained reference snapshot; an intentional snapshot change requires HITL review (`cargo insta accept`).
 - **Gentle-AI SDD Phase Checklist:**
   1. [ ] **Plan:** Snapshot file naming convention (`<story-id>__<test-name>.snap`). Review workflow (`cargo insta review`).
-  2. [ ] **Implement:** `crates/sidebar-app/tests/snapshots/` + helper module. CI L2 job.
-  3. [ ] **Validate:** Story 8.1's existing snapshot test passes; a deliberate UI change requires `cargo insta accept`.
+  2. [ ] **Implement:** `crates/sidebar-app/tests/snapshots/` + helper module + a `story_11_3__harness_bootstrap.snap` reference (renders a single egui `Label`). CI L2 job.
+  3. [ ] **Validate:** `cargo insta test` passes on the reference snapshot; a deliberate change requires `cargo insta accept`.
 - **TDD Contract & Test Cases:**
   - **Unit Test Cases (Happy Path) — fixture F8:**
-    1. Story 8.1's metric row snapshot matches `story_8_1__metric_row_ghz.snap`.
-    2. `cargo insta test` exits 0 on a clean tree.
+    1. The bootstrap test renders `ui.label("sidebar snapshot harness OK")` and the resulting snapshot matches `story_11_3__harness_bootstrap.snap`.
+    2. `cargo insta test` exits 0 on a clean tree with only the reference snapshot present.
   - **Boundary & Edge Case Test Cases (cite G19, G26):**
-    1. Snapshot drift (intentional UI change) → `cargo insta test` fails with diff; HITL must run `cargo insta accept` and re-push.
-    2. Snapshot drift (unintentional) → CI fails; report shows the diff.
+    1. Snapshot drift (intentional change to the label text) → `cargo insta test` fails with diff; HITL must run `cargo insta accept` and re-push.
+    2. Snapshot drift (unintentional — egui version bump changes rendering) → CI fails; report shows the diff.
     3. New snapshot file added without HITL review → CI warns (the `requires-hitl-snapshot` label check).
 - **Explicit Swarm Guardrails:** HITL on every snapshot acceptance (G19).
 
@@ -1333,14 +1333,14 @@ Every story's `Wiring:` block in a single lookup table. The swarm consults this 
 
 | Story | Layer | Depends-On | Blocks | Next | Parallel-With |
 |---|---|---|---|---|---|
-| 0.1 | unit | — | [0.2, 0.3, 0.4, 0.5, 0.6, 1.1, all] | 0.2 | — |
+| 0.1 | unit | — | [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 1.1, all] | 0.2 | — |
 | 0.2 | integration | [0.1] | [11.1, 11.2, 9.2] | 0.3 | — |
 | 0.3 | unit | [0.1] | [9.1] | 0.4 | [0.2] |
 | 0.4 | unit | [0.1] | [all release stories] | 0.5 | [0.2, 0.3] |
 | 0.5 | unit | [0.1] | [9.1, 9.2] | 0.6 | [0.2, 0.3, 0.4] |
 | 0.6 | unit | [0.1] | [all lint-sensitive stories] | 1.1 | [0.2, 0.3, 0.4, 0.5] |
 | 0.7 | integration | [0.1] | [6.5, 11.2] | 1.1 | [0.3, 0.4, 0.5, 0.6] |
-| 1.1 | unit | [0.1, 0.6] | [1.2, 1.3, 1.5, 1.6, 2.1, 3.x, 5.1, 8.x] | 1.2 | [0.2..0.6 leftover, 11.1] |
+| 1.1 | unit | [0.1, 0.6] | [1.2, 1.3, 1.4, 1.5, 1.6, 2.1, 3.x, 5.1, 8.x] | 1.2 | [0.2..0.6 leftover, 11.1] |
 | 1.2 | unit | [1.1] | [8.8 (alert UI)] | 1.3 | — |
 | 1.3 | unit | [1.1] | [8.3 (metric row)] | 1.4 | [1.2] |
 | 1.4 | unit | [1.1] | [5.2 (rollover), 8.5 (settings)] | 1.5 | [1.2, 1.3] |
@@ -1374,6 +1374,7 @@ Every story's `Wiring:` block in a single lookup table. The swarm consults this 
 | 7.4 | unit + integration | [7.2, 6.4] | [8.1, 8.2] | 7.5 | — |
 | 7.5 | unit + integration | [7.2, 7.4, 5.2, 6.4] | [9.2] | 8.1 | — |
 | 8.1 | ui | [6.1, 6.2, 6.3, 7.2, 7.4, 11.3] | [8.2..8.10] | 8.2 | — |
+| 8.1 note | | 11.3 provides the snapshot harness; 8.1 adds the first real snapshot on top. 11.3 itself depends only on [0.1, 11.1] (self-contained bootstrap snapshot). | | | |
 | 8.2 | ui | [8.1, 7.3] | — | 8.3 | — |
 | 8.3 | ui | [8.1, 1.3] | — | 8.4 | [8.6, 8.7, 8.8, 8.9] |
 | 8.4 | ui | [8.1, 5.3] | — | 8.5 | [8.6, 8.7, 8.8, 8.9] |
@@ -1385,12 +1386,12 @@ Every story's `Wiring:` block in a single lookup table. The swarm consults this 
 | 8.10 | ui | [8.1, 1.5, 6.6] | — | 9.1 | — |
 | 9.1 | integration | [0.3, 0.5, 6.5] | [9.2] | 9.2 | — |
 | 9.2 | integration | [9.1, 7.5, 10.1] | [9.3] | 9.3 | — |
-| 9.3 | integration | [9.2] | — | 10.2 | (optional v1.1) |
-| 10.1 | bench + integration | [0.2, 7.2, all adapters] | [9.2, 3.2b] | 10.2 | — |
+| 9.3 | integration | [9.2] | — | 10.1 | (optional v1.1) |
+| 10.1 | bench + integration | [0.2, 7.2, 3.1, 3.2, 3.3, 3.4, 3.5, 3.6] | [9.2, 3.2b] | 10.2 | — |
 | 10.2 | integration + smoke | [10.1] | [9.2 release gate] | 11.x | — |
 | 11.1 | unit + integration + bench | [0.1, 0.2] | [11.2, 11.3, 11.4, all stories using Layer field] | 11.2 | [0.3..0.6, 1.1] |
 | 11.2 | integration + bench | [0.2, 11.1] | [every code story — the gate] | 11.3 | [11.4] |
-| 11.3 | ui | [0.1, 11.1, 8.1] | [8.2..8.10] | 8.2 | [11.4] |
+| 11.3 | ui | [0.1, 11.1] | [8.1, 8.2..8.10] | 8.1 | [11.4] |
 | 11.4 | unit + integration | [0.2, 11.2] | — (terminal enabler) | — | [11.3] |
 
 ### Reading the matrix
@@ -1417,7 +1418,7 @@ Every story's `Wiring:` block in a single lookup table. The swarm consults this 
   → 10.1 → 10.2
 ```
 
-Length: 47 stories on the critical path (out of 58 total; the other 11 are parallel-burst-eligible per §5 of `regression-harness.md`).
+Length: 47 stories on the critical path (out of 59 total; the other 12 are parallel-burst-eligible per §5 of `regression-harness.md`).
 
 ### Parallel-burst optimization (multi-agent swarm, max 3 concurrent per G17)
 
@@ -1442,4 +1443,4 @@ A story is `merged` iff ALL of:
 
 ---
 
-**END OF EPICS & STORIES (AUDIT PASS 4 + dev-env).** 12 Epics, 59 Stories. Companion: `README.md`, `guardrails.md` (G1–G27), `nfr-thresholds.md` (T-1–T-44), `tdd-fixtures.md` (F1–F14), `regression-harness.md`, `PROGRESS.md`, `docs/dev-env.md`. Source: `docs/PRD.md`, `docs/architecture.md`, `docs/grants.md`.
+**END OF EPICS & STORIES (AUDIT PASS 4 + dev-env + pass-5 agentic-readiness).** 12 Epics, 59 Stories. Companion: `README.md`, `guardrails.md` (G1–G27), `nfr-thresholds.md` (T-1–T-45), `tdd-fixtures.md` (F1–F14), `regression-harness.md`, `PROGRESS.md`, `docs/dev-env.md`. Source: `docs/PRD.md`, `docs/architecture.md`, `docs/grants.md`.

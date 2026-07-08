@@ -85,4 +85,12 @@ The swarm reads this file at task-startup to identify the ready set (stories who
 - Long-term blocked: 0
 
 ## Critical path remaining
-48 stories on the critical path (longest dependency chain). See `regression-harness.md` §4.
+47 stories on the critical path (longest dependency chain). See `regression-harness.md` §4.
+
+## Start here
+
+**Entry point: Story 0.1 (Workspace Skeleton + Pinned Dependency Manifest).**
+
+It is the only story with empty `Depends-On`, so it is always in the ready set on a fresh clone. Pick it first. After it merges, the ready set expands per the wiring in `epics-and-stories.md` appendix, and the swarm follows the `Next` pointers along the critical path.
+
+For the full per-story loop (RED → GREEN → full regression matrix → PR → HITL → merge → PROGRESS update), see `regression-harness.md` §7.
