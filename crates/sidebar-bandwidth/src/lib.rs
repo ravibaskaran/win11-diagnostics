@@ -10,6 +10,7 @@
 pub mod accountant;
 pub mod accumulator;
 pub mod clock;
+pub mod view;
 
 /// Story 0.1 smoke marker — proves the crate is reachable via `cargo test`.
 #[must_use]
