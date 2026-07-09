@@ -33,7 +33,7 @@ The swarm reads this file at task-startup to identify the ready set (stories who
 | 2.1 | merged | 2026-07-09T07:40Z | #12 | L0:5 | SensorProvider trait + automock. Send+Sync proven. |
 | 2.2 | merged | 2026-07-09T07:40Z | #12 | L0:4 | SensorDescriptor + CostClass + ProviderTier. |
 | 2.3 | merged | 2026-07-09T07:40Z | #12 | L0:10 | classify_for_v1 gate. Filters Heavy/Deferred + tier. |
-| 3.1 | pending | — | — | — | — |
+| 3.1 | merged | 2026-07-09T09Z | #16 | L0:11 | sysinfo adapter (CPU/RAM/disk/processes/uptime). Mutex<System>, SysinfoBackend trait + mockall. 11 contract tests. |
 | 3.2 | pending | — | — | — | — |
 | 3.2b | pending | — | — | — | — |
 | 3.3 | pending | — | — | — | — |
@@ -79,8 +79,8 @@ The swarm reads this file at task-startup to identify the ready set (stories who
 
 ## Summary
 - Total stories: 59
-- Merged: 16 / 59 (27.1%) — Stories 0.1-0.7, 1.1-1.6, 2.1-2.3
-- Ready for pickup: {3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 4.1, 4.2, 4.3, 11.1-11.4}
+- Merged: 17 / 59 (28.8%) — Stories 0.1-0.7, 1.1-1.6, 2.1-2.3, 3.1
+- Ready for pickup: {3.2, 3.3, 3.4, 3.5, 3.6, 4.1, 4.2, 4.3, 11.1-11.4}
 - Blocked on HITL: 0
 - Long-term blocked: 0
 
