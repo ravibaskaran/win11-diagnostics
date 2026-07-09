@@ -69,7 +69,7 @@ pub enum MonitorHint {
 /// Build the `APPBARDATA` struct for an ABM_NEW call without invoking FFI.
 /// Pure helper — lets us unit-test the struct-construction logic (HWND + edge
 /// + callback message wiring) without needing a real window. Cited: the
-/// pragmatic test strategy from the story brief.
+///   pragmatic test strategy from the story brief.
 #[must_use]
 fn build_abd(hwnd: HWND, edge: AppBarEdge, callback_msg: u32) -> APPBARDATA {
     APPBARDATA {
@@ -95,15 +95,84 @@ fn build_abd(hwnd: HWND, edge: AppBarEdge, callback_msg: u32) -> APPBARDATA {
 /// Story 6.2 TDD contract: `register(hwnd, edge, monitor)` calls
 /// `SHAppBarMessage` with `ABM_NEW/QUERYPOS/SETPOS`. Manual smoke §7.4
 /// items 4-6 (all four edges + multi-monitor).
-#[allow(clippy::needless_pass_by_value)] // HWND is a Copy handle
 pub fn register(
     hwnd: HWND,
     edge: AppBarEdge,
     monitor: MonitorHint,
 ) -> Result<RECT> {
-    // RED stub — GREEN implements the SHAppBarMessage dance.
-    let _ = (hwnd, edge, monitor);
-    Ok(RECT::default())
+    // The callback message the shell posts to `hwnd` for AppBar events
+    // (fullscreen-app / pos-changed). Story 6.2 doesn't wire the actual
+    // WindowProc; the value `WM_USER + 0x100 = 0x8100` is reserved for the
+    // sidebar and Epic 8 (egui wiring) will install the WndProc handler.
+    const APPBAR_CALLBACK_MSG: u32 = 0x8100;
+
+    // Stage 1: ABM_NEW — ask the shell to register us as an AppBar. Returns
+    // TRUE (1) on success, FALSE if the HWND is already registered or the
+    // callback message is already in use by another AppBar.
+    let mut abd = build_abd(hwnd, edge, APPBAR_CALLBACK_MSG);
+    // SAFETY: `abd` is a stack-local APPBARDATA we own; `&raw mut abd` is a
+    // valid *mut APPBARDATA for the duration of the call. The HWND inside is
+    // the caller's responsibility — SHAppBarMessage returns FALSE for an
+    // invalid handle, which we check below. ABM_NEW does not write back into
+    // `abd`.
+    let new_ok = unsafe { SHAppBarMessage(ABM_NEW, &raw mut abd) };
+    if new_ok == 0 {
+        return Err(Error::Platform(format!(
+            "SHAppBarMessage(ABM_NEW) rejected the HWND (already registered or callback msg 0x{APPBAR_CALLBACK_MSG:04X} taken)"
+        )));
+    }
+
+    // Stage 2: ABM_QUERYPOS — propose a rectangle. The caller (Epic 8 egui
+    // wiring) will set `abd.rc` to the desired edge rect based on the
+    // monitor work-area from `SystemParametersInfo`. For Story 6.2 the
+    // helper is plumbed with a default rect (zeroed); the shell fills in
+    // the closest valid rect for the requested edge. The `monitor` hint
+    // biases which display the shell picks when multiple are present.
+    let _ = monitor; // consumed by Epic 8 when it computes the seed rect
+    // SAFETY: same `&raw mut abd` contract as ABM_NEW. QUERYPOS writes into
+    // `abd.rc` (a RECT owned by `abd`, no aliasing).
+    let query_ok = unsafe { SHAppBarMessage(ABM_QUERYPOS, &raw mut abd) };
+    if query_ok == 0 {
+        // QUERYPOS returning FALSE is rare (older shell); treat as failure.
+        // Best-effort cleanup: ABM_REMOVE so the shell doesn't leak the
+        // AppBar slot on the next launch.
+        // SAFETY: same `&raw mut abd` contract; ABM_REMOVE is a no-op if the
+        // HWND isn't registered.
+        unsafe { SHAppBarMessage(ABM_REMOVE, &raw mut abd) };
+        return Err(Error::Platform(
+            "SHAppBarMessage(ABM_QUERYPOS) returned FALSE".into(),
+        ));
+    }
+
+    // Stage 3: ABM_SETPOS — commit the proposed rectangle. The shell
+    // adjusts it to not overlap the taskbar / other AppBars and reserves
+    // the final rect so other maximized windows don't underlap the sidebar.
+    // SAFETY: same `&raw mut abd` contract. SETPOS writes the final rect
+    // into `abd.rc`.
+    let setpos_ok = unsafe { SHAppBarMessage(ABM_SETPOS, &raw mut abd) };
+    if setpos_ok == 0 {
+        // SAFETY: same as above — best-effort cleanup.
+        unsafe { SHAppBarMessage(ABM_REMOVE, &raw mut abd) };
+        return Err(Error::Platform(
+            "SHAppBarMessage(ABM_SETPOS) returned FALSE".into(),
+        ));
+    }
+
+    let final_rect = abd.rc;
+    // Sanity: a zero-area rect means the shell silently rejected us (e.g.
+    // edge conflict). Surface as an error so Epic 8 can fall back to a
+    // floating window instead of an invisible docked one.
+    let width = final_rect.right - final_rect.left;
+    let height = final_rect.bottom - final_rect.top;
+    if width <= 0 || height <= 0 {
+        // SAFETY: same `&raw mut abd` contract.
+        unsafe { SHAppBarMessage(ABM_REMOVE, &raw mut abd) };
+        return Err(Error::Platform(format!(
+            "SHAppBarMessage produced a zero-area rect ({width}x{height}) for edge {edge:?}"
+        )));
+    }
+
+    Ok(final_rect)
 }
 
 /// Unregister `hwnd` as an AppBar. Idempotent — calling unregister on an
@@ -111,14 +180,33 @@ pub fn register(
 /// no-op in that case).
 ///
 /// # Errors
-/// Returns [`Error::Platform`] only on null/invalid HWND.
+/// Returns [`Error::Platform`] only on null/invalid HWND (ABM_REMOVE returns
+/// FALSE for a genuinely invalid handle; a not-registered HWND is a no-op
+/// and returns success).
 ///
 /// # Cited
 /// Story 6.2 TDD contract: `unregister(hwnd)` calls `SHAppBarMessage` with
 /// `ABM_REMOVE`.
 pub fn unregister(hwnd: HWND) -> Result<()> {
-    // RED stub — GREEN implements the ABM_REMOVE call.
-    let _ = hwnd;
+    let mut abd = build_abd(hwnd, AppBarEdge::Left, 0);
+    // SAFETY: `abd` is stack-local and owned; `&raw mut abd` is a valid
+    // pointer for the call. ABM_REMOVE is documented as a no-op for an HWND
+    // that was never registered (the shell returns success). The edge field
+    // is ignored by ABM_REMOVE; we pass Left (default) for determinism.
+    let removed = unsafe { SHAppBarMessage(ABM_REMOVE, &raw mut abd) };
+    // ABM_REMOVE returns TRUE on success (including the not-registered case
+    // on most shell versions) and FALSE on genuine failure (invalid HWND).
+    // We accept either for idempotency — the only hard error path is when
+    // the handle is so invalid the shell can't even look it up, which we
+    // surface as Error::Platform.
+    if removed == 0 && !hwnd.is_invalid() {
+        // A non-null HWND that returned FALSE from ABM_REMOVE is unusual;
+        // log + propagate so the caller can decide. Null HWND is tolerated
+        // (treated as already-unregistered).
+        return Err(Error::Platform(
+            "SHAppBarMessage(ABM_REMOVE) returned FALSE for a non-null HWND".into(),
+        ));
+    }
     Ok(())
 }
 

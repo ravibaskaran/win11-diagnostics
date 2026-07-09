@@ -43,6 +43,7 @@
 
 use std::mem::size_of;
 
+use windows::core::BOOL;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Dwm::{
     DwmSetWindowAttribute, DWMWA_CLOAK, DWMWA_EXCLUDED_FROM_PEEK,
@@ -63,10 +64,7 @@ use sidebar_domain::error::{Error, Result};
 /// Story 6.1 TDD contract (3): `dwm::exclude_from_peek(hwnd)` calls
 /// `DwmSetWindowAttribute` with `DWMWA_EXCLUDED_FROM_PEEK`. NFR-7.
 pub fn exclude_from_peek(hwnd: HWND) -> Result<()> {
-    // RED stub — real impl lands in the GREEN commit. Body intentionally
-    // returns Ok(()) so the test compiles + fails on the assertion (G1).
-    let _ = (hwnd,); // silence unused-var lint without `#[allow]`
-    Ok(())
+    set_bool_attribute(hwnd, DWMWA_EXCLUDED_FROM_PEEK, true)
 }
 
 /// Toggle DWMWA_CLOAK on the sidebar viewport. When `enabled = true`, DWM
@@ -86,11 +84,49 @@ pub fn exclude_from_peek(hwnd: HWND) -> Result<()> {
 /// # Cited
 /// Story 6.1 TDD contract (4): `dwm::set_capture_cloak(hwnd, true)` calls
 /// `DwmSetWindowAttribute` with the capture-cloak attribute. NFR-7.
-#[allow(clippy::needless_pass_by_value)] // hwnd is a Copy handle, not a borrow target
 pub fn set_capture_cloak(hwnd: HWND, enabled: bool) -> Result<()> {
-    // RED stub — real impl lands in GREEN. Body intentionally Ok(()).
-    let _ = (hwnd, enabled);
-    Ok(())
+    set_bool_attribute(hwnd, DWMWA_CLOAK, enabled)
+}
+
+/// Shared helper: set a DWM attribute whose value is a single `BOOL`. Both
+/// `DWMWA_EXCLUDED_FROM_PEEK` and `DWMWA_CLOAK` take `BOOL*` per the MS
+/// `DwmSetWindowAttribute` contract — passing the wrong size silently
+/// no-ops the call, so we pin `cbAttribute = size_of::<BOOL>()` (= 4).
+///
+/// # Errors
+/// `Error::Platform` if the HRESULT returned by `DwmSetWindowAttribute` is a
+/// failure (the windows crate wraps the call in `Result<()>`; `.ok()` turns
+/// failure into `Err(windows::core::Error)` which we stringify into
+/// `Error::Platform`).
+fn set_bool_attribute(
+    hwnd: HWND,
+    attr: windows::Win32::Graphics::Dwm::DWMWINDOWATTRIBUTE,
+    value: bool,
+) -> Result<()> {
+    let bool_value = BOOL(i32::from(value));
+    // SAFETY: `hwnd` is the caller's window handle — DWM checks validity and
+    // returns an HRESULT failure for an invalid/null HWND, which we surface
+    // as Error::Platform below. `&raw const bool_value` is a pointer into a
+    // stack local that outlives the call; `cbattribute = size_of::<BOOL>()`
+    // (= 4) matches the documented BOOL* contract for both peek + cloak
+    // attrs. No threading concern — DWM attribute set is synchronous.
+    let result = unsafe {
+        DwmSetWindowAttribute(
+            hwnd,
+            attr,
+            (&raw const bool_value).cast::<std::ffi::c_void>(),
+            u32::try_from(size_of::<BOOL>()).unwrap_or(0),
+        )
+    };
+    result.map_err(|e| {
+        tracing::debug!(
+            target = "sidebar.platform.dwm",
+            attr = attr.0,
+            error = %e,
+            "DwmSetWindowAttribute failed"
+        );
+        Error::Platform(format!("DwmSetWindowAttribute(attr={}) failed: {e}", attr.0))
+    })
 }
 
 #[cfg(test)]
@@ -141,7 +177,7 @@ mod tests {
         // ignored by DWM → attribute does nothing → bug surfaces only in
         // manual smoke. Pin the size here.
         assert_eq!(
-            size_of::<windows::core::BOOL>(),
+            size_of::<BOOL>(),
             4,
             "BOOL attribute size must be 4 bytes (DWMWA_EXCLUDED_FROM_PEEK / DWMWA_CLOAK contract)"
         );

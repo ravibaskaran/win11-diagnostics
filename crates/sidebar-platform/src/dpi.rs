@@ -40,8 +40,43 @@ use sidebar_domain::error::{Error, Result};
 /// `SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)` before window
 /// creation. NFR-6 (hidpi crispness). T-31 (target Win11 build 26100+).
 pub fn set_per_monitor_v2() -> Result<()> {
-    // RED stub — GREEN implements the real call + idempotency handling.
-    Ok(())
+    // SAFETY: `SetProcessDpiAwarenessContext` is a process-global call with
+    // no pointer arguments — there is no aliasing or lifetime concern. The
+    // only invariant is "call before any window is created"; callers (the
+    // sidebar runtime entry, before eframe) uphold that. The function is
+    // documented as idempotent on Win10 1703+: a second call returns
+    // ERROR_ACCESS_DENIED, which the `windows` crate surfaces as
+    // `Err(windows::core::Error)`. We treat that specific case as success
+    // (the process is already per-monitor-v2 aware — the desired end state).
+    let result = unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+    match result {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            // ERROR_ACCESS_DENIED is the "already set" path — Win32 returns
+            // it when the process is already DPI-aware at any context. The
+            // `windows` crate wraps GetLastError into the HRESULT; we check
+            // the code via the Error's `.code()` (HRESULT) — access-denied
+            // is 0x80070005 (HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED)), which
+            // as a signed i32 is -2_147_024_891. Writing the negative
+            // decimal directly avoids the u32→i32 cast clippy rejects.
+            const HRESULT_ACCESS_DENIED: i32 = -2_147_024_891;
+            if e.code() == windows::core::HRESULT(HRESULT_ACCESS_DENIED) {
+                tracing::debug!(
+                    target = "sidebar.platform.dpi",
+                    "SetProcessDpiAwarenessContext: process already DPI-aware (idempotent success)"
+                );
+                return Ok(());
+            }
+            tracing::warn!(
+                target = "sidebar.platform.dpi",
+                error = %e,
+                "SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2) failed"
+            );
+            Err(Error::Platform(format!(
+                "SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2) failed: {e}"
+            )))
+        }
+    }
 }
 
 /// Query the DPI of the monitor that `hwnd` is on. Returns 96 (the Win32
@@ -54,11 +89,19 @@ pub fn set_per_monitor_v2() -> Result<()> {
 /// `GetDpiForWindow`. NFR-6.
 #[must_use]
 pub fn get_dpi_for_window(hwnd: HWND) -> u32 {
-    // RED stub — GREEN implements the real FFI call. Default to 96 (the
-    // documented "user DPI" baseline) so callers render sensibly even when
-    // the FFI call fails or the HWND is invalid.
-    let _ = hwnd;
-    96
+    // SAFETY: `GetDpiForWindow` takes an HWND and returns a u32; no pointer
+    // out-params, no aliasing. An invalid HWND returns 0 per the MS contract;
+    // we substitute 96 (the documented "user DPI" / 100%-scaling baseline)
+    // so egui's viewport code never sees a degenerate zero DPI.
+    let raw = unsafe { GetDpiForWindow(hwnd) };
+    if raw == 0 {
+        tracing::debug!(
+            target = "sidebar.platform.dpi",
+            "GetDpiForWindow returned 0 (invalid HWND?) — falling back to 96 dpi"
+        );
+        return 96;
+    }
+    raw
 }
 
 #[cfg(test)]

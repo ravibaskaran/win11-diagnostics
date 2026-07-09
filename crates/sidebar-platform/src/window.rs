@@ -16,6 +16,7 @@
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{
     SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+    SET_WINDOW_POS_FLAGS,
 };
 
 use sidebar_domain::error::{Error, Result};
@@ -68,9 +69,27 @@ impl ViewportPrefs {
 /// with `HWND_TOPMOST` + no-activate. NFR-7 (always-on-top). Manual smoke
 /// §7.4 item 3 (Win+D survives).
 pub fn set_topmost(hwnd: HWND) -> Result<()> {
-    // RED stub — GREEN commit implements the real SetWindowPos call.
-    let _ = hwnd;
-    Ok(())
+    // Flags: keep geometry (NOMOVE|NOSIZE), do NOT steal focus (NOACTIVATE —
+    // the sidebar must not yank focus on launch), and show the window if it
+    // was hidden (SHOWWINDOW).
+    let flags: SET_WINDOW_POS_FLAGS = SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE | SWP_SHOWWINDOW;
+    // SAFETY: `hwnd` is the caller's window handle — SetWindowPos checks
+    // validity and returns an HRESULT failure for an invalid/null HWND (the
+    // windows crate wraps the BOOL return into Result<()> via .ok()).
+    // `HWND_TOPMOST` is the documented (-1) sentinel handle; passing it as
+    // `hwndinsertafter` puts the window at the top of the Z-order. The x/y/
+    // cx/cy values are ignored because SWP_NOSIZE|SWP_NOMOVE are set. The
+    // flag set is plain data (no pointer args), so there is no aliasing or
+    // lifetime concern.
+    let result = unsafe { SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, flags) };
+    result.map_err(|e| {
+        tracing::debug!(
+            target = "sidebar.platform.window",
+            error = %e,
+            "SetWindowPos(HWND_TOPMOST) failed"
+        );
+        Error::Platform(format!("SetWindowPos(HWND_TOPMOST) failed: {e}"))
+    })
 }
 
 #[cfg(test)]
