@@ -1203,6 +1203,7 @@ name = "sidebar-platform"
 version = "0.0.0"
 dependencies = [
  "mockall",
+ "serde_json",
  "sidebar-adapter-ohm",
  "sidebar-domain",
  "sidebar-sensor",

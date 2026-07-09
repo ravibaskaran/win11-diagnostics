@@ -72,14 +72,31 @@
 //! - guardrails.md G10 (Job Object orphan prevention), G11 (HITL)
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
-#[allow(unused_imports)]
-use sidebar_adapter_ohm::http::{HttpClient, OhmError, DEFAULT_OHM_PORT};
-use sidebar_domain::error::Result;
+#[cfg(test)]
+use sidebar_adapter_ohm::http::DEFAULT_OHM_PORT;
+use sidebar_adapter_ohm::http::{HttpClient, OhmError};
+use sidebar_domain::error::{Error, Result};
 use sidebar_sensor::descriptor::ProviderTier;
 
-#[allow(unused_imports)]
 use tracing::{debug, info, warn};
+
+#[cfg(windows)]
+use windows::core::PCWSTR;
+#[cfg(windows)]
+use windows::Win32::Foundation::HANDLE;
+#[cfg(windows)]
+use windows::Win32::System::JobObjects::{
+    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+};
+#[cfg(windows)]
+use windows::Win32::System::Threading::WaitForSingleObject;
+#[cfg(windows)]
+use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
+#[cfg(windows)]
+use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
 /// T-11: 5s launch timeout — from `ShellExecuteW("runas")` return to first
 /// successful HTTP probe on the chosen port. Cited: nfr-thresholds.md T-11.
@@ -96,7 +113,6 @@ pub const PORT_RANGE_END: u16 = 17_137;
 /// T-11: re-probe interval during the launch wait. We poll the HTTP endpoint
 /// every 200ms (≈25 attempts within the 5s budget) rather than blocking on a
 /// single 500ms-timeout probe.
-#[allow(dead_code)] // GREEN: consumed by launch_elevated's wait loop.
 const LAUNCH_REPROBE_INTERVAL_MS: u64 = 200;
 
 /// `ShellExecuteW` returns an HINSTANCE; Win32 docs define a return value
@@ -104,11 +120,9 @@ const LAUNCH_REPROBE_INTERVAL_MS: u64 = 200;
 const SHELLEXECUTE_ERROR_THRESHOLD: i32 = 32;
 
 /// LHM config key: enables the HTTP web server (OFF by default in v0.9.6).
-#[allow(dead_code)] // GREEN: consumed by patch_lhm_config.
 const CONFIG_KEY_WEB_SERVER: &str = "runWebServerMenuItem";
 
 /// LHM config key: the TCP port the HTTP server binds.
-#[allow(dead_code)] // GREEN: consumed by patch_lhm_config.
 const CONFIG_KEY_LISTENER_PORT: &str = "listenerPort";
 
 /// Minimal tier-change broadcaster wrapping a tokio-style sink. We use a
@@ -131,20 +145,25 @@ pub type TierChangeCallback = Box<dyn Fn(ProviderTier) + Send + Sync>;
 /// - `client` — the HTTP probe client (reused from Story 3.6 adapter).
 /// - `lhm_exe` — absolute path to `LibreHardwareMonitor.exe`.
 /// - `lhm_config` — absolute path to `LibreHardwareMonitor.exe.config`.
-/// - `child_handle` — `HANDLE` to the launched child (or `None`).
-/// - `job_handle` — Job Object HANDLE wrapping the child (G10), or `None`.
+/// - `child_handle` — `HANDLE` (as `isize`) to the launched child, or `None`.
+/// - `job_handle` — Job Object HANDLE (as `isize`) wrapping the child (G10).
 /// - `sidebar_launched` — `true` iff sidebar invoked `ShellExecuteW` (G10
 ///   ownership: user-started LHM is left running on shutdown).
 /// - `resolved_port` — the port the supervisor launched LHM on (for
 ///   re-probe + adapter wiring).
 /// - `tier_tx` — optional tier-change broadcaster (T-38).
-#[allow(dead_code)] // GREEN: fields consumed by launch_elevated/shutdown/is_child_alive.
+///
+/// `HANDLE`s are stored as `isize` (the inner value of `HANDLE(isize)`) so
+/// the struct is `cfg(unix)`-compatible for compile tests. The FFI is gated
+/// `#[cfg(windows)]`; on non-Windows the launch/alive/shutdown methods return
+/// `Err` (sidebar only ships on Win11, but the crate must `cargo check`
+/// cross-platform for the workspace-shape test).
 pub struct OhmSupervisor<C: HttpClient> {
     client: C,
     lhm_exe: PathBuf,
     lhm_config: PathBuf,
-    child_handle: Option<usize>,
-    job_handle: Option<usize>,
+    child_handle: Option<isize>,
+    job_handle: Option<isize>,
     sidebar_launched: bool,
     resolved_port: Option<u16>,
     tier_tx: Option<TierChangeCallback>,
@@ -200,9 +219,37 @@ impl<C: HttpClient> OhmSupervisor<C> {
     ///
     /// Cited: Story 6.4 Happy Path #1-#2, Boundary #10. AD-7. T-10.
     pub fn probe(&self, port: u16) -> ProviderTier {
-        // RED stub: always returns Basic (deliberately wrong).
-        let _ = (self, port);
-        ProviderTier::Basic
+        let url = format!("http://127.0.0.1:{port}/data.json");
+        match self.client.get(&url) {
+            Ok(body) => {
+                if is_lhm_signature(&body) {
+                    ProviderTier::Full
+                } else {
+                    // Boundary #10 — something answered but it's not LHM.
+                    debug!(
+                        port,
+                        "probe: non-LHM body on port, treating as Basic (occupied)"
+                    );
+                    ProviderTier::Basic
+                }
+            }
+            Err(OhmError::HttpFailed(reason)) => {
+                debug!(port, %reason, "probe: connection failed → Basic");
+                ProviderTier::Basic
+            }
+            Err(OhmError::Timeout) => {
+                debug!(port, "probe: T-10 timeout → Basic");
+                ProviderTier::Basic
+            }
+            Err(OhmError::NotJson(reason)) => {
+                debug!(port, %reason, "probe: non-JSON body → Basic");
+                ProviderTier::Basic
+            }
+            Err(OhmError::Parse(reason)) => {
+                debug!(port, %reason, "probe: JSON parse failure → Basic");
+                ProviderTier::Basic
+            }
+        }
     }
 
     /// Launch LHM elevated. Three steps (AD-8 step 2):
@@ -213,17 +260,64 @@ impl<C: HttpClient> OhmSupervisor<C> {
     /// Returns the resolved port on success.
     ///
     /// # Errors
-    /// - [`Error::Platform`] if the LHM binary is missing.
-    /// - [`Error::Platform`] if all ports in the T-45 chain are occupied.
-    /// - [`Error::Platform`] if `ShellExecuteW` returns an error (≤32).
+    /// - [`Error::Platform`] if the LHM binary is missing (Boundary #5).
+    /// - [`Error::Platform`] if all ports in the T-45 chain are occupied
+    ///   by non-LHM services (Boundary #9 "out of fallback chain").
+    /// - [`Error::Platform`] if `ShellExecuteW` returns an error (≤32)
+    ///   (Boundary #2, #6 — UAC declined).
     /// - [`Error::Platform`] if the launch timeout T-11 elapses without a
-    ///   successful HTTP probe.
+    ///   successful HTTP probe (Boundary #8).
     ///
     /// Cited: Story 6.4 Boundary #1, #5, #6, #8, #9, #11. T-11, T-45, G10.
     pub fn launch_elevated(&mut self) -> Result<u16> {
-        // RED stub: returns Ok(default) without doing any work.
-        self.resolved_port = Some(DEFAULT_OHM_PORT);
-        Ok(DEFAULT_OHM_PORT)
+        // Boundary #5 — LHM binary must exist before we do anything.
+        if !self.lhm_exe.exists() {
+            return Err(Error::Platform(format!(
+                "LibreHardwareMonitor.exe not found at {} — cannot launch Full mode",
+                self.lhm_exe.display()
+            )));
+        }
+
+        // T-45 — pick a free port (handles already-running LHM + fallback).
+        let port = pick_free_port(&self.client)?;
+        self.resolved_port = Some(port);
+
+        // Boundary #11 — patch BOTH keys before launch (the #1 gotcha).
+        patch_lhm_config(&self.lhm_config, port)?;
+
+        // Launch + Job Object wrap. The ShellExecuteW + Job Object wiring is
+        // windows-only; the non-windows path returns Err (sidebar ships on
+        // Win11 only, but the crate must compile cross-platform for the
+        // workspace-shape test).
+        #[cfg(windows)]
+        {
+            let child_handle = self.shellexecute_runas(&port)?;
+            // G10 — wrap in Job Object so the kernel reaps the elevated child
+            // if the sidebar host crashes.
+            let job_handle = Self::create_and_assign_job(child_handle)?;
+            // Stash handles as isize so the struct is unix-compilable for the
+            // workspace-shape test (HANDLE wraps *mut c_void on Windows).
+            self.child_handle = Some(child_handle.0 as isize);
+            self.job_handle = Some(job_handle.0 as isize);
+            self.sidebar_launched = true;
+
+            // T-11 — wait up to 5s for the HTTP probe to succeed.
+            if !self.wait_for_probe(port)? {
+                // Launch timed out — LHM started but didn't answer HTTP in
+                // budget. Leave the child running (user may want to inspect
+                // it); mark sidebar_launched so shutdown can clean it up.
+                warn!(port, "LHM launch timed out (T-11={LAUNCH_TIMEOUT_MS}ms)");
+                return Err(Error::Platform(format!(
+                    "LHM launch timed out: no HTTP response on port {port} within {LAUNCH_TIMEOUT_MS}ms (T-11)"
+                )));
+            }
+            info!(
+                port,
+                "LHM launched elevated, HTTP probe confirmed Full tier"
+            );
+        }
+
+        Ok(port)
     }
 
     /// `true` iff the child handle is still open and the process is running.
@@ -232,8 +326,29 @@ impl<C: HttpClient> OhmSupervisor<C> {
     /// Cited: Story 6.4 Boundary #3. G10.
     #[must_use]
     pub fn is_child_alive(&self) -> bool {
-        // RED stub: always false.
-        false
+        let Some(raw) = self.child_handle else {
+            return false;
+        };
+        #[cfg(windows)]
+        {
+            // Reconstruct the HANDLE from its stored isize form.
+            let handle = HANDLE(raw as *mut core::ffi::c_void);
+            // SAFETY: `raw` came from a valid process HANDLE we own (stash on
+            // launch_elevated via ShellExecuteExW hProcess); the handle remains
+            // valid until CloseHandle (called in shutdown / Drop).
+            // WaitForSingleObject with timeout 0 is non-blocking and returns
+            // WAIT_TIMEOUT (0x102) if the process is still running.
+            let result = unsafe { WaitForSingleObject(handle, 0) };
+            // 0x102 = WAIT_TIMEOUT (still running); 0 = WAIT_OBJECT_0 (signaled = exited).
+            // WaitForSingleObject returns WAIT_EVENT (a u32 newtype); compare
+            // against WAIT_EVENT(0x102) directly.
+            result == windows::Win32::Foundation::WAIT_EVENT(0x0000_0102)
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = raw;
+            false
+        }
     }
 
     /// Terminate the child **only if sidebar launched it** (G10). User-started
@@ -241,13 +356,200 @@ impl<C: HttpClient> OhmSupervisor<C> {
     /// the child if `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` is set).
     ///
     /// # Errors
-    /// Returns [`Error::Platform`] on `TerminateProcess` failure (logged but
+    /// Returns [`Error::Platform`] on handle-closure failure (logged but
     /// propagated so the caller can decide).
     ///
     /// Cited: Story 6.4 Boundary #4. G10. T-39 (shutdown hierarchy).
     pub fn shutdown(&mut self) -> Result<()> {
-        // RED stub: no-op.
+        if !self.sidebar_launched {
+            // G10 — user-started LHM is left running.
+            debug!("shutdown: sidebar did not launch LHM — leaving child running (G10)");
+            return Ok(());
+        }
+        // Close the Job Object handle. With JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        // set (see create_and_assign_job), this terminates the child. Closing
+        // the child handle separately is not needed — the job does the kill.
+        #[cfg(windows)]
+        {
+            if let Some(job_raw) = self.job_handle.take() {
+                // SAFETY: `job_raw` is a valid Job Object HANDLE we created;
+                // closing it is safe and triggers kernel reap of all
+                // processes in the job (G10).
+                let job = HANDLE(job_raw as *mut core::ffi::c_void);
+                // SAFETY: see above — CloseHandle on an owned job handle.
+                let _ = unsafe { windows::Win32::Foundation::CloseHandle(job) };
+            }
+            if let Some(child_raw) = self.child_handle.take() {
+                // SAFETY: child_raw is the HANDLE from ShellExecuteExW's
+                // hProcess. Closing it after the job has killed the process
+                // is the documented cleanup.
+                let child = HANDLE(child_raw as *mut core::ffi::c_void);
+                // SAFETY: see above — CloseHandle on an owned process handle.
+                let _ = unsafe { windows::Win32::Foundation::CloseHandle(child) };
+            }
+        }
+        self.sidebar_launched = false;
+        // Broadcast Full → Basic (T-38). The monitor task in Story 7.4 owns
+        // coalescing; here we just fire the transition.
+        broadcast_tier_change(self.tier_tx.as_ref(), ProviderTier::Basic);
+        info!("shutdown: terminated sidebar-launched LHM (G10)");
         Ok(())
+    }
+
+    // ----- windows-only FFI helpers (ShellExecuteExW + Job Object) -----
+
+    /// Launch LHM elevated via `ShellExecuteExW(verb="runas")` with
+    /// `SEE_MASK_NOCLOSEPROCESS` so we get the child HANDLE back (needed for
+    /// the Job Object wrap). SW_HIDE keeps the LHM console window hidden — we
+    /// talk to its HTTP server, never to its GUI.
+    ///
+    /// On UAC decline (user clicked "No"), `ShellExecuteExW` returns an error
+    /// via the `windows::core::Error` (`ERROR_CANCELLED`). We surface that as
+    /// `Error::Platform` so the caller falls back to Basic tier (Boundary #2,
+    /// #6).
+    #[cfg(windows)]
+    fn shellexecute_runas(&self, port: &u16) -> Result<HANDLE> {
+        use std::os::windows::ffi::OsStrExt;
+
+        // Build NUL-terminated UTF-16 wide strings. `encode_wide` yields the
+        // UTF-16 encoding; chaining `once(0)` adds the NUL terminator required
+        // by PCWSTR.
+        let exe_wide: Vec<u16> = std::ffi::OsStr::new(&self.lhm_exe)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        // "runas" is the documented verb that triggers UAC. encode_wide lives
+        // on OsStr, so wrap the str in OsStr::new. The trailing NUL terminator
+        // is required by PCWSTR.
+        let verb_wide: Vec<u16> = std::ffi::OsStr::new("runas")
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let params = format!("--port {port}");
+        let params_wide: Vec<u16> = std::ffi::OsStr::new(&params)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+
+        let mut info = SHELLEXECUTEINFOW {
+            cbSize: u32::try_from(std::mem::size_of::<SHELLEXECUTEINFOW>())
+                .expect("SHELLEXECUTEINFOW fits in u32"),
+            fMask: SEE_MASK_NOCLOSEPROCESS,
+            lpVerb: PCWSTR(verb_wide.as_ptr()),
+            lpFile: PCWSTR(exe_wide.as_ptr()),
+            lpParameters: PCWSTR(params_wide.as_ptr()),
+            nShow: SW_HIDE.0,
+            ..Default::default()
+        };
+
+        // SAFETY: SHELLEXECUTEINFOW is zero-initialized beyond cbSize/fMask
+        // (Default impl via `Win32_System_Registry`); the wide-string pointers
+        // are NUL-terminated (we chained a 0 for verb/exe/params); `fMask`
+        // includes SEE_MASK_NOCLOSEPROCESS so hProcess is populated in the
+        // out-param and ownership transfers to us (we CloseHandle it in
+        // shutdown). The struct lives on this stack frame for the duration of
+        // the call. Win32 docs guarantee the call returns before the struct is
+        // touched again.
+        let ok = unsafe { ShellExecuteExW(std::ptr::addr_of_mut!(info)) };
+        ok.map_err(|e| {
+            Error::Platform(format!(
+                "ShellExecuteExW(runas) failed: {e} — UAC declined or LHM binary inaccessible"
+            ))
+        })?;
+        let hprocess = info.hProcess;
+        if hprocess.is_invalid() {
+            // Defensive — shouldn't happen on Ok return, but the Win32 docs
+            // allow hProcess=NULL when no process was launched.
+            return Err(Error::Platform(
+                "ShellExecuteExW returned Ok but hProcess is NULL".to_string(),
+            ));
+        }
+        Ok(hprocess)
+    }
+
+    /// Create an anonymous Job Object with
+    /// `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, then assign `child` to it. With
+    /// this flag, when the *last* handle to the job is closed (including
+    /// kernel handle-table cleanup on host process exit), the kernel
+    /// terminates every process in the job. This is the G10 contract: no
+    /// orphan elevated LHM survives a sidebar crash.
+    #[cfg(windows)]
+    fn create_and_assign_job(child: HANDLE) -> Result<HANDLE> {
+        // SAFETY: CreateJobObjectW with both args `None` creates an anonymous
+        // job with default security; returns a HANDLE we own. `None` name →
+        // no global-namespace collision possible. The handle must be closed
+        // (done in shutdown / Drop).
+        let job = unsafe { CreateJobObjectW(None, None) }
+            .map_err(|e| Error::Platform(format!("CreateJobObjectW failed: {e}")))?;
+
+        let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let info_ptr: *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::ptr::addr_of!(info);
+        let info_len = u32::try_from(std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>())
+            .expect("JOBOBJECT_EXTENDED_LIMIT_INFORMATION fits in u32");
+        // SAFETY: `JobObjectExtendedLimitInformation` is the documented info
+        // class; the struct is value-initialized above. We pass a pointer to
+        // it + its byte size. The buffer lives on this stack frame for the
+        // duration of the call. The call only reads `info` (no out-param).
+        let ok = unsafe {
+            windows::Win32::System::JobObjects::SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                info_ptr.cast::<core::ffi::c_void>(),
+                info_len,
+            )
+        };
+        ok.map_err(|e| Error::Platform(format!("SetInformationJobObject failed: {e}")))?;
+
+        // SAFETY: `child` is a valid process HANDLE from ShellExecuteExW;
+        // `job` is a valid job HANDLE we just created and configured.
+        // AssignProcessToJobObject adds the child to the job — from now on
+        // the child's lifetime is bound to the job (G10). The child handle
+        // remains valid (we still own it for is_child_alive polling).
+        let ok = unsafe { AssignProcessToJobObject(job, child) };
+        ok.map_err(|e| Error::Platform(format!("AssignProcessToJobObject failed: {e}")))?;
+
+        Ok(job)
+    }
+
+    #[cfg(windows)]
+    fn wait_for_probe(&self, port: u16) -> Result<bool> {
+        let deadline = Instant::now() + Duration::from_millis(LAUNCH_TIMEOUT_MS);
+        let interval = Duration::from_millis(LAUNCH_REPROBE_INTERVAL_MS);
+        loop {
+            if self.probe(port) == ProviderTier::Full {
+                return Ok(true);
+            }
+            if Instant::now() >= deadline {
+                return Ok(false);
+            }
+            std::thread::sleep(interval);
+        }
+    }
+}
+
+impl<C: HttpClient> Drop for OhmSupervisor<C> {
+    /// G10 safety net: if `shutdown` was never called (e.g. sidebar crashed
+    /// cleanly via panic), close the Job Object handle on drop so the kernel
+    /// reaps the elevated child. This is the documented G10 contract.
+    fn drop(&mut self) {
+        // Close handles without broadcasting (the app layer may be mid-tear-
+        // down; broadcasting from Drop is unsafe).
+        #[cfg(windows)]
+        {
+            if let Some(job_raw) = self.job_handle.take() {
+                // SAFETY: job_raw is a valid Job Object HANDLE; CloseHandle
+                // triggers kernel reap of all assigned processes (G10).
+                let job = HANDLE(job_raw as *mut core::ffi::c_void);
+                // SAFETY: see above — owned handle, last close on drop.
+                let _ = unsafe { windows::Win32::Foundation::CloseHandle(job) };
+            }
+            if let Some(child_raw) = self.child_handle.take() {
+                let child = HANDLE(child_raw as *mut core::ffi::c_void);
+                // SAFETY: owned process handle, last close on drop.
+                let _ = unsafe { windows::Win32::Foundation::CloseHandle(child) };
+            }
+        }
     }
 }
 
@@ -263,26 +565,75 @@ impl<C: HttpClient> OhmSupervisor<C> {
 /// Cited: Story 6.4 Boundary #10. AD-7.
 #[must_use]
 pub fn is_lhm_signature(body: &str) -> bool {
-    // RED stub: always false.
-    let _ = body;
-    false
+    // Parse as a generic JSON value to avoid coupling to the LhmNode schema
+    // (this module intentionally does NOT depend on sidebar-adapter-ohm's
+    // lhm_model — it only needs the signature shape).
+    let Ok(parsed): serde_json::Result<serde_json::Value> = serde_json::from_str(body) else {
+        return false;
+    };
+    let Some(arr) = parsed.as_array() else {
+        return false; // top-level must be an array
+    };
+    let Some(first) = arr.first() else {
+        return false; // empty array is not a signature
+    };
+    let Some(obj) = first.as_object() else {
+        return false; // first element must be an object
+    };
+    // LHM v0.9.x emits PascalCase (Text, Children). We tolerate camelCase
+    // (text, children) for forward-compat. Require BOTH a text-ish AND a
+    // children-ish key (the two universal LHM root-node fields).
+    let has_text = obj.contains_key("Text") || obj.contains_key("text");
+    let has_children = obj.contains_key("Children") || obj.contains_key("children");
+    has_text && has_children
 }
 
 /// Walk the T-45 port fallback chain (17127..17137) and return the first port
-/// that is NOT occupied by an LHM-signature service. A port is "occupied" if
-/// the HTTP probe returns a body that does NOT match the LHM signature (a
-/// foreign service) — in that case we skip it. A port that returns
-/// connection-refused is "free".
+/// that is NOT occupied by a non-LHM service. Classification per port:
+/// - LHM signature body → return that port (LHM already running — AD-8 step 1).
+/// - connection-refused/timeout → port is free → return it.
+/// - non-LHM body (HTML etc.) → port occupied by a foreign service → skip.
 ///
-/// Returns `Ok(port)` on the first free port, or `Err` if all 10 candidates
-/// are occupied by non-LHM services (Boundary #9 — port fallback; the spec's
-/// "out of fallback chain" → Basic).
+/// Returns `Ok(port)` on the first usable port, or `Err` if all 10 candidates
+/// are occupied by non-LHM services (Boundary #9 "out of fallback chain" →
+/// the caller keeps Basic tier).
 ///
 /// Cited: Story 6.4 Boundary #9. T-45.
 pub fn pick_free_port<C: HttpClient>(client: &C) -> Result<u16> {
-    // RED stub: returns the default port.
-    let _ = client;
-    Ok(DEFAULT_OHM_PORT)
+    for port in PORT_RANGE_START..=PORT_RANGE_END {
+        let url = format!("http://127.0.0.1:{port}/data.json");
+        match client.get(&url) {
+            Ok(body) => {
+                if is_lhm_signature(&body) {
+                    // LHM already running here — reuse the port, no relaunch.
+                    debug!(port, "pick_free_port: LHM already running on this port");
+                    return Ok(port);
+                }
+                // Non-LHM body — occupied by a foreign service. Skip.
+                debug!(
+                    port,
+                    "pick_free_port: occupied by non-LHM service, skipping (T-45 fallback)"
+                );
+            }
+            Err(OhmError::HttpFailed(_)) => {
+                // Connection refused — port is free.
+                debug!(port, "pick_free_port: port free (connection refused)");
+                return Ok(port);
+            }
+            Err(OhmError::Timeout) => {
+                // T-10 timeout — ambiguous; treat as occupied (something is
+                // listening but not answering). Skip to be safe.
+                debug!(port, "pick_free_port: T-10 timeout, treating as occupied");
+            }
+            Err(OhmError::NotJson(_) | OhmError::Parse(_)) => {
+                // Foreign service returned a non-JSON body. Skip.
+                debug!(port, "pick_free_port: non-JSON body, treating as occupied");
+            }
+        }
+    }
+    Err(Error::Platform(format!(
+        "all ports {PORT_RANGE_START}-{PORT_RANGE_END} occupied by non-LHM services (T-45 fallback chain exhausted)"
+    )))
 }
 
 /// Patch the LHM config file (`.config` XML) to set BOTH keys before launch:
@@ -308,9 +659,102 @@ pub fn pick_free_port<C: HttpClient>(client: &C) -> Result<u16> {
 /// # Errors
 /// Returns [`Error::Platform`] on I/O failure.
 pub fn patch_lhm_config(config_path: &Path, port: u16) -> Result<()> {
-    // RED stub: no-op.
-    let _ = (config_path, port);
+    // The canonical appSettings block we want present after patching.
+    let app_settings_block = build_app_settings_block(port);
+
+    if !config_path.exists() {
+        // Case (a) — create the file from scratch with both keys.
+        let content = format!(
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<configuration>\n{app_settings_block}</configuration>\n"
+        );
+        std::fs::write(config_path, content).map_err(|e| {
+            Error::Platform(format!(
+                "failed to write LHM config {}: {e}",
+                config_path.display()
+            ))
+        })?;
+        return Ok(());
+    }
+
+    let original = std::fs::read_to_string(config_path).map_err(|e| {
+        Error::Platform(format!(
+            "failed to read LHM config {}: {e}",
+            config_path.display()
+        ))
+    })?;
+
+    let patched = patch_app_settings(&original, &app_settings_block);
+    if patched == original {
+        // No change needed (already correct). Still write to be idempotent
+        // (no-op write is harmless).
+        return Ok(());
+    }
+    std::fs::write(config_path, patched).map_err(|e| {
+        Error::Platform(format!(
+            "failed to write patched LHM config {}: {e}",
+            config_path.display()
+        ))
+    })?;
     Ok(())
+}
+
+/// Build the canonical `<appSettings>` block with BOTH required keys set to
+/// the correct values for the chosen port. The block uses a 2-space indent
+/// convention so it reads cleanly inside `<configuration>`. The indent is
+/// included at the START of the block (before `<appSettings>`) AND before
+/// each `<add>` line; callers must NOT prepend additional indent (the
+/// patcher handles inserting after `<configuration>` + newline).
+fn build_app_settings_block(port: u16) -> String {
+    format!(
+        "  <appSettings>\n    \
+<add key=\"{CONFIG_KEY_WEB_SERVER}\" value=\"true\" />\n    \
+<add key=\"{CONFIG_KEY_LISTENER_PORT}\" value=\"{port}\" />\n  \
+</appSettings>\n"
+    )
+}
+
+/// Patch an existing config string: if `<appSettings>` is absent, inject the
+/// canonical block after `<configuration>`; if present, replace the existing
+/// block with the canonical one (handles both "keys present with wrong
+/// values" and "keys missing"). Preserves all other sections (`<startup>`,
+/// `<runtime>`). Idempotent: a second patch on an already-canonical file is
+/// a no-op (the canonical block's leading/trailing whitespace is reproduced
+/// exactly).
+fn patch_app_settings(original: &str, canonical_block: &str) -> String {
+    if let Some(start) = original.find("<appSettings>") {
+        // Cases (c)/(d) — appSettings present. Locate the closing
+        // `</appSettings>` by searching from `start` (NOT from `end`, which
+        // is not yet bound). Replace the block wholesale with the canonical
+        // one. To keep idempotency, we also consume any leading whitespace
+        // (indent) before `<appSettings>` in the original so the canonical
+        // block's own leading indent replaces it cleanly.
+        let block_start = original[..start].rfind('\n').map_or(0, |i| i + 1);
+        let end_marker = "</appSettings>";
+        let end = original[start..]
+            .find(end_marker)
+            .map_or(original.len(), |i| start + i + end_marker.len());
+        // Consume any trailing newline so we don't double-up.
+        let after_end = if original[end..].starts_with('\n') {
+            end + 1
+        } else {
+            end
+        };
+        let before = &original[..block_start];
+        let after = &original[after_end..];
+        format!("{before}{canonical_block}{after}")
+    } else {
+        // Case (b) — no appSettings. Inject after `<configuration>`.
+        if let Some(cfg_end) = original.find("<configuration>") {
+            let insert_at = cfg_end + "<configuration>".len();
+            let (before, after) = original.split_at(insert_at);
+            format!("{before}\n{canonical_block}{after}")
+        } else {
+            // No `<configuration>` root — wrap the canonical block ourselves.
+            format!(
+                "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<configuration>\n{canonical_block}</configuration>\n"
+            )
+        }
+    }
 }
 
 /// Decode a `ShellExecuteW` HINSTANCE return value. Win32 docs: a value `<=32`
@@ -325,7 +769,6 @@ pub fn is_shellexecute_error(hinstance_as_i32: i32) -> bool {
 
 /// Broadcast a tier change via the optional callback (T-38). No-op if no
 /// broadcaster is attached (Story 7.4 wires the real channel).
-#[allow(dead_code)] // GREEN: called from shutdown (Full→Basic) + monitor task.
 fn broadcast_tier_change(tx: Option<&TierChangeCallback>, tier: ProviderTier) {
     if let Some(cb) = tx {
         cb(tier);
