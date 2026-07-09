@@ -143,37 +143,51 @@ impl<B: BatteryBackend + Send> SensorProvider for BatteryAdapterGeneric<B> {
 /// when charging on AC. The adapter does NOT normalize the sign — the GUI
 /// formats it with the sign visible, which is the diagnostic value.
 fn readings_from_snapshot(snapshots: &[BatterySnapshot]) -> Vec<Reading> {
-    // RED STUB — deliberately wrong. Returns empty regardless of input so the
-    // positive-assertion tests in the test module fail (TDD RED state per G1).
-    // The GREEN commit replaces this with the real translation (percent,
-    // state-as-f64, power-rate) plus the T-20 finite filter.
-    //
-    // `let _ = ...` references satisfy clippy's unused-import / unused-variable
-    // lints while the stub is in place; these references are removed in GREEN.
-    let _ = (
-        MetricKind::BatteryPercent,
-        MetricKind::BatteryState,
-        MetricKind::BatteryPowerRate,
-        Unit::Percent,
-        Unit::Watts,
-    );
-    let _ = snapshots;
-    let _ = finite;
-    let _ = snapshot_state_to_domain;
-    let _ = (
-        BatterySnapshotState::Charging,
-        BatterySnapshotState::Discharging,
-        BatterySnapshotState::Idle,
-        BatterySnapshotState::Unknown,
-    );
-    let _ = SensorId::new("battery", "stub");
-    let _ = Reading::new(
-        SensorId::new("battery", "stub"),
-        MetricKind::BatteryPercent,
-        0.0,
-        Unit::Percent,
-    );
-    Vec::new()
+    // One battery → up to 3 readings (percent, state, power-rate). The state
+    // reading is ALWAYS finite (it's an ordinal 0..=3); percent and rate can
+    // be NaN on some drivers, so they go through the T-20 finite filter.
+    let mut out = Vec::with_capacity(snapshots.len() * 3);
+    for s in snapshots {
+        let inst = s.index.to_string();
+
+        // --- BatteryPercent (0..=100, Unit::Percent) ---
+        if let Some(pct) = finite(s.percent) {
+            out.push(Reading::new(
+                SensorId::new("battery", inst.clone()),
+                MetricKind::BatteryPercent,
+                pct,
+                Unit::Percent,
+            ));
+        }
+
+        // --- BatteryState (ordinal f64, Unit::Count) ---
+        // The value is the BatteryState ordinal (Charging=0.0, Discharging=1.0,
+        // Idle=2.0, Unknown=3.0) per sidebar_domain::BatteryState::to_value.
+        // It is ALWAYS finite (an ordinal 0..=3), so no finite-filter needed.
+        // The unit carries no physical dimension (it's a wire-format code); we
+        // use Unit::Count as the canonical "unitless counter" per §5.1.
+        let state_value = snapshot_state_to_domain(s.state).to_value();
+        out.push(Reading::new(
+            SensorId::new("battery", inst.clone()),
+            MetricKind::BatteryState,
+            state_value,
+            Unit::Count,
+        ));
+
+        // --- BatteryPowerRate (Watts, sign = discharging direction) ---
+        // Per Boundary #3: pass through verbatim. Positive = discharging on
+        // most platforms, negative = charging on AC. The adapter MUST NOT
+        // normalize the sign; NaN is filtered per T-20.
+        if let Some(rate) = finite(s.energy_rate_watts) {
+            out.push(Reading::new(
+                SensorId::new("battery", inst),
+                MetricKind::BatteryPowerRate,
+                rate,
+                Unit::Watts,
+            ));
+        }
+    }
+    out
 }
 
 /// Returns `Some(v)` only when `v` is finite; `None` otherwise.
