@@ -35,15 +35,9 @@
 //!   all unsafe is in `backend.rs`, concentrated behind the trait),
 //!   G9 (raw counters here; deltas downstream), G15 (mutex poison recovery),
 //!   G16 (no panic on missing data), G19 (HITL on new unsafe)
-//!
-//! NOTE: This is the RED-phase stub. `readings_from_snapshot` returns an
-//! empty `Vec` so all positive-assertion TDD contract tests fail. The GREEN
-//! commit fills in the translation. Cited: guardrails.md G1.
 
 use std::sync::Mutex;
 
-#[allow(unused_imports)]
-// SensorId + Unit are unused during RED (stub returns empty); GREEN uses them.
 use sidebar_domain::reading::{MetricKind, Reading, SensorId, Unit};
 use sidebar_sensor::descriptor::{CostClass, ProviderTier, SensorDescriptor};
 use sidebar_sensor::provider::SensorProvider;
@@ -138,16 +132,40 @@ impl<B: NetBackend + Send> SensorProvider for NetAdapterGeneric<B> {
 /// them as `u64` directly from the snapshot — see AD-12 — so this is only a
 /// display-channel concern.)
 fn readings_from_snapshot(s: &backend::NetSnapshot) -> Vec<Reading> {
-    // RED-phase stub: returns empty Vec. GREEN commit fills in the per-NIC
-    // NetRxBytes + NetTxBytes translation. Cited: guardrails.md G1.
-    let _ = s;
-    Vec::new()
+    let mut out = Vec::with_capacity(s.nics.len() * 2);
+    for nic in &s.nics {
+        // LUID-as-decimal-string is the stable NIC identifier (AD-12). The
+        // u64 LUID renders exactly within f64's 2^53 exact-integer range
+        // (real LUIDs are 48-bit), so the cast is loss-free.
+        #[allow(clippy::cast_precision_loss)]
+        let rx_f = nic.rx_bytes as f64;
+        #[allow(clippy::cast_precision_loss)]
+        let tx_f = nic.tx_bytes as f64;
+        // Apply the T-20 finite filter (counters are u64 → never NaN, but
+        // defense-in-depth: matches the other adapters' policy).
+        if let Some(rx) = finite(rx_f) {
+            out.push(Reading::new(
+                SensorId::new("nic", nic.luid.to_string()),
+                MetricKind::NetRxBytes,
+                rx,
+                Unit::Bytes,
+            ));
+        }
+        if let Some(tx) = finite(tx_f) {
+            out.push(Reading::new(
+                SensorId::new("nic", nic.luid.to_string()),
+                MetricKind::NetTxBytes,
+                tx,
+                Unit::Bytes,
+            ));
+        }
+    }
+    out
 }
 
 /// Returns `Some(v)` only when `v` is finite; `None` otherwise. T-20: adapters
 /// MUST omit non-finite readings rather than emit `NaN`/`±Inf`.
 #[inline]
-#[allow(dead_code)] // RED-phase stub does not call this yet; GREEN commit uses it.
 fn finite(v: f64) -> Option<f64> {
     if v.is_finite() {
         Some(v)
@@ -409,11 +427,9 @@ mod tests {
         );
     }
 
-    // ----- Silent unused-warning guard (RED phase only) -----
+    // ----- Helper sanity (T-20 finite filter) -----
 
-    /// During the RED phase `finite` is intentionally unused — keep it
-    /// referenced so the workspace lint does not deny the build. GREEN
-    /// removes this test along with the `_ = s` placeholder.
+    /// The `finite` helper is the T-20 contract enforcer — quick sanity test.
     #[test]
     fn finite_helper_is_sane() {
         assert_eq!(finite(0.0), Some(0.0));
