@@ -14,6 +14,8 @@ description = "sidebar domain types + pure logic + shared Error (Story 0.6)"
 thiserror = { workspace = true }       # MIT/Apache-2.0 — Error derive
 chrono = { workspace = true }          # MIT/Apache-2.0 — NaiveDate for billing cycle arithmetic (Story 1.4)
 tracing = { workspace = true }         # MIT — warn! for CycleStartDay clamp (Story 1.4)
+serde = { workspace = true }           # MIT/Apache-2.0 — Config struct derive (Story 1.5)
+toml = { workspace = true }            # MIT/Apache-2.0 — config.toml parse (Story 1.5)
 
 [lints]
 workspace = true

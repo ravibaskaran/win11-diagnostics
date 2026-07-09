@@ -89,6 +89,18 @@ impl From<std::io::Error> for Error {
     }
 }
 
+impl From<toml::de::Error> for Error {
+    fn from(e: toml::de::Error) -> Self {
+        Self::Toml(e.to_string())
+    }
+}
+
+impl From<toml::ser::Error> for Error {
+    fn from(e: toml::ser::Error) -> Self {
+        Self::Toml(e.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! Story 0.6 TDD contract tests.
