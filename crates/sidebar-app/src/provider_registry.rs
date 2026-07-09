@@ -70,20 +70,20 @@ use sidebar_sensor::provider::SensorProvider;
 ///   `tracing::warn!`. No adapter in v1 ships with those cost classes today,
 ///   but the filter is the second line of defense (Story 2.3 is the first).
 #[must_use]
-pub fn build_registry(_active_tier: ActiveTier) -> Vec<Arc<dyn SensorProvider>> {
-    // RED-phase stub: returns empty. GREEN commit fills in adapter construction
-    // + delegation to `filter_providers`. Cited: guardrails.md G1 (RED first).
-    // Reference the constructors so the imports remain "used" through the RED
-    // phase (the GREEN commit wires them into a real vec).
-    let _ = (
-        SysinfoAdapter::new,
-        BatteryAdapter::new,
-        PdhAdapter::new,
-        NvmlAdapter::new,
-        NetAdapter::new,
-        OhmAdapter::new,
-    );
-    Vec::new()
+pub fn build_registry(active_tier: ActiveTier) -> Vec<Arc<dyn SensorProvider>> {
+    // Order matters: it's the poller's iteration order. Group Basic adapters
+    // first (they always run in both tiers), then Both (always runs), then
+    // Full-only (ohm). The classifier decides which survive; this ordering
+    // keeps the survivors' positions stable across tier switches.
+    let providers: Vec<Arc<dyn SensorProvider>> = vec![
+        Arc::new(SysinfoAdapter::new()),
+        Arc::new(BatteryAdapter::new()),
+        Arc::new(PdhAdapter::new()),
+        Arc::new(NvmlAdapter::new()),
+        Arc::new(NetAdapter::new()),
+        Arc::new(OhmAdapter::new()),
+    ];
+    filter_providers(providers, active_tier)
 }
 
 /// Filter a list of providers by the v1 classifier (Story 2.3).
@@ -97,18 +97,36 @@ pub fn build_registry(_active_tier: ActiveTier) -> Vec<Arc<dyn SensorProvider>> 
 /// Keeping it separate from [`build_registry`] means the tier logic is
 /// testable without constructing real adapters (which would make tests
 /// machine-dependent).
-#[allow(dead_code)] // RED-phase stub is unused outside tests until GREEN wires build_registry.
 fn filter_providers(
-    _providers: Vec<Arc<dyn SensorProvider>>,
-    _active_tier: ActiveTier,
+    providers: Vec<Arc<dyn SensorProvider>>,
+    active_tier: ActiveTier,
 ) -> Vec<Arc<dyn SensorProvider>> {
-    // RED-phase stub: returns empty. The GREEN commit implements the
-    // descriptor-collection + classify_for_v1 + pointer-equality filter.
-    // Cited: guardrails.md G1 (RED first).
-    // Reference classify_for_v1 + SensorDescriptor so the imports stay "used"
-    // through the RED phase; the GREEN commit wires them into the real filter.
-    let _ = classify_for_v1 as for<'a> fn(&'a [&'a SensorDescriptor], ActiveTier) -> Vec<&'a SensorDescriptor>;
-    Vec::new()
+    // Collect descriptors by reference. The descriptors outlive the call:
+    // each adapter returns a `&'static SensorDescriptor` (declared `const` in
+    // its lib.rs). For mock providers in tests the descriptor is leaked for
+    // address stability — see the test helpers.
+    let descriptors: Vec<&SensorDescriptor> = providers.iter().map(|p| p.descriptor()).collect();
+    let accepted: Vec<&SensorDescriptor> = classify_for_v1(&descriptors, active_tier);
+
+    // Capture accepted descriptor addresses as raw pointers so `accepted` no
+    // longer borrows `providers`. This lets us move `providers` into the
+    // filter below. The descriptors themselves are `&'static` (adapters) or
+    // leaked (test stubs), so the raw pointers remain valid through the
+    // filter call.
+    let accepted_ptrs: Vec<*const SensorDescriptor> =
+        accepted.iter().map(|d| std::ptr::from_ref(*d)).collect();
+
+    // Walk the providers in order, retain each whose descriptor pointer is in
+    // the accepted set. Pointer-equality is exactly what we want: each
+    // adapter's descriptor is a unique `const`, and the classifier returned
+    // references to the SAME descriptors we passed in (no cloning).
+    providers
+        .into_iter()
+        .filter(|p| {
+            let ptr = std::ptr::from_ref(p.descriptor());
+            accepted_ptrs.iter().any(|&d| std::ptr::eq(d, ptr))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -283,15 +301,13 @@ mod tests {
         ));
 
         // Build at Basic — ohm dropped.
-        let basic_providers: Vec<Arc<dyn SensorProvider>> =
-            vec![stub(sysinfo_d), stub(ohm_d)];
+        let basic_providers: Vec<Arc<dyn SensorProvider>> = vec![stub(sysinfo_d), stub(ohm_d)];
         let basic_registry = filter_providers(basic_providers, ActiveTier::Basic);
         assert_eq!(basic_registry.len(), 1);
         assert_eq!(basic_registry[0].descriptor().name, "sysinfo");
 
         // Re-build at Full — ohm now admitted.
-        let full_providers: Vec<Arc<dyn SensorProvider>> =
-            vec![stub(sysinfo_d), stub(ohm_d)];
+        let full_providers: Vec<Arc<dyn SensorProvider>> = vec![stub(sysinfo_d), stub(ohm_d)];
         let full_registry = filter_providers(full_providers, ActiveTier::Full);
         assert_eq!(full_registry.len(), 2, "Full tier rebuild adds ohm");
         let names: Vec<&str> = full_registry.iter().map(|p| p.descriptor().name).collect();
@@ -307,10 +323,7 @@ mod tests {
     #[test]
     fn empty_registry_returns_empty_vec() {
         let filtered = filter_providers(Vec::new(), ActiveTier::Full);
-        assert!(
-            filtered.is_empty(),
-            "empty input → empty output, no panic"
-        );
+        assert!(filtered.is_empty(), "empty input → empty output, no panic");
     }
 
     // ----- Boundary #4: Idempotency (F6) -----
