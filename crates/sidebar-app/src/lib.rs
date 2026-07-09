@@ -8,6 +8,7 @@
 //! Future stories add GUI/poller wiring modules here.
 
 pub mod parse_threshold;
+pub mod provider_registry;
 
 /// Story 0.1 smoke marker (kept for the workspace-shape test contract).
 #[must_use]
