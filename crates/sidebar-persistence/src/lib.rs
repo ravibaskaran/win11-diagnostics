@@ -1,9 +1,15 @@
 //! `sidebar-persistence` — SQLite-backed bandwidth state store (AD-11, Stories 4.1-4.3).
 //!
-//! Story 0.1 stub. Real functionality lands in subsequent stories per the
-//! backlog critical path.
+//! Owns all SQLite access in the workspace (guardrail G21). Story 4.1
+//! delivers schema initialization ([`schema::init`]); Stories 4.2/4.3 add
+//! the read/write/rollover primitives on top.
+
+pub mod schema;
 
 /// Story 0.1 smoke marker — proves the crate is reachable via `cargo test`.
+///
+/// Retained from the Story 0.1 stub so other crates that may probe for
+/// presence continue to compile. Real functionality lives in [`schema`].
 #[must_use]
 pub fn crate_present() -> bool {
     true
