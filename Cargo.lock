@@ -816,6 +816,13 @@ version = "0.0.0"
 [[package]]
 name = "sidebar-adapter-pdh"
 version = "0.0.0"
+dependencies = [
+ "mockall",
+ "sidebar-domain",
+ "sidebar-sensor",
+ "tracing",
+ "windows",
+]
 
 [[package]]
 name = "sidebar-adapter-sysinfo"
