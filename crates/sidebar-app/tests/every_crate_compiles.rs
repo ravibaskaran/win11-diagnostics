@@ -27,7 +27,18 @@ fn every_workspace_member_has_at_least_one_source_file() {
 
     let mut missing: Vec<String> = Vec::new();
 
+    // Only check workspace members, not transitive deps (whose source files
+    // may be absent from the cargo registry cache on fresh clones).
+    let workspace_member_ids: std::collections::HashSet<&str> = metadata
+        .workspace_members
+        .iter()
+        .map(|id| id.repr.as_str())
+        .collect();
+
     for pkg in &metadata.packages {
+        if !workspace_member_ids.contains(pkg.id.repr.as_str()) {
+            continue; // skip external deps
+        }
         for target in &pkg.targets {
             let src_path = &target.src_path;
             if !src_path.as_std_path().exists() {

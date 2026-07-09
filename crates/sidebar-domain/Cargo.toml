@@ -12,6 +12,8 @@ description = "sidebar domain types + pure logic + shared Error (Story 0.6)"
 # sidebar-domain stays pure-Rust (no IO) per architecture.md AD-4.
 [dependencies]
 thiserror = { workspace = true }       # MIT/Apache-2.0 — Error derive
+chrono = { workspace = true }          # MIT/Apache-2.0 — NaiveDate for billing cycle arithmetic (Story 1.4)
+tracing = { workspace = true }         # MIT — warn! for CycleStartDay clamp (Story 1.4)
 
 [lints]
 workspace = true
