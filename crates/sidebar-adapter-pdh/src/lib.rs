@@ -44,8 +44,12 @@ const PDH_METRICS: &[MetricKind] = &[
 ];
 
 /// Descriptor for the PDH adapter.
-const DESCRIPTOR: SensorDescriptor =
-    SensorDescriptor::new("pdh-disk", CostClass::Lightweight, PDH_METRICS, ProviderTier::Basic);
+const DESCRIPTOR: SensorDescriptor = SensorDescriptor::new(
+    "pdh-disk",
+    CostClass::Lightweight,
+    PDH_METRICS,
+    ProviderTier::Basic,
+);
 
 /// PDH-backed adapter. Generic over `B: PdhBackend` so tests can substitute a
 /// mock. The production alias [`PdhAdapter`] fixes `B = RealPdhBackend`.
@@ -109,22 +113,48 @@ impl<B: PdhBackend + Send> SensorProvider for PdhAdapterGeneric<B> {
 
 /// Translate a [`backend::PdhSnapshot`] into the canonical `Vec<Reading>`.
 ///
-/// # RED-phase stub
+/// Each drive yields a `DiskReadBytesPerSec` + `DiskWriteBytesPerSec` pair,
+/// both with `SensorId` category `"drive"` and instance = the PDH drive name
+/// (e.g. `"0 C:"`). Both readings are emitted even at 0.0 — Boundary #2
+/// contract: zero-activity drives are reported, not omitted.
 ///
-/// Returns an empty `Vec` — deliberately wrong so every TDD contract test
-/// that asserts on emitted readings fails. The GREEN commit replaces this
-/// with the real translation (per-drive `DiskReadBytesPerSec` +
-/// `DiskWriteBytesPerSec` with the T-20 finite-value filter). Cited: G1.
-fn readings_from_snapshot(_s: &backend::PdhSnapshot) -> Vec<Reading> {
-    // Stub: reference imported types so clippy treats them as used (avoids
-    // `unused_imports` under `-D warnings`). The empty Vec makes every
-    // positive-assertion test fail — that's the RED state.
-    let _ = (
-        SensorId::new("stub", ""),
-        MetricKind::DiskReadBytesPerSec,
-        Unit::Bytes,
-    );
-    Vec::new()
+/// # Finite-value policy (T-20)
+///
+/// Any reading whose `value` is `NaN` or `±Inf` is OMITTED. PDH cannot
+/// produce NaN in practice (it reports `largeValue: i64`), but the defense
+/// documents the policy and guards against a future format change.
+fn readings_from_snapshot(s: &backend::PdhSnapshot) -> Vec<Reading> {
+    let mut out = Vec::with_capacity(s.drives.len() * 2);
+    for d in &s.drives {
+        if let Some(read) = finite(d.read_bytes_per_sec) {
+            out.push(Reading::new(
+                SensorId::new("drive", d.instance.clone()),
+                MetricKind::DiskReadBytesPerSec,
+                read,
+                Unit::Bytes,
+            ));
+        }
+        if let Some(write) = finite(d.write_bytes_per_sec) {
+            out.push(Reading::new(
+                SensorId::new("drive", d.instance.clone()),
+                MetricKind::DiskWriteBytesPerSec,
+                write,
+                Unit::Bytes,
+            ));
+        }
+    }
+    out
+}
+
+/// Returns `Some(v)` only when `v` is finite; `None` otherwise. T-20: adapters
+/// MUST omit non-finite readings rather than emit `NaN`/`±Inf`.
+#[inline]
+fn finite(v: f64) -> Option<f64> {
+    if v.is_finite() {
+        Some(v)
+    } else {
+        None
+    }
 }
 
 // Re-export key types for downstream consumers.
@@ -165,7 +195,7 @@ mod tests {
         PdhSnapshot {
             drives: vec![DiskSnapshot {
                 instance: "0 C:".to_string(),
-                read_bytes_per_sec: 1_048_576.0, // 1 MB/s
+                read_bytes_per_sec: 1_048_576.0,  // 1 MB/s
                 write_bytes_per_sec: 2_097_152.0, // 2 MB/s
             }],
         }
@@ -265,8 +295,7 @@ mod tests {
     #[test]
     fn adapter_translates_backend_snapshot() {
         let mut mock = MockFakeBackend::new();
-        mock.expect_refresh_and_snapshot()
-            .returning(one_drive);
+        mock.expect_refresh_and_snapshot().returning(one_drive);
         let adapter = PdhAdapterGeneric::with_backend(mock);
         let readings = adapter.read_all();
         assert_eq!(
@@ -335,7 +364,8 @@ mod tests {
             // First call: poisoned is false → swap returns false → assert fails → panic.
             // Second+ call: poisoned is true → swap returns true → assert passes.
             assert!(
-                self.poisoned.swap(true, std::sync::atomic::Ordering::SeqCst),
+                self.poisoned
+                    .swap(true, std::sync::atomic::Ordering::SeqCst),
                 "poison on first call"
             );
             PdhSnapshot::default()
