@@ -6,6 +6,7 @@
 //! the `user_version` migration module.
 
 pub mod bandwidth_repo;
+pub mod migrate;
 pub mod schema;
 
 /// Story 0.1 smoke marker — proves the crate is reachable via `cargo test`.
