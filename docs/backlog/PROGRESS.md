@@ -43,7 +43,7 @@ The swarm reads this file at task-startup to identify the ready set (stories who
 | 4.1 | merged | 2026-07-09T10Z | #18 | L0:6 | SQLite schema init + PRAGMAs (WAL/user_version/foreign_keys). current_cycle + bandwidth_history tables. |
 | 4.2 | merged | 2026-07-09T11Z | #21 | L0:7 | bandwidth repo (save/load/archive/prune + T-12 busy-retry). UPSERT + txn-wrapped archive. |
 | 4.3 | merged | 2026-07-09T11Z | #22 | L0:4 | migration (v0→v1 via user_version registry). Epic 4 COMPLETE. |
-| 5.1 | pending | — | — | — | — |
+| 5.1 | merged | 2026-07-09T12Z | #23 | L0:6 | MonthlyAccumulator (in-memory, T-23 wraparound). F7 proptest. Pure domain. |
 | 5.2 | pending | — | — | — | — |
 | 5.3 | pending | — | — | — | — |
 | 6.1 | pending | — | — | — | — |
@@ -79,8 +79,8 @@ The swarm reads this file at task-startup to identify the ready set (stories who
 
 ## Summary
 - Total stories: 59
-- Merged: 22 / 59 (37.3%) — Stories 0.1-0.7, 1.1-1.6, 2.1-2.3, 3.1-3.3, 4.1-4.3 (Epics 0+1+2+4 COMPLETE)
-- Ready for pickup: {3.4 (PR #20, HITL on unsafe), 3.5, 3.6, 5.1, 11.1-11.4}
+- Merged: 23 / 59 (39.0%) — Stories 0.1-0.7, 1.1-1.6, 2.1-2.3, 3.1-3.3, 4.1-4.3, 5.1 (Epics 0+1+2+4 COMPLETE)
+- Ready for pickup: {3.4 (PR #20, HITL on unsafe), 3.5 (unsafe→HITL), 3.6 (ureq→HITL), 5.2, 11.1-11.4}
 - Blocked on HITL: 0
 - Long-term blocked: 0
 
