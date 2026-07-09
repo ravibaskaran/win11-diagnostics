@@ -95,11 +95,7 @@ fn build_abd(hwnd: HWND, edge: AppBarEdge, callback_msg: u32) -> APPBARDATA {
 /// Story 6.2 TDD contract: `register(hwnd, edge, monitor)` calls
 /// `SHAppBarMessage` with `ABM_NEW/QUERYPOS/SETPOS`. Manual smoke §7.4
 /// items 4-6 (all four edges + multi-monitor).
-pub fn register(
-    hwnd: HWND,
-    edge: AppBarEdge,
-    monitor: MonitorHint,
-) -> Result<RECT> {
+pub fn register(hwnd: HWND, edge: AppBarEdge, monitor: MonitorHint) -> Result<RECT> {
     // The callback message the shell posts to `hwnd` for AppBar events
     // (fullscreen-app / pos-changed). Story 6.2 doesn't wire the actual
     // WindowProc; the value `WM_USER + 0x100 = 0x8100` is reserved for the
@@ -129,8 +125,8 @@ pub fn register(
     // the closest valid rect for the requested edge. The `monitor` hint
     // biases which display the shell picks when multiple are present.
     let _ = monitor; // consumed by Epic 8 when it computes the seed rect
-    // SAFETY: same `&raw mut abd` contract as ABM_NEW. QUERYPOS writes into
-    // `abd.rc` (a RECT owned by `abd`, no aliasing).
+                     // SAFETY: same `&raw mut abd` contract as ABM_NEW. QUERYPOS writes into
+                     // `abd.rc` (a RECT owned by `abd`, no aliasing).
     let query_ok = unsafe { SHAppBarMessage(ABM_QUERYPOS, &raw mut abd) };
     if query_ok == 0 {
         // QUERYPOS returning FALSE is rare (older shell); treat as failure.
@@ -250,7 +246,10 @@ mod tests {
     fn build_abd_wires_fields_correctly() {
         let hwnd = HWND(0x1234_5678 as *mut _);
         let abd = build_abd(hwnd, AppBarEdge::Right, 0x4000);
-        assert_eq!(abd.cbSize, u32::try_from(std::mem::size_of::<APPBARDATA>()).unwrap());
+        assert_eq!(
+            abd.cbSize,
+            u32::try_from(std::mem::size_of::<APPBARDATA>()).unwrap()
+        );
         assert_eq!(abd.hWnd, hwnd);
         assert_eq!(abd.uCallbackMessage, 0x4000);
         assert_eq!(abd.uEdge, ABE_RIGHT);
@@ -262,7 +261,12 @@ mod tests {
     #[test]
     fn build_abd_all_edges() {
         let hwnd = HWND(std::ptr::null_mut());
-        for edge in [AppBarEdge::Left, AppBarEdge::Top, AppBarEdge::Right, AppBarEdge::Bottom] {
+        for edge in [
+            AppBarEdge::Left,
+            AppBarEdge::Top,
+            AppBarEdge::Right,
+            AppBarEdge::Bottom,
+        ] {
             let abd = build_abd(hwnd, edge, 0);
             assert_eq!(abd.uEdge, edge.to_abe());
         }

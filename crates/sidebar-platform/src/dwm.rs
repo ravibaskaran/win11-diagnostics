@@ -45,9 +45,7 @@ use std::mem::size_of;
 
 use windows::core::BOOL;
 use windows::Win32::Foundation::HWND;
-use windows::Win32::Graphics::Dwm::{
-    DwmSetWindowAttribute, DWMWA_CLOAK, DWMWA_EXCLUDED_FROM_PEEK,
-};
+use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CLOAK, DWMWA_EXCLUDED_FROM_PEEK};
 
 use sidebar_domain::error::{Error, Result};
 
@@ -125,7 +123,10 @@ fn set_bool_attribute(
             error = %e,
             "DwmSetWindowAttribute failed"
         );
-        Error::Platform(format!("DwmSetWindowAttribute(attr={}) failed: {e}", attr.0))
+        Error::Platform(format!(
+            "DwmSetWindowAttribute(attr={}) failed: {e}",
+            attr.0
+        ))
     })
 }
 

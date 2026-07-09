@@ -48,7 +48,8 @@ pub fn set_per_monitor_v2() -> Result<()> {
     // ERROR_ACCESS_DENIED, which the `windows` crate surfaces as
     // `Err(windows::core::Error)`. We treat that specific case as success
     // (the process is already per-monitor-v2 aware — the desired end state).
-    let result = unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+    let result =
+        unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
     match result {
         Ok(()) => Ok(()),
         Err(e) => {
@@ -137,7 +138,7 @@ mod tests {
     fn per_monitor_v2_constant_is_minus_four() {
         // DPI_AWARENESS_CONTEXT wraps *mut c_void; the documented value is -4.
         // We compare via the inner isize cast.
-        let raw = DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 .0 as isize;
+        let raw = DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2.0 as isize;
         assert_eq!(raw, -4, "PER_MONITOR_AWARE_V2 must be the -4 sentinel");
     }
 
