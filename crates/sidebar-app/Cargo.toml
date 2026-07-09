@@ -9,10 +9,20 @@ publish.workspace = true
 description = "sidebar binary — Win11 hardware diagnostics sidebar"
 
 # Story 0.2: serde + serde_json needed for parse_threshold (criterion estimate.json).
-# Real GUI/poller deps land in Epics 7 + 8.
+# Story 7.1: provider registry depends on sidebar-sensor (trait + classifier) +
+# every shipped adapter (sidebar-adapter-*). These are path deps → no new
+# external licenses enter the manifest.
 [dependencies]
 serde = { workspace = true }            # MIT/Apache-2.0 — derive for Estimate
 serde_json = { workspace = true }       # MIT/Apache-2.0 — NFR-1 bench parsing
+sidebar-domain = { path = "../sidebar-domain" }   # internal — Reading, MetricKind (transitively used by adapters)
+sidebar-sensor = { path = "../sidebar-sensor" }   # internal — SensorProvider trait, SensorDescriptor, classify_for_v1
+sidebar-adapter-sysinfo = { path = "../sidebar-adapter-sysinfo" }  # internal — SysinfoAdapter (Tier::Basic)
+sidebar-adapter-battery = { path = "../sidebar-adapter-battery" }  # internal — BatteryAdapter (Tier::Basic)
+sidebar-adapter-pdh = { path = "../sidebar-adapter-pdh" }          # internal — PdhAdapter (Tier::Basic)
+sidebar-adapter-net = { path = "../sidebar-adapter-net" }          # internal — NetAdapter (Tier::Both)
+sidebar-adapter-nvml = { path = "../sidebar-adapter-nvml" }        # internal — NvmlAdapter (Tier::Basic, NVML-unavailable-safe)
+sidebar-adapter-ohm = { path = "../sidebar-adapter-ohm" }          # internal — OhmAdapter (Tier::Full)
 
 # Dev-only deps for workspace-level integration tests (tests/*.rs in this
 # crate) + parse_threshold unit tests.
