@@ -6,21 +6,29 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
-description = "sidebar crate: sidebar-platform — Win32 platform layer (window, DWM, AppBar, DPI) — Stories 6.1/6.2/6.3"
+description = "sidebar crate: sidebar-platform — Win32 platform layer (window, DWM, AppBar, DPI, OhmSupervisor) — Stories 6.1-6.4"
 
 [dependencies]
 sidebar-domain = { path = "../sidebar-domain" }   # internal — Error::Platform for FFI failures
+sidebar-sensor = { path = "../sidebar-sensor" }   # internal — ProviderTier (OhmSupervisor probe classification, Story 6.4)
+sidebar-adapter-ohm = { path = "../sidebar-adapter-ohm" }  # internal — reuse HttpClient trait (Story 6.4 OhmSupervisor probe)
+serde_json = { workspace = true }                 # MIT OR Apache-2.0 — LHM JSON signature check in OhmSupervisor::probe (Story 6.4)
 windows = { workspace = true, features = [
-    "Win32_Foundation",                # HWND, BOOL, RECT, LPARAM
+    "Win32_Foundation",                # HWND, BOOL, RECT, HANDLE, CloseHandle
     "Win32_Graphics_Dwm",              # DwmSetWindowAttribute + DWMWA_* (peek excl, cloak)
     "Win32_UI_WindowsAndMessaging",    # SetWindowPos + HWND_TOPMOST + SWP_* (window.rs)
-    "Win32_UI_Shell",                  # SHAppBarMessage + APPBARDATA + ABM_*/ABE_* (appbar.rs)
+    "Win32_UI_Shell",                  # SHAppBarMessage + APPBARDATA + ABM_*/ABE_* (appbar.rs) + ShellExecuteW (ohm_supervisor.rs)
     "Win32_UI_HiDpi",                  # SetProcessDpiAwarenessContext + GetDpiForWindow (dpi.rs)
-] }                                    # MIT OR Apache-2.0 — Win32 FFI (DWM peek/cloak, AppBar, SetWindowPos, DPI v2)
+    "Win32_System_JobObjects",         # CreateJobObjectW + SetInformationJobObject + JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE (Story 6.4 G10)
+    "Win32_System_Threading",          # OpenProcess + WaitForSingleObject + PROCESS_QUERY_* (Story 6.4 monitor)
+    "Win32_System_Registry",           # SHELLEXECUTEINFOW Default impl requires this (ShellExecuteExW, Story 6.4)
+    "Win32_Security",                  # SECURITY_ATTRIBUTES (required by CreateJobObjectW signature, Story 6.4)
+] }                                    # MIT OR Apache-2.0 — Win32 FFI (DWM peek/cloak, AppBar, SetWindowPos, DPI v2, OhmSupervisor)
 tracing = { workspace = true }         # MIT — debug!/warn! for platform diagnostics
 
 [dev-dependencies]
-mockall = { workspace = true }         # MIT OR Apache-2.0 — reserved for trait seams (Story 6.x smoke tests are real-FFI #[ignore])
+mockall = { workspace = true }         # MIT OR Apache-2.0 — MockHttpClient for OhmSupervisor probe tests (Story 6.4)
+tempfile = { workspace = true }        # MIT OR Apache-2.0 — TempDir for LHM config-write tests (F1, Story 6.4)
 
 [lints]
 workspace = true

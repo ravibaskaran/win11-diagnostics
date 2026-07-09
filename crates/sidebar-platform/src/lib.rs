@@ -21,6 +21,7 @@
 pub mod appbar;
 pub mod dpi;
 pub mod dwm;
+pub mod ohm_supervisor;
 pub mod window;
 
 /// Story 0.1 smoke marker — proves the crate is reachable via `cargo test`.
