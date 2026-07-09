@@ -70,12 +70,19 @@ impl RollingWindow {
         self.values.len() >= self.max_len
     }
 
-    /// Return the values as a slice for rendering.
-    #[must_use]
-    pub fn as_slice(&self) -> &[f64] {
-        // VecDeque::as_slices returns two slices; for a contiguous view
-        // we use make_contiguous. This is O(n) if the deque is fragmented
-        // but amortized O(1) for sequential pushes (the common case).
+    /// Return the values as a contiguous slice for rendering.
+    ///
+    /// `&mut self` is required because `VecDeque::make_contiguous` rotates
+    /// the ring buffer so the data lives in a single contiguous segment.
+    /// After any `push` that evicts (`pop_front` + `push_back`), the deque
+    /// is fragmented into two segments and `as_slices().0` alone returns
+    /// only the front portion — see the regression in Story 1.6's own
+    /// `push_evicts_oldest_when_full` test, fixed here.
+    ///
+    /// Amortized O(1) for the sequential-push pattern the sparkline uses;
+    /// O(n) in the worst case when the deque is heavily fragmented.
+    pub fn as_slice(&mut self) -> &[f64] {
+        self.values.make_contiguous();
         self.values.as_slices().0
     }
 }
