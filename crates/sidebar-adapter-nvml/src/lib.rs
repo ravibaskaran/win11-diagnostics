@@ -41,12 +41,7 @@
 
 use std::sync::Mutex;
 
-use sidebar_domain::reading::{MetricKind, Reading};
-// `SensorId` + `Unit` are used inside `readings_from_snapshot` once GREEN
-// lands; the RED stub returns `Vec::new()` so they're unused for now. Import
-// them under `#[allow(unused_imports)]` to keep the GREEN commit minimal.
-#[allow(unused_imports)]
-use sidebar_domain::reading::{SensorId, Unit};
+use sidebar_domain::reading::{MetricKind, Reading, SensorId, Unit};
 use sidebar_sensor::descriptor::{CostClass, ProviderTier, SensorDescriptor};
 use sidebar_sensor::provider::SensorProvider;
 
@@ -157,11 +152,57 @@ impl<B: NvmlBackend + Send> SensorProvider for NvmlAdapterGeneric<B> {
 /// one. This is Boundary #4 ("NVML error mid-poll → partial readings,
 /// logged").
 fn readings_from_snapshot(s: &backend::NvmlSnapshot) -> Vec<Reading> {
-    // STUB — Story 3.2 RED phase. Returns empty so the mock-based positive
-    // tests fail (RED). GREEN phase implements per-GPU GpuUtilization +
-    // GpuTemperature with the T-20 finite filter.
-    let _ = s;
-    Vec::new()
+    // 1 GPU × 2 metrics (util + temp) is the common case; multi-GPU machines
+    // scale linearly. The capacity is an upper bound — the T-20 finite filter
+    // may drop partial-failure entries.
+    let mut out = Vec::with_capacity(s.gpus.len() * 2);
+
+    for (index, gpu) in s.gpus.iter().enumerate() {
+        // Instance is the GPU index as a string ("0", "1", ...). NVML
+        // enumerates devices positionally; the index is stable within a boot
+        // session (per nvml-wrapper docs, no guarantee across reboots, but
+        // v1 doesn't persist readings across boots anyway).
+        let instance = index.to_string();
+
+        // Utilization % (0–100). NaN here means `utilization_rates()`
+        // failed in the backend — drop the entry per T-20.
+        if let Some(u) = finite(gpu.utilization_pct) {
+            out.push(Reading::new(
+                SensorId::new("gpu", instance.clone()),
+                MetricKind::GpuUtilization,
+                u,
+                Unit::Percent,
+            ));
+        }
+
+        // Temperature (°C). NaN here means `temperature()` failed — drop
+        // per T-20. This is the Boundary #4 contract: if util succeeded but
+        // temp failed, only the util reading is emitted (partial readings).
+        if let Some(t) = finite(gpu.temperature_c) {
+            out.push(Reading::new(
+                SensorId::new("gpu", instance),
+                MetricKind::GpuTemperature,
+                t,
+                Unit::Celsius,
+            ));
+        }
+    }
+
+    out
+}
+
+/// Returns `Some(v)` only when `v` is finite; `None` otherwise.
+///
+/// T-20: adapters MUST omit non-finite readings rather than emit `NaN`/`±Inf`.
+/// The `format_*` module renders `"--"` for missing readings; emitting NaN
+/// here would break sorting, averaging, and persistence.
+#[inline]
+fn finite(v: f64) -> Option<f64> {
+    if v.is_finite() {
+        Some(v)
+    } else {
+        None
+    }
 }
 
 // Re-export key types for downstream consumers (provider registry, poller).
