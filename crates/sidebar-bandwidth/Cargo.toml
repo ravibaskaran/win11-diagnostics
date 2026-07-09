@@ -9,11 +9,17 @@ publish.workspace = true
 description = "sidebar bandwidth accountant: accumulate + flush + rollover (Stories 5.1-5.3)"
 
 [dependencies]
-sidebar-domain = { path = "../sidebar-domain" }   # internal — Reading filtering (NetRxBytes/NetTxBytes)
-chrono = { workspace = true }                      # MIT OR Apache-2.0 — NaiveDate for cycle_start
+sidebar-domain = { path = "../sidebar-domain" }   # internal — Reading filtering (NetRxBytes/NetTxBytes), billing cycle arithmetic
+sidebar-persistence = { path = "../sidebar-persistence" }  # internal — bandwidth_repo save/archive/prune (G21: all SQLite here)
+rusqlite = { workspace = true }                    # MIT — Connection type held by the accountant (G21: SQL funnels through sidebar-persistence)
+chrono = { workspace = true }                      # MIT OR Apache-2.0 — NaiveDateTime/NaiveDate for Clock + cycle arithmetic
+tokio = { workspace = true }                       # MIT — broadcast::Receiver + time::interval (debounce) + select
+tokio-util = { workspace = true }                  # MIT — CancellationToken (shutdown signal, T-19)
+tracing = { workspace = true }                     # MIT — structured logging (G15 flush-error logging)
 
 [dev-dependencies]
 proptest = { workspace = true }                    # MIT OR Apache-2.0 — property tests for wraparound (F7)
+tempfile = { workspace = true }                    # MIT OR Apache-2.0 — TempDir fixture (F1)
 
 [lints]
 workspace = true
