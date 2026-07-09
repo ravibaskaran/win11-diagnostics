@@ -44,6 +44,9 @@
 //! - PRD.md R11 (crash-recovery via journal rollback)
 //! - fixture F1 (TempDir), F6 (idempotency of `schema::init`)
 
+use std::thread;
+use std::time::Duration;
+
 use rusqlite::Connection;
 use sidebar_domain::error::{Error, Result};
 
@@ -51,13 +54,11 @@ use sidebar_domain::error::{Error, Result};
 ///
 /// `5` attempts = 1 initial try + 4 retries. With the backoff schedule
 /// below, the total worst-case sleep is `10+20+40+80+160 = 310 ms`.
-#[allow(dead_code, reason = "RED: referenced only from tests; GREEN impl of with_busy_retry uses it")]
 const BUSY_RETRY_ATTEMPTS: u8 = 5;
 
 /// Exponential backoff schedule for SQLITE_BUSY (T-12). Indexed by attempt
 /// number (0-indexed): the n-th retry sleeps `BACKOFF_MS[n]` ms. Total wait
 /// across all 4 retries = `10+20+40+80+160 = 310 ms`.
-#[allow(dead_code, reason = "RED: referenced only from tests; GREEN impl of with_busy_retry uses it")]
 const BACKOFF_MS: [u64; 5] = [10, 20, 40, 80, 160];
 
 /// One row of `current_cycle`, returned by [`load_current_cycle`].
@@ -95,16 +96,40 @@ pub struct CurrentCycleRow {
 /// Returns [`Error::Sqlite`] if the UPSERT fails, including `SQLITE_BUSY`
 /// after the T-12 retry ceiling is exhausted.
 pub fn save_accumulator(
-    _conn: &Connection,
-    _adapter_luid: i64,
-    _adapter_name: &str,
-    _rx_bytes: i64,
-    _tx_bytes: i64,
-    _cycle_start: &str,
-    _updated_at: &str,
+    conn: &Connection,
+    adapter_luid: i64,
+    adapter_name: &str,
+    rx_bytes: i64,
+    tx_bytes: i64,
+    cycle_start: &str,
+    updated_at: &str,
 ) -> Result<()> {
-    // RED stub — deliberately does nothing. Tests assert byte-equal reload.
-    Ok(())
+    // UPSERT via INSERT ... ON CONFLICT(adapter_luid) DO UPDATE. The
+    // primary-key conflict target is the LUID (AD-11); on conflict we
+    // overwrite name/bytes/cycle/timestamp. Wrapped in the T-12 busy-retry
+    // loop so SQLITE_BUSY from a concurrent writer is retried up to 5x.
+    with_busy_retry(conn, |c| {
+        c.execute(
+            "INSERT INTO current_cycle
+                (adapter_luid, adapter_name, cycle_start, rx_bytes, tx_bytes, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(adapter_luid) DO UPDATE SET
+                adapter_name = excluded.adapter_name,
+                cycle_start  = excluded.cycle_start,
+                rx_bytes     = excluded.rx_bytes,
+                tx_bytes     = excluded.tx_bytes,
+                updated_at   = excluded.updated_at",
+            rusqlite::params![
+                adapter_luid,
+                adapter_name,
+                cycle_start,
+                rx_bytes,
+                tx_bytes,
+                updated_at,
+            ],
+        )
+    })
+    .map(|_| ())
 }
 
 /// Load all `current_cycle` rows.
@@ -116,9 +141,30 @@ pub fn save_accumulator(
 ///
 /// Returns [`Error::Sqlite`] if the SELECT fails, including `SQLITE_BUSY`
 /// after the T-12 retry ceiling is exhausted.
-pub fn load_current_cycle(_conn: &Connection) -> Result<Vec<CurrentCycleRow>> {
-    // RED stub — deliberately returns empty.
-    Ok(Vec::new())
+pub fn load_current_cycle(conn: &Connection) -> Result<Vec<CurrentCycleRow>> {
+    // Prepared + executed inside the retry loop. prepare_cached gives us a
+    // statement cache per-Connection; the loop re-runs the whole
+    // prepare→execute→collect path because a SQLITE_BUSY can surface at
+    // step time, not just at prepare time.
+    with_busy_retry(conn, |c| {
+        let mut stmt = c.prepare(
+            "SELECT adapter_luid, adapter_name, cycle_start, rx_bytes, tx_bytes, updated_at
+             FROM current_cycle",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(CurrentCycleRow {
+                    adapter_luid: row.get(0)?,
+                    adapter_name: row.get(1)?,
+                    cycle_start: row.get(2)?,
+                    rx_bytes: row.get(3)?,
+                    tx_bytes: row.get(4)?,
+                    updated_at: row.get(5)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    })
 }
 
 /// Archive the current cycle: move all `current_cycle` rows into
@@ -140,14 +186,82 @@ pub fn load_current_cycle(_conn: &Connection) -> Result<Vec<CurrentCycleRow>> {
 /// Returns [`Error::Sqlite`] if any statement in the transaction fails,
 /// including `SQLITE_BUSY` after the T-12 retry ceiling is exhausted. On
 /// error the transaction is rolled back — `current_cycle` is unchanged.
-pub fn archive_cycle(
-    _conn: &Connection,
-    _cycle_end: &str,
-    _archived_at: &str,
-) -> Result<()> {
-    // RED stub — deliberately does nothing. Tests assert history gains a row
-    // and current_cycle is reset.
-    Ok(())
+pub fn archive_cycle(conn: &Connection, cycle_end: &str, archived_at: &str) -> Result<()> {
+    // The whole archive is one transaction (Story 4.2 spec). We do the
+    // transaction setup once, then run the body inside the T-12 busy-retry
+    // loop — rusqlite's Transaction is just a wrapper around BEGIN/COMMIT,
+    // so a SQLITE_BUSY on the INSERT...SELECT or the DELETE surfaces here
+    // and is retried. We use `unchecked_transaction` (takes &self) so the
+    // repo's public signature stays `&Connection` like schema::init.
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| Error::Sqlite(e.to_string()))?;
+
+    let body = |t: &rusqlite::Transaction<'_>| -> rusqlite::Result<()> {
+        // INSERT ... SELECT moves every current_cycle row into history,
+        // stamping cycle_end + archived_at. No WHERE clause → all adapters
+        // archive together (the accountant calls this once per cycle
+        // rollover, not per-adapter).
+        t.execute(
+            "INSERT INTO bandwidth_history
+                (adapter_luid, adapter_name, cycle_start, cycle_end,
+                 rx_bytes, tx_bytes, archived_at)
+             SELECT adapter_luid, adapter_name, cycle_start, ?1,
+                    rx_bytes, tx_bytes, ?2
+             FROM current_cycle",
+            rusqlite::params![cycle_end, archived_at],
+        )?;
+        // Reset current_cycle. DELETE (not UPDATE-to-zero) so load_current_cycle
+        // returns empty after archive — matches the spec's "current reset".
+        // A subsequent save_accumulator re-INSERTs the row for the new cycle.
+        t.execute("DELETE FROM current_cycle", [])?;
+        Ok(())
+    };
+
+    // Manual busy-retry around the body. We can't use with_busy_retry
+    // verbatim because the closure signature is &Transaction, not
+    // &Connection, but the retry policy is identical: 5 attempts, the
+    // documented backoff, then surface as Error::Sqlite.
+    let mut last_err: Option<rusqlite::Error> = None;
+    for attempt in 0..BUSY_RETRY_ATTEMPTS {
+        match body(&tx) {
+            Ok(()) => {
+                // Commit outside the retry loop — a BUSY on commit is rare
+                // (the write lock is held) but possible; surface as Err.
+                return tx.commit().map_err(|e| Error::Sqlite(e.to_string()));
+            }
+            Err(e) => {
+                let is_busy = matches!(
+                    e,
+                    rusqlite::Error::SqliteFailure(
+                        rusqlite::ffi::Error {
+                            code: rusqlite::ffi::ErrorCode::DatabaseBusy
+                                | rusqlite::ffi::ErrorCode::DatabaseLocked,
+                            ..
+                        },
+                        _,
+                    )
+                );
+                if is_busy && attempt + 1 < BUSY_RETRY_ATTEMPTS {
+                    // Sleep per the backoff schedule (capped at array len).
+                    let idx = usize::from(attempt).min(BACKOFF_MS.len() - 1);
+                    thread::sleep(Duration::from_millis(BACKOFF_MS[idx]));
+                    last_err = Some(e);
+                    continue;
+                }
+                // Non-busy error OR busy-exhausted → surface + return. The
+                // transaction drops here, which rusqlite turns into a
+                // ROLLBACK (preserves current_cycle).
+                return Err(Error::Sqlite(e.to_string()));
+            }
+        }
+    }
+    // Unreachable in practice — the loop always returns inside the match.
+    // Defensive: surface the last busy error if we ever fall through.
+    Err(Error::Sqlite(last_err.map_or_else(
+        || "SQLITE_BUSY: exhausted retries without resolution".to_string(),
+        |e| e.to_string(),
+    )))
 }
 
 /// Prune `bandwidth_history` to keep only the `keep` most-recent rows per
@@ -162,10 +276,28 @@ pub fn archive_cycle(
 ///
 /// Returns [`Error::Sqlite`] if the DELETE fails, including `SQLITE_BUSY`
 /// after the T-12 retry ceiling is exhausted.
-pub fn prune_history(_conn: &Connection, _keep: u32) -> Result<()> {
-    // RED stub — deliberately does nothing. Tests assert only 1 row remains
-    // per LUID when keep=1.
-    Ok(())
+pub fn prune_history(conn: &Connection, keep: u32) -> Result<()> {
+    // DELETE the rows whose rowid is NOT in the top-`keep` per LUID. The
+    // subquery picks the `keep` highest rowids for the same LUID; the outer
+    // DELETE removes everything else. Single statement = one implicit
+    // transaction (G21). keep is bound as i64 — SQLite has no u32 affinity
+    // and any realistic keep fits in i64.
+    //
+    // Edge: keep=0 deletes ALL history for every LUID. That's a valid
+    // (if aggressive) retention policy; we don't special-case it.
+    with_busy_retry(conn, |c| {
+        c.execute(
+            "DELETE FROM bandwidth_history
+             WHERE rowid NOT IN (
+                 SELECT rowid FROM bandwidth_history AS h2
+                 WHERE h2.adapter_luid = bandwidth_history.adapter_luid
+                 ORDER BY rowid DESC
+                 LIMIT ?1
+             )",
+            rusqlite::params![i64::from(keep)],
+        )
+    })
+    .map(|_| ())
 }
 
 /// Run `f` against `conn` with T-12 busy-retry.
@@ -180,14 +312,41 @@ pub fn prune_history(_conn: &Connection, _keep: u32) -> Result<()> {
 /// This is `pub(crate)` because the retry policy is an internal
 /// implementation detail — callers interact with the four public repo fns
 /// above, which all wrap their SQLite work in this helper.
-#[allow(dead_code, reason = "RED: GREEN impls of save/load/archive/prune call this")]
 pub(crate) fn with_busy_retry<T, F>(conn: &Connection, f: F) -> Result<T>
 where
     F: Fn(&Connection) -> rusqlite::Result<T>,
 {
-    // RED stub — no retry, just runs once. (Real impl lands in GREEN.)
-    let _ = (BACKOFF_MS, BUSY_RETRY_ATTEMPTS);
-    f(conn).map_err(|e| Error::Sqlite(e.to_string()))
+    let mut last_err: Option<rusqlite::Error> = None;
+    for attempt in 0..BUSY_RETRY_ATTEMPTS {
+        match f(conn) {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                let is_busy = matches!(
+                    e,
+                    rusqlite::Error::SqliteFailure(
+                        rusqlite::ffi::Error {
+                            code: rusqlite::ffi::ErrorCode::DatabaseBusy
+                                | rusqlite::ffi::ErrorCode::DatabaseLocked,
+                            ..
+                        },
+                        _,
+                    )
+                );
+                if is_busy && attempt + 1 < BUSY_RETRY_ATTEMPTS {
+                    let idx = usize::from(attempt).min(BACKOFF_MS.len() - 1);
+                    thread::sleep(Duration::from_millis(BACKOFF_MS[idx]));
+                    last_err = Some(e);
+                    continue;
+                }
+                return Err(Error::Sqlite(e.to_string()));
+            }
+        }
+    }
+    // Unreachable: the loop returns on the first Ok or the final Err.
+    Err(Error::Sqlite(last_err.map_or_else(
+        || "SQLITE_BUSY: exhausted retries without resolution".to_string(),
+        |e| e.to_string(),
+    )))
 }
 
 #[cfg(test)]
@@ -205,7 +364,9 @@ mod tests {
     //!   - guardrails.md G21 (all SQLite via sidebar-persistence)
     //!   - fixture F1 (TempDir), F6 (idempotency of schema::init)
 
-    use super::{archive_cycle, load_current_cycle, prune_history, save_accumulator, CurrentCycleRow};
+    use super::{
+        archive_cycle, load_current_cycle, prune_history, save_accumulator, CurrentCycleRow,
+    };
     use rusqlite::Connection;
     use tempfile::TempDir;
 
@@ -247,7 +408,10 @@ mod tests {
         assert_eq!(row.cycle_start, "2026-07-01", "cycle_start round-trips");
         assert_eq!(row.rx_bytes, 1_000_000, "rx_bytes byte-equal");
         assert_eq!(row.tx_bytes, 2_000_000, "tx_bytes byte-equal");
-        assert_eq!(row.updated_at, "2026-07-01T12:00:00", "updated_at round-trips");
+        assert_eq!(
+            row.updated_at, "2026-07-01T12:00:00",
+            "updated_at round-trips"
+        );
     }
 
     // -----------------------------------------------------------------
@@ -453,7 +617,8 @@ mod tests {
         // future edit that drifts from "5 attempts, ≤310 ms total" is
         // caught by the test suite rather than only by code review.
         assert_eq!(
-            super::BUSY_RETRY_ATTEMPTS, 5,
+            super::BUSY_RETRY_ATTEMPTS,
+            5,
             "T-12: 5 retry attempts (1 initial + 4 retries)"
         );
         let total_ms: u64 = super::BACKOFF_MS.iter().sum();
