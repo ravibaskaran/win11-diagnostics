@@ -1,0 +1,123 @@
+[
+  {
+    "id": "/",
+    "text": "root",
+    "imageindex": 0,
+    "type": "Node",
+    "children": [
+      {
+        "id": "/amdcpu/0",
+        "text": "AMD Ryzen AI 7 350",
+        "imageindex": 3,
+        "type": "Node",
+        "children": [
+          {
+            "id": "/amdcpu/0/temperature/0",
+            "text": "CPU Package",
+            "imageindex": 7,
+            "type": "Sensor",
+            "min": 42.0,
+            "value": 65.0,
+            "max": 88.0
+          },
+          {
+            "id": "/amdcpu/0/power/0",
+            "text": "Package Power",
+            "imageindex": 9,
+            "type": "Sensor",
+            "min": 4.0,
+            "value": 18.5,
+            "max": 65.0
+          },
+          {
+            "id": "/amdcpu/0/fan/0",
+            "text": "CPU Fan",
+            "imageindex": 10,
+            "type": "Sensor",
+            "min": 1200,
+            "value": 1500,
+            "max": 3200
+          },
+          {
+            "id": "/amdcpu/0/voltage/0",
+            "text": "CPU Core Voltage (SVR3)",
+            "imageindex": 8,
+            "type": "Sensor",
+            "min": 0.65,
+            "value": 1.05,
+            "max": 1.35
+          },
+          {
+            "id": "/amdcpu/0/clock/0",
+            "text": "Core #1",
+            "imageindex": 5,
+            "type": "Sensor",
+            "min": 800,
+            "value": 3500,
+            "max": 5100
+          }
+        ]
+      },
+      {
+        "id": "/amdcpu/1",
+        "text": "AMD Ryzen AI 7 350 (Socket 2)",
+        "imageindex": 3,
+        "type": "Node",
+        "children": [
+          {
+            "id": "/amdcpu/1/temperature/0",
+            "text": "CPU Package",
+            "imageindex": 7,
+            "type": "Sensor",
+            "min": 40.0,
+            "value": 71.0,
+            "max": 90.0
+          }
+        ]
+      },
+      {
+        "id": "/gpu-amd/0",
+        "text": "AMD Radeon 860M",
+        "imageindex": 3,
+        "type": "Node",
+        "children": [
+          {
+            "id": "/gpu-amd/0/temperature/0",
+            "text": "GPU Temperature",
+            "imageindex": 7,
+            "type": "Sensor",
+            "min": 30.0,
+            "value": 52.0,
+            "max": 95.0
+          },
+          {
+            "id": "/gpu-amd/0/power/0",
+            "text": "GPU Power",
+            "imageindex": 9,
+            "type": "Sensor",
+            "min": 1.0,
+            "value": 8.0,
+            "max": 55.0
+          }
+        ]
+      },
+      {
+        "id": "/hdd/0",
+        "text": "Samsung SSD 990 Pro",
+        "imageindex": 3,
+        "type": "Node",
+        "children": [
+          {
+            "id": "/hdd/0/temperature/0",
+            "text": "Temperature",
+            "imageindex": 7,
+            "type": "Sensor",
+            "min": 25.0,
+            "value": 38.0,
+            "max": 65.0
+          }
+        ]
+      }
+    ]
+  }
+]
