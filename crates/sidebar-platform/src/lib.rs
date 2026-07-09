@@ -1,7 +1,27 @@
 //! `sidebar-platform` — Win32 platform layer — window, AppBar, DWM, DPI, OhmSupervisor (Epic 6).
 //!
-//! Story 0.1 stub. Real functionality lands in subsequent stories per the
-//! backlog critical path.
+//! ## Module map
+//! - [`dwm`] — `DwmSetWindowAttribute` wrappers (peek exclusion, capture cloak) — Story 6.1.
+//! - [`window`] — `SetWindowPos` HWND_TOPMOST + `ViewportPrefs` (consumed by Epic 8) — Story 6.1.
+//! - [`appbar`] — `SHAppBarMessage` register/unregister (ABM_NEW/QUERYPOS/SETPOS/REMOVE) — Story 6.2.
+//! - [`dpi`] — `SetProcessDpiAwarenessContext` (PER_MONITOR_AWARE_V2) + `GetDpiForWindow` — Story 6.3.
+//!
+//! ## SAFETY discipline (guardrails.md G2 / F11)
+//!
+//! Every `unsafe` block below carries a `// SAFETY:` comment explaining why
+//! the invariants hold (HWND validity, attribute-pointer lifetime, struct
+//! sizing). The workspace lint `clippy::undocumented_unsafe_blocks = "deny"`
+//! enforces this — the orchestrator's HITL review (G19) is the second check.
+//!
+//! ## `windows` crate features (per Cargo.toml)
+//!
+//! `Win32_Foundation`, `Win32_Graphics_Dwm`, `Win32_UI_WindowsAndMessaging`,
+//! `Win32_UI_Shell`, `Win32_UI_HiDpi`.
+
+pub mod appbar;
+pub mod dpi;
+pub mod dwm;
+pub mod window;
 
 /// Story 0.1 smoke marker — proves the crate is reachable via `cargo test`.
 #[must_use]
