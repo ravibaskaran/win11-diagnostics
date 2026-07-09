@@ -6,10 +6,14 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
-description = "sidebar crate: sidebar-bandwidth (Story 0.1 stub)"
+description = "sidebar bandwidth accountant: accumulate + flush + rollover (Stories 5.1-5.3)"
 
-# Story 0.1 stub — no dependencies yet. Real deps land in the stories that
-# need them per the critical path (architecture.md §4).
+[dependencies]
+sidebar-domain = { path = "../sidebar-domain" }   # internal — Reading filtering (NetRxBytes/NetTxBytes)
+chrono = { workspace = true }                      # MIT OR Apache-2.0 — NaiveDate for cycle_start
+
+[dev-dependencies]
+proptest = { workspace = true }                    # MIT OR Apache-2.0 — property tests for wraparound (F7)
 
 [lints]
 workspace = true
