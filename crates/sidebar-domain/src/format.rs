@@ -44,7 +44,7 @@ pub enum Base {
 
 /// Temperature display unit. Per T-29 the default is `Celsius`; Fahrenheit
 /// is a Settings toggle that affects every temp reading app-wide.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TempUnit {
     /// Celsius — `"62 °C"`.
     Celsius,

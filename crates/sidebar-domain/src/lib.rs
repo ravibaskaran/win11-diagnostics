@@ -12,6 +12,7 @@
 pub mod aggregate;
 pub mod alert;
 pub mod billing;
+pub mod config;
 pub mod error;
 pub mod format;
 pub mod graph;

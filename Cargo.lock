@@ -508,7 +508,9 @@ name = "sidebar-domain"
 version = "0.0.0"
 dependencies = [
  "chrono",
+ "serde",
  "thiserror 1.0.69",
+ "toml",
  "tracing",
 ]
 
