@@ -37,14 +37,14 @@ The swarm reads this file at task-startup to identify the ready set (stories who
 | 3.2 | merged | 2026-07-09T10Z | #19 | L0:9 | nvml adapter (GPU util/temp, NVML-unavailable-safe). #[ignore]'d integration test for NVIDIA HW. |
 | 3.2b | pending | — | — | — | — |
 | 3.3 | merged | 2026-07-09T11Z | #17 | L0:9 | battery adapter (percent/state/power-rate). starship-battery 0.11 (bumped from 0.10 to clear quick-xml RUSTSEC). |
-| 3.4 | pending | — | — | — | — |
-| 3.5 | pending | — | — | — | — |
-| 3.6 | pending | — | — | — | — |
+| 3.4 | merged | 2026-07-09T13Z | #20 | L0:7 | PDH disk adapter (per-drive R/W bytes/sec). First adapter with unsafe FFI — 7 unsafe blocks + unsafe impl Send, all SAFETY-documented (G2). |
+| 3.5 | merged | 2026-07-09T14Z | #24 | L0:8 | net adapter (per-NIC RX/TX raw counters via GetIfTable2). Tier::Both. unsafe FFI (G2). Delta downstream per §5.2/G9. |
+| 3.6 | merged | 2026-07-09T14Z | #25 | L0:15 | OHM HTTP adapter (LHM /data.json bridge). T-10 500ms timeout. ureq default-features=false (drops CDLA-Permissive webpki-roots). serde(default) forward-compat. |
 | 4.1 | merged | 2026-07-09T10Z | #18 | L0:6 | SQLite schema init + PRAGMAs (WAL/user_version/foreign_keys). current_cycle + bandwidth_history tables. |
 | 4.2 | merged | 2026-07-09T11Z | #21 | L0:7 | bandwidth repo (save/load/archive/prune + T-12 busy-retry). UPSERT + txn-wrapped archive. |
 | 4.3 | merged | 2026-07-09T11Z | #22 | L0:4 | migration (v0→v1 via user_version registry). Epic 4 COMPLETE. |
 | 5.1 | merged | 2026-07-09T12Z | #23 | L0:6 | MonthlyAccumulator (in-memory, T-23 wraparound). F7 proptest. Pure domain. |
-| 5.2 | pending | — | — | — | — |
+| 5.2 | merged | 2026-07-09T14Z | #26 | L0:21 | BandwidthAccountant tokio task (subscribe + accumulate + flush + rollover). Clock trait (F3), T-15 debounce, G15 flush-error safety. Epic 5 COMPLETE. |
 | 5.3 | pending | — | — | — | — |
 | 6.1 | pending | — | — | — | — |
 | 6.2 | pending | — | — | — | — |
@@ -79,8 +79,8 @@ The swarm reads this file at task-startup to identify the ready set (stories who
 
 ## Summary
 - Total stories: 59
-- Merged: 23 / 59 (39.0%) — Stories 0.1-0.7, 1.1-1.6, 2.1-2.3, 3.1-3.3, 4.1-4.3, 5.1 (Epics 0+1+2+4 COMPLETE)
-- Ready for pickup: {3.4 (PR #20, HITL on unsafe), 3.5 (unsafe→HITL), 3.6 (ureq→HITL), 5.2, 11.1-11.4}
+- Merged: 27 / 59 (45.8%) — Stories 0.1-0.7, 1.1-1.6, 2.1-2.3, 3.1-3.6, 4.1-4.3, 5.1-5.2 (Epics 0+1+2+3+4+5 COMPLETE)
+- Ready for pickup: {5.3, 6.1-6.6, 7.1-7.5, 8.x, 11.1-11.4}
 - Blocked on HITL: 0
 - Long-term blocked: 0
 
