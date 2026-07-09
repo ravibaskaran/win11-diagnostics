@@ -27,7 +27,7 @@ The swarm reads this file at task-startup to identify the ready set (stories who
 | 1.1 | merged | 2026-07-09T05:20Z | #8 | L0:9 | Core reading types (MetricKind×35, Unit×14, SensorId, Reading, BatteryState). |
 | 1.2 | merged | 2026-07-09T06:30Z | #10 | L0:17 | Snapshot + EWMA smoother + threshold alert with hysteresis. |
 | 1.3 | merged | 2026-07-09T05:50Z | #9 | L0:25 | NFR-8 format module (9 fns + 2 enums). All 10 §7.1 exact-match cases verified. |
-| 1.4 | pending | — | — | — | — |
+| 1.4 | merged | 2026-07-09T09:40Z | #13 | L0:20 | Billing: CycleStartDay + cycle_end + next_cycle_start. T-25 invariant tested. |
 | 1.5 | pending | — | — | — | — |
 | 1.6 | merged | 2026-07-09T07:10Z | #11 | L0:13 | top_n aggregation + RollingWindow sparkline. |
 | 2.1 | merged | 2026-07-09T07:40Z | #12 | L0:5 | SensorProvider trait + automock. Send+Sync proven. |
@@ -79,8 +79,8 @@ The swarm reads this file at task-startup to identify the ready set (stories who
 
 ## Summary
 - Total stories: 59
-- Merged: 14 / 59 (23.7%) — Stories 0.1-0.7, 1.1-1.3, 1.6, 2.1-2.3
-- Ready for pickup: {1.4, 1.5 (after 1.4)}
+- Merged: 15 / 59 (25.4%) — Stories 0.1-0.7, 1.1-1.4, 1.6, 2.1-2.3
+- Ready for pickup: {1.5, 3.1-3.6, 4.1-4.3, 11.1-11.4} (Epic 3+4 adapters unblocked)
 - Blocked on HITL: 0
 - Long-term blocked: 0
 
