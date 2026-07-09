@@ -4,6 +4,7 @@
 //! delivers schema initialization ([`schema::init`]); Stories 4.2/4.3 add
 //! the read/write/rollover primitives on top.
 
+pub mod migrate;
 pub mod schema;
 
 /// Story 0.1 smoke marker — proves the crate is reachable via `cargo test`.
