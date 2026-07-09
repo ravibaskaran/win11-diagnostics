@@ -920,6 +920,13 @@ dependencies = [
 [[package]]
 name = "sidebar-adapter-net"
 version = "0.0.0"
+dependencies = [
+ "mockall",
+ "sidebar-domain",
+ "sidebar-sensor",
+ "tracing",
+ "windows",
+]
 
 [[package]]
 name = "sidebar-adapter-nvml"
