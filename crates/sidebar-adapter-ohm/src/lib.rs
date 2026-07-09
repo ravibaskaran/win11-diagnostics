@@ -50,7 +50,7 @@
 
 use std::sync::Mutex;
 
-use sidebar_domain::reading::{MetricKind, Reading};
+use sidebar_domain::reading::{MetricKind, Reading, SensorId, Unit};
 use sidebar_sensor::descriptor::{CostClass, ProviderTier, SensorDescriptor};
 use sidebar_sensor::provider::SensorProvider;
 use tracing::{debug, warn};
@@ -71,6 +71,7 @@ const OHM_METRICS: &[MetricKind] = &[
     MetricKind::Voltage,
     MetricKind::GpuTemperature,
     MetricKind::GpuPower,
+    MetricKind::GpuFanSpeed,
     MetricKind::DiskTemperature,
 ];
 
@@ -223,10 +224,208 @@ impl<C: HttpClient + Send> SensorProvider for OhmAdapterGeneric<C> {
 /// - Story 3.6 TDD contract
 /// - nfr-thresholds.md T-20 (finite values only)
 fn readings_from_json(tree: &[LhmNode]) -> Vec<Reading> {
-    // RED STUB: returns empty so positive-assertion tests fail. The GREEN
-    // commit fills in the recursive walk + category mapping.
-    let _ = tree;
-    Vec::new()
+    let mut out = Vec::new();
+    // The root is an array of nodes (typically one computer node with `/`
+    // id). Walk every node; the recursion descends through hardware folders
+    // (`/amdcpu/0`, `/gpu-amd/0`, ...) and emits Readings at sensor leaves
+    // (`/amdcpu/0/temperature/0`).
+    for root in tree {
+        walk_node(root, &mut out);
+    }
+    out
+}
+
+/// Recursive walk. For each `Node`-typed child we recurse; for each
+/// `Sensor`-typed leaf we attempt to map it to a `Reading`.
+///
+/// Hardware context is derived from the sensor's own `id` path (the parent
+/// folder's `id` is a prefix of the sensor's `id`), so we do NOT need to
+/// thread state down the recursion — the leaf id is self-describing.
+fn walk_node(node: &LhmNode, out: &mut Vec<Reading>) {
+    if node.is_sensor() {
+        if let Some(r) = map_sensor(node) {
+            out.push(r);
+        }
+        return;
+    }
+    // Node (folder) — recurse into children.
+    for child in &node.children {
+        walk_node(child, out);
+    }
+}
+
+/// Map a sensor-leaf [`LhmNode`] to a [`Reading`]. Returns `None` if:
+/// - the `value` field is absent (Boundary #4) or non-finite (T-20),
+/// - the sensor category (parsed from the `id` path) is not one we model
+///   (`clock`/`load`/`throughput`/...),
+/// - the hardware class is not recognized (some LHM nodes like `/ram/0` or
+///   `/mainboard/0` carry voltages we DO map, but a `/nic/0/throughput` is
+///   skipped because we don't model NIC metrics here — network is the
+///   net adapter's job, Story 3.5).
+fn map_sensor(node: &LhmNode) -> Option<Reading> {
+    // Boundary #4: a sensor with no `value` is unread (LHM hasn't sampled
+    // it yet). Skip — never emit NaN (T-20).
+    let raw = node.value?;
+    // T-20: non-finite values are omitted, not emitted with a sentinel.
+    if !raw.is_finite() {
+        return None;
+    }
+
+    // Parse the LHM id path. Format: `/<hw_class>/<hw_index>/<category>/<sensor_index>`
+    // e.g. `/amdcpu/0/temperature/0`. The leading segment is empty (the id
+    // starts with `/`). We need at least: hw_class, hw_index, category.
+    let segments: Vec<&str> = node.id.split('/').collect();
+    // Expected layout after split: ["", hw_class, hw_index, category, sensor_index?]
+    if segments.len() < 4 {
+        // Not a sensor-shaped id — skip silently. Some LHM versions emit
+        // single-segment ids for ad-hoc sensors; we don't model those.
+        return None;
+    }
+    let hw_class = segments[1];
+    let hw_index = segments[2];
+    let category = segments[3];
+
+    let hw_kind = HardwareKind::from_lhm_class(hw_class)?;
+    let sensor_kind = SensorKind::from_lhm_category(category)?;
+
+    let (metric, unit) = combine(hw_kind, sensor_kind)?;
+    let sensor_id = SensorId::new(
+        hw_kind.category(),
+        format!("{}/{}", hw_kind.instance_tag(), hw_index),
+    );
+
+    Some(Reading::new(sensor_id, metric, raw, unit))
+}
+
+/// Recognized LHM hardware classes. Each maps to a `SensorId.category` and
+/// instance tag prefix. Unknown classes return `None` (sensor skipped).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HardwareKind {
+    /// `amdcpu` / `intelcpu` → category `"cpu"`, instance `"cpu/<idx>"`.
+    Cpu,
+    /// `gpu-amd` / `gpu-nvidia` / `gpu-intel` → `"gpu"`, `"gpu/<idx>"`.
+    Gpu,
+    /// `hdd` / `ssd` / `sat` → `"disk"`, `"disk/<idx>"`.
+    Disk,
+    /// `mainboard` — motherboard rails (VCORE, +3.3V, +5V, +12V, fan
+    /// headers). Mapped to `"board"` category for the `Voltage` /
+    /// `FanSpeed` metrics. The motherboard's own temperature sensors map
+    /// to no current `MetricKind` (we don't have a "BoardTemperature"),
+    /// so those sensors are skipped downstream.
+    Mainboard,
+}
+
+impl HardwareKind {
+    /// Map an LHM hardware class string to a [`HardwareKind`]. Returns
+    /// `None` for unrecognized classes (e.g. `ram`, `nic`, `psu`) — those
+    /// sensors are silently skipped.
+    #[must_use]
+    fn from_lhm_class(s: &str) -> Option<Self> {
+        match s {
+            "amdcpu" | "intelcpu" | "cpu" => Some(Self::Cpu),
+            "gpu-amd" | "gpu-nvidia" | "gpu-intel" | "gpu" => Some(Self::Gpu),
+            "hdd" | "ssd" | "sat" => Some(Self::Disk),
+            "mainboard" => Some(Self::Mainboard),
+            _ => None,
+        }
+    }
+
+    /// The `SensorId.category` for this hardware class.
+    #[must_use]
+    const fn category(self) -> &'static str {
+        match self {
+            Self::Cpu => "cpu",
+            Self::Gpu => "gpu",
+            Self::Disk => "disk",
+            Self::Mainboard => "board",
+        }
+    }
+
+    /// The `SensorId.instance` prefix (combined with the hw index).
+    #[must_use]
+    const fn instance_tag(self) -> &'static str {
+        match self {
+            Self::Cpu => "cpu",
+            Self::Gpu => "gpu",
+            Self::Disk => "disk",
+            Self::Mainboard => "board",
+        }
+    }
+}
+
+/// Recognized LHM sensor categories (the segment between hw_index and the
+/// trailing sensor index in the id path).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SensorKind {
+    Temperature,
+    Power,
+    Fan,
+    Voltage,
+}
+
+impl SensorKind {
+    #[must_use]
+    fn from_lhm_category(s: &str) -> Option<Self> {
+        match s {
+            "temperature" => Some(Self::Temperature),
+            "power" => Some(Self::Power),
+            "fan" => Some(Self::Fan),
+            "voltage" => Some(Self::Voltage),
+            // `clock`, `load`, `throughput`, `data`, `control`, `level`,
+            // `factor`, `smalldata`, `smalldata` — not modeled here.
+            // CpuFrequency/GpuFrequency/CpuUtilization/GpuUtilization have
+            // cheaper dedicated adapters (sysinfo, NVML) so OHM doesn't
+            // need to emit them.
+            _ => None,
+        }
+    }
+}
+
+/// Combine hardware + sensor category into the (MetricKind, Unit) pair.
+/// Returns `None` for combinations we don't model (e.g. mainboard
+/// temperature — no BoardTemperature variant exists; disk power/voltage/fan —
+/// out of scope).
+///
+/// Mapping table (Story 3.6 spec):
+///
+/// | hw \ sensor | Temperature | Power      | Fan              | Voltage  |
+/// |-------------|-------------|------------|------------------|----------|
+/// | Cpu         | CpuTemp °C  | CpuPower W | FanSpeed RPM     | Voltage  |
+/// | Gpu         | GpuTemp °C  | GpuPower W | GpuFanSpeed RPM  | Voltage  |
+/// | Disk        | DiskTemp °C | (skip)     | (skip)           | (skip)   |
+/// | Mainboard   | (skip)      | (skip)     | FanSpeed RPM     | Voltage  |
+fn combine(hw: HardwareKind, s: SensorKind) -> Option<(MetricKind, Unit)> {
+    let pair = match s {
+        SensorKind::Temperature => match hw {
+            HardwareKind::Cpu => (MetricKind::CpuTemperature, Unit::Celsius),
+            HardwareKind::Gpu => (MetricKind::GpuTemperature, Unit::Celsius),
+            HardwareKind::Disk => (MetricKind::DiskTemperature, Unit::Celsius),
+            // Mainboard temp has no MetricKind home today.
+            HardwareKind::Mainboard => return None,
+        },
+        SensorKind::Power => match hw {
+            HardwareKind::Cpu => (MetricKind::CpuPower, Unit::Watts),
+            HardwareKind::Gpu => (MetricKind::GpuPower, Unit::Watts),
+            // Disk + mainboard power out of scope.
+            HardwareKind::Disk | HardwareKind::Mainboard => return None,
+        },
+        SensorKind::Fan => match hw {
+            // CPU + chassis fans are generic FanSpeed; GPU fans get the
+            // dedicated GpuFanSpeed variant.
+            HardwareKind::Cpu | HardwareKind::Mainboard => (MetricKind::FanSpeed, Unit::Rpm),
+            HardwareKind::Gpu => (MetricKind::GpuFanSpeed, Unit::Rpm),
+            // Disks don't have fans.
+            HardwareKind::Disk => return None,
+        },
+        SensorKind::Voltage => match hw {
+            HardwareKind::Cpu | HardwareKind::Gpu | HardwareKind::Mainboard => {
+                (MetricKind::Voltage, Unit::Volts)
+            }
+            // Disk voltage out of scope.
+            HardwareKind::Disk => return None,
+        },
+    };
+    Some(pair)
 }
 
 #[cfg(test)]

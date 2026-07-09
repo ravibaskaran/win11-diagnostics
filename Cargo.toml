@@ -50,7 +50,7 @@ publish = false              # not yet released; flip when first version tags
 # Pure-Rust crates
 sysinfo = "0.39.3"           # MIT — CPU/RAM/disk/process telemetry (forces MSRV 1.95)
 nvml-wrapper = "0.12.0"      # MIT OR Apache-2.0 — NVIDIA GPU (NVIDIA-only)
-ureq = "2.12"                # MIT OR Apache-2.0 — sync HTTP client for LHM /data.json (AD-2)
+ureq = { version = "2.12", default-features = false }  # MIT OR Apache-2.0 — sync HTTP client for LHM /data.json (AD-2). default-features = false drops `tls` (webpki-roots is CDLA-Permissive-2.0, not in T-32) + `gzip` (unused); LHM is plaintext http://127.0.0.1.
 serde_json = "1"             # MIT OR Apache-2.0 — LHM JSON tree parsing
 starship-battery = "0.11"    # MIT OR Apache-2.0 — battery state (bumped from 0.10 per Story 3.3 to clear RUSTSEC-2026-0194/0195 in transitive quick-xml)
 windows = "0.62.2"           # MIT OR Apache-2.0 — Win32 FFI (GetIfEntry2, ShellExecuteW, etc.)
