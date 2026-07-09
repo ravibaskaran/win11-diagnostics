@@ -1,0 +1,191 @@
+//! `DwmSetWindowAttribute` wrappers — DWM peek exclusion + capture cloak (Story 6.1).
+//!
+//! ## Why these wrappers
+//!
+//! The sidebar viewport must stay visible during Aero Peek (Win+Tab, hover-
+//! show-desktop) and the user can opt the window out of screen capture
+//! (`[display] hide_from_capture = false`, default OFF — most users want it
+//! captured). Both are set via `DwmSetWindowAttribute` on the viewport HWND.
+//!
+//! ## API discrepancy — DWMWA_CLOAKED_BY_CAPTURABLE_CONTENT does NOT exist
+//!
+//! The Story 6.1 contract (and the architecture backlog) name
+//! `DWMWA_CLOAKED_BY_CAPTURABLE_CONTENT` as the capture-cloak attribute. The
+//! `windows = 0.62.2` crate's `Win32_Graphics_Dwm` feature exposes only two
+//! cloak-related attributes:
+//!   - `DWMWA_CLOAK` (value 13) — settable: hides the window from the user
+//!     while DWM still composes it.
+//!   - `DWMWA_CLOAKED` (value 14) — gettable: query the *reason* a window is
+//!     cloaked (App / Shell / Inherited).
+//!
+//! The MS Win32 header `dwmapi.h` (DWMWINDOWATTRIBUTE enum) does NOT define
+//! `DWMWA_CLOAKED_BY_CAPTURABLE_CONTENT` either. The capture-exclusion
+//! attribute that ships in the public SDK is the `WDA_EXCLUDEFROMCAPTURE`
+//! flag passed to `SetWindowDisplayAffinity` — that lives in
+//! `Win32_Graphics_Dwm`/`Win32_UI_WindowsAndMessaging` and is the *correct*
+//! API for "streamer privacy" capture exclusion.
+//!
+//! Resolution: this module exposes both:
+//!   1. [`exclude_from_peek`] — `DWMWA_EXCLUDED_FROM_PEEK` (matches the
+//!      story contract verbatim).
+//!   2. [`set_capture_cloak`] — for now implemented via `DWMWA_CLOAK` (the
+//!      only settable cloak attribute). The function is `pub` so Epic 6.x
+//!      config plumbing can call it without churn; the underlying attribute
+//!      can be switched to `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)`
+//!      in a follow-up without touching callers. **HITL note (G19)**: this
+//!      discrepancy is called out in the PR body.
+//!
+//! ## SAFETY discipline (G2 / F11)
+//!
+//! Each `unsafe` block carries a `// SAFETY:` comment explaining HWND
+//! validity + attribute-pointer lifetime + size. The workspace lint
+//! `clippy::undocumented_unsafe_blocks = "deny"` enforces this.
+
+use std::mem::size_of;
+
+use windows::Win32::Foundation::HWND;
+use windows::Win32::Graphics::Dwm::{
+    DwmSetWindowAttribute, DWMWA_CLOAK, DWMWA_EXCLUDED_FROM_PEEK,
+};
+
+use sidebar_domain::error::{Error, Result};
+
+/// Apply DWMWA_EXCLUDED_FROM_PEEK = TRUE so the sidebar does not fade out
+/// during Aero Peek (Win+Tab, hover-show-desktop). Idempotent.
+///
+/// # Errors
+/// Returns [`Error::Platform`] if the Win32 call reports an HRESULT failure
+/// (typically: DWM disabled / compositor off, or the HWND is not a top-level
+/// window). Callers should treat failure as non-fatal — the window still
+/// works, just behaves like a normal window during Peek.
+///
+/// # Cited
+/// Story 6.1 TDD contract (3): `dwm::exclude_from_peek(hwnd)` calls
+/// `DwmSetWindowAttribute` with `DWMWA_EXCLUDED_FROM_PEEK`. NFR-7.
+pub fn exclude_from_peek(hwnd: HWND) -> Result<()> {
+    // RED stub — real impl lands in the GREEN commit. Body intentionally
+    // returns Ok(()) so the test compiles + fails on the assertion (G1).
+    let _ = (hwnd,); // silence unused-var lint without `#[allow]`
+    Ok(())
+}
+
+/// Toggle DWMWA_CLOAK on the sidebar viewport. When `enabled = true`, DWM
+/// hides the window from the user while still compositing it — this is the
+/// closest public-API equivalent to the "capture cloak" streamer-privacy
+/// feature described in Story 6.1. See module docs for the discrepancy note.
+///
+/// # Default
+/// OFF — most users want the sidebar captured in OBS / Snipping Tool.
+///
+/// # Errors
+/// Returns [`Error::Platform`] on HRESULT failure. Callers should treat
+/// older Windows (pre-Vista) as "attribute unsupported → no-op + debug!"
+/// (Story 6.1 Boundary #5) — the HRESULT check below surfaces that as
+/// `Err`, and the Epic-6 wiring layer decides whether to log-and-continue.
+///
+/// # Cited
+/// Story 6.1 TDD contract (4): `dwm::set_capture_cloak(hwnd, true)` calls
+/// `DwmSetWindowAttribute` with the capture-cloak attribute. NFR-7.
+#[allow(clippy::needless_pass_by_value)] // hwnd is a Copy handle, not a borrow target
+pub fn set_capture_cloak(hwnd: HWND, enabled: bool) -> Result<()> {
+    // RED stub — real impl lands in GREEN. Body intentionally Ok(()).
+    let _ = (hwnd, enabled);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Story 6.1 TDD contract #3: `exclude_from_peek` accepts an HWND and
+    /// returns `Ok` on the happy path. The real-FFI call needs a live window
+    /// (the test crate doesn't own one) → marked `#[ignore]` and run in
+    /// sdd-verify against a real egui viewport (architecture.md §7.4).
+    ///
+    /// Cited: F11 (unsafe FFI test with SAFETY contract), §7.4 manual smoke.
+    #[test]
+    #[ignore = "needs a real Win32 HWND (sdd-verify manual smoke, §7.4)"]
+    fn exclude_from_peek_smoke_real_window() {
+        // Placeholder: the sdd-verify harness passes a live HWND here. The
+        // assertion is "returns Ok" — the visual check (sidebar doesn't fade
+        // during Win+Tab) is the manual smoke item.
+        // We can't synthesize a valid HWND in a unit test, so this is a
+        // documentation-shaped placeholder.
+        let hwnd = HWND(std::ptr::null_mut());
+        let result = exclude_from_peek(hwnd);
+        // We expect Err for a null HWND (DWM rejects it); the point of this
+        // test is to document the call shape, not assert a particular result
+        // without a real window.
+        let _ = result;
+    }
+
+    /// Story 6.1 TDD contract #4: `set_capture_cloak(hwnd, true)` shape.
+    /// Same #[ignore] rationale as above.
+    #[test]
+    #[ignore = "needs a real Win32 HWND (sdd-verify manual smoke, §7.4)"]
+    fn set_capture_cloak_smoke_real_window() {
+        let hwnd = HWND(std::ptr::null_mut());
+        let _ = set_capture_cloak(hwnd, true);
+        let _ = set_capture_cloak(hwnd, false);
+    }
+
+    /// Pure-logic check: the size we pass to `DwmSetWindowAttribute` for a
+    /// BOOL attribute is `size_of::<BOOL>()`. This catches the classic
+    /// off-by-attribute-size bug without touching FFI.
+    #[test]
+    fn bool_attribute_size_is_four_bytes() {
+        // In `windows = 0.62`, `BOOL` lives at `windows::core::BOOL` (it
+        // moved out of `Win32::Foundation` between 0.5x and 0.6x).
+        // DWM documents the attribute pointer for peek/cloak as `BOOL*`, so
+        // the cbAttribute passed in MUST be 4. A wrong size is silently
+        // ignored by DWM → attribute does nothing → bug surfaces only in
+        // manual smoke. Pin the size here.
+        assert_eq!(
+            size_of::<windows::core::BOOL>(),
+            4,
+            "BOOL attribute size must be 4 bytes (DWMWA_EXCLUDED_FROM_PEEK / DWMWA_CLOAK contract)"
+        );
+    }
+
+    /// The peek-attribute constant must equal the documented DWM value (12).
+    /// A wrong constant would silently no-op the attribute.
+    #[test]
+    fn dwmwa_excluded_from_peek_value_is_twelve() {
+        assert_eq!(DWMWA_EXCLUDED_FROM_PEEK.0, 12);
+    }
+
+    /// The cloak-attribute constant must equal the documented DWM value (13).
+    /// See module docs for why we use DWMWA_CLOAK instead of the
+    /// (non-existent) DWMWA_CLOAKED_BY_CAPTURABLE_CONTENT.
+    #[test]
+    fn dwmwa_cloak_value_is_thirteen() {
+        assert_eq!(DWMWA_CLOAK.0, 13);
+    }
+
+    /// Null HWND should produce `Err(Platform)` once implemented — DWM rejects
+    /// invalid handles. This test will START FAILING in RED (Ok returned) and
+    /// turn GREEN in the impl commit (the call returns Err). Marker for G1.
+    #[test]
+    fn null_hwnd_exclude_from_peek_is_err_once_implemented() {
+        let hwnd = HWND(std::ptr::null_mut());
+        let result = exclude_from_peek(hwnd);
+        // In RED this is Ok (stub). In GREEN it MUST be Err.
+        // We assert Err to drive the impl; flip back to Ok-tolerant if the
+        // impl legitimately succeeds on null handles on some Windows builds.
+        assert!(
+            matches!(result, Err(Error::Platform(_))),
+            "null HWND should be rejected by DWM, got: {result:?}"
+        );
+    }
+
+    /// Same null-HWND contract for `set_capture_cloak`.
+    #[test]
+    fn null_hwnd_set_capture_cloak_is_err_once_implemented() {
+        let hwnd = HWND(std::ptr::null_mut());
+        let result = set_capture_cloak(hwnd, true);
+        assert!(
+            matches!(result, Err(Error::Platform(_))),
+            "null HWND should be rejected by DWM, got: {result:?}"
+        );
+    }
+}

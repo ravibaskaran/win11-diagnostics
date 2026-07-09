@@ -1201,6 +1201,12 @@ dependencies = [
 [[package]]
 name = "sidebar-platform"
 version = "0.0.0"
+dependencies = [
+ "mockall",
+ "sidebar-domain",
+ "tracing",
+ "windows",
+]
 
 [[package]]
 name = "sidebar-sensor"
