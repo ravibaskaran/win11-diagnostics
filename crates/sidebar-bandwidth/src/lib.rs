@@ -1,7 +1,10 @@
 //! `sidebar-bandwidth` — BandwidthAccountant — accumulate + flush + rollover (Stories 5.1-5.3).
 //!
-//! Story 0.1 stub. Real functionality lands in subsequent stories per the
-//! backlog critical path.
+//! Story 5.1 delivers the in-memory [`accumulator::MonthlyAccumulator`] with
+//! T-23 counter-wraparound handling. Stories 5.2-5.3 add the tokio accountant
+//! task (flush + rollover + persistence).
+
+pub mod accumulator;
 
 /// Story 0.1 smoke marker — proves the crate is reachable via `cargo test`.
 #[must_use]
