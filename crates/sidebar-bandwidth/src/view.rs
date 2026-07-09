@@ -109,17 +109,48 @@ pub fn build_view(
     cycle_end: NaiveDate,
     clock: &dyn Clock,
 ) -> BandwidthView {
-    // RED STUB — deliberately wrong. Returns an empty view (zeroed
-    // days_until_reset, no current/history entries) so the happy-path
-    // test ("1 current + 1 history entry") and the cycle-countdown
-    // boundary tests fail until the real implementation lands in GREEN.
-    // NOT todo!() (workspace clippy::todo = deny). Parameters are read
-    // but discarded; suppress unused-variable by referencing once.
-    let _ = (accumulator.by_luid.len(), history.len(), clock.now(), cycle_end);
+    // Current-cycle entries: one NICtotals per tracked LUID. friendly_name
+    // is None per 5.3 scope (NIC-name cache integration is a later story).
+    let current: Vec<NICtotals> = accumulator
+        .by_luid
+        .iter()
+        .map(|(&luid, entry)| NICtotals {
+            luid,
+            friendly_name: None,
+            rx_bytes: entry.rx_bytes,
+            tx_bytes: entry.tx_bytes,
+        })
+        .collect();
+
+    // History entries: passthrough from the borrowed HistoryRow slice.
+    // Disconnected NICs (present in history, absent in current) are
+    // retained — the GUI shows the previous cycle even if the NIC is
+    // dark this cycle (Story 5.3 Boundary #4).
+    let history: Vec<NICtotals> = history
+        .iter()
+        .map(|row| NICtotals {
+            luid: row.luid,
+            friendly_name: None,
+            rx_bytes: row.rx_bytes,
+            tx_bytes: row.tx_bytes,
+        })
+        .collect();
+
+    // days_until_reset = (cycle_end - today).num_days(), clamped to ≥ 0.
+    // T-27: "today" is clock.now().date_naive(); the signed delta lets us
+    // detect "today is past cycle_end" (negative) and clamp to 0.
+    let today = clock.now().date();
+    let delta_days = cycle_end.signed_duration_since(today).num_days();
+    let days_until_reset: u32 = if delta_days <= 0 {
+        0
+    } else {
+        u32::try_from(delta_days).unwrap_or(u32::MAX)
+    };
+
     BandwidthView {
-        current: Vec::new(),
-        history: Vec::new(),
-        days_until_reset: 0,
+        current,
+        history,
+        days_until_reset,
         next_reset_date: cycle_end,
     }
 }
@@ -189,10 +220,7 @@ mod tests {
         assert_eq!(hist.tx_bytes, 6 * GB);
 
         assert_eq!(view.next_reset_date, cycle_end);
-        assert_eq!(
-            view.days_until_reset, 16,
-            "Jul 15 → Jul 31 = 16 days"
-        );
+        assert_eq!(view.days_until_reset, 16, "Jul 15 → Jul 31 = 16 days");
     }
 
     // ----- Boundary #1: empty accumulator + empty history → empty vecs,
