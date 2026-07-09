@@ -13,26 +13,87 @@
 //!   - guardrails.md G21 (all SQLite access funnels through sidebar-persistence)
 
 use rusqlite::Connection;
-use sidebar_domain::error::Result;
+use sidebar_domain::error::{Error, Result};
 
 /// Initialize the bandwidth-state schema on `conn`.
 ///
 /// Creates `current_cycle` + `bandwidth_history` (per AD-11) and sets the
 /// `user_version = 1`, `journal_mode = WAL`, `foreign_keys = ON` PRAGMAs.
 /// Idempotent — uses `CREATE TABLE IF NOT EXISTS` and re-asserts PRAGMAs.
+/// WAL autocheckpoint is left at the SQLite default (1000 pages) per T-17.
+///
+/// `rusqlite::Error` is converted to [`Error::Sqlite`] at the boundary
+/// (sidebar-domain is pure-Rust by AD-4 and MUST NOT depend on rusqlite,
+/// so the `From` impl lives here as inline closures rather than on `Error`).
 ///
 /// # Errors
 ///
-/// Returns `sidebar_domain::Error::Sqlite` if any SQLite statement fails
-/// (e.g. corrupt file at the path, read-only filesystem).
+/// Returns [`Error::Sqlite`] if any SQLite statement fails — most commonly
+/// when `conn` points at a corrupt / non-SQLite file (the `journal_mode`
+/// PRAGMA refuses to run on garbage bytes), or when the underlying file is
+/// on a read-only filesystem and SQLite can't write its schema.
 ///
 /// # Panics
 ///
 /// None — this function never panics.
-pub fn init(_conn: &Connection) -> Result<()> {
-    // RED stub — empty body returns Ok(()). Tests below assert PRAGMAs and
-    // tables are set; they fail because the stub does nothing. GREEN lands
-    // in the next commit.
+pub fn init(conn: &Connection) -> Result<()> {
+    // foreign_keys is per-connection; set it first so any subsequent
+    // CREATE benefits. (No FK constraints in v1, but the PRAGMA is part
+    // of the AD-11 contract and defends Stories 4.2/4.3 additions.)
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .map_err(|e| Error::Sqlite(e.to_string()))?;
+
+    // CREATE TABLE IF NOT EXISTS — idempotent (fixture F6). Schema verbatim
+    // from architecture.md AD-11; do NOT rename columns without architect
+    // sign-off (G19). `adapter_luid` is INTEGER (i64) per T-26 — the LUID
+    // is a 64-bit value (`MIB_IF_ROW2.InterfaceLuid`) reinterpreted as
+    // i64 at the boundary.
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS current_cycle (
+            adapter_luid   INTEGER PRIMARY KEY,
+            adapter_name   TEXT NOT NULL,
+            cycle_start    TEXT NOT NULL,
+            rx_bytes       INTEGER NOT NULL DEFAULT 0,
+            tx_bytes       INTEGER NOT NULL DEFAULT 0,
+            updated_at     TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS bandwidth_history (
+            rowid          INTEGER PRIMARY KEY AUTOINCREMENT,
+            adapter_luid   INTEGER NOT NULL,
+            adapter_name   TEXT NOT NULL,
+            cycle_start    TEXT NOT NULL,
+            cycle_end      TEXT NOT NULL,
+            rx_bytes       INTEGER NOT NULL,
+            tx_bytes       INTEGER NOT NULL,
+            archived_at    TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_history_luid_cycle
+            ON bandwidth_history(adapter_luid, cycle_start);",
+    )
+    .map_err(|e| Error::Sqlite(e.to_string()))?;
+
+    // journal_mode = WAL. This returns a row (the new mode string); we
+    // require it to be "wal" — if the underlying file isn't a valid
+    // SQLite DB (boundary #1) this query errors, which we surface.
+    let mode: String = conn
+        .query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))
+        .map_err(|e| Error::Sqlite(e.to_string()))?;
+    if mode.to_lowercase() != "wal" {
+        return Err(Error::Sqlite(format!(
+            "journal_mode = WAL was rejected by SQLite; got '{mode}' \
+             (DB may be in-memory or a memory-only connection where WAL is unavailable)"
+        )));
+    }
+
+    // user_version = 1. Schema-version stamp for future migrations
+    // (AD-11: "trivial schema migration via user_version PRAGMA").
+    // Setting it again on an already-v1 DB is a no-op → F6 idempotent.
+    conn.pragma_update(None, "user_version", 1)
+        .map_err(|e| Error::Sqlite(e.to_string()))?;
+
+    // wal_autocheckpoint is intentionally NOT overridden — T-17 mandates
+    // the SQLite default (1000 pages). No PRAGMA statement here.
+
     Ok(())
 }
 
