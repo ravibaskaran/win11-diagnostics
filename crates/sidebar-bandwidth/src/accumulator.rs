@@ -89,12 +89,28 @@ impl MonthlyAccumulator {
         tx_counter: u64,
         cycle_start: NaiveDate,
     ) {
-        // RED-phase stub: creates the entry (so get() works) but accumulates
-        // nothing. Every positive-assertion test fails. Cited: G1.
-        let _ = (rx_counter, tx_counter);
-        self.by_luid
+        let entry = self
+            .by_luid
             .entry(luid)
             .or_insert_with(|| AccEntry::new(cycle_start));
+
+        // RX delta with T-23 wraparound.
+        let rx_delta = match entry.prev_rx_counter {
+            None => 0,                                     // first tick: baseline, no accumulation
+            Some(prev) if rx_counter < prev => rx_counter, // T-23 reset
+            Some(prev) => rx_counter - prev,               // normal forward delta
+        };
+        // TX delta, same logic.
+        let tx_delta = match entry.prev_tx_counter {
+            None => 0,
+            Some(prev) if tx_counter < prev => tx_counter,
+            Some(prev) => tx_counter - prev,
+        };
+
+        entry.rx_bytes = entry.rx_bytes.saturating_add(rx_delta);
+        entry.tx_bytes = entry.tx_bytes.saturating_add(tx_delta);
+        entry.prev_rx_counter = Some(rx_counter);
+        entry.prev_tx_counter = Some(tx_counter);
     }
 
     /// Look up the cumulative entry for `luid`, if present.
