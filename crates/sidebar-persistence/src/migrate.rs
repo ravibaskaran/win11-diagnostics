@@ -105,12 +105,88 @@ fn migrations() -> &'static [fn(&Connection) -> Result<()>] {
 ///
 /// None.
 pub fn migrate(conn: &Connection) -> Result<()> {
-    // RED-phase stub: intentionally does nothing. The real implementation
-    // (GREEN commit) reads user_version and runs the registry. Keeping the
-    // body a plain `Ok(())` rather than `todo!()` because the workspace
-    // has `clippy::todo = "deny"`.
-    let _ = (conn, LATEST_USER_VERSION);
-    let _ = migrations();
+    // 1. Read the current schema version. PRAGMA user_version returns an
+    //    INTEGER; SQLite stores it as i64 and it is always >= 0 for any
+    //    DB this binary could open (negative values are not producible via
+    //    the PRAGMA setter).
+    let current: i64 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(|e| Error::Sqlite(e.to_string()))?;
+    let current = u32::try_from(current).map_err(|_| {
+        Error::Sqlite(format!(
+            "user_version is negative ({current}); DB is corrupt or was tampered with"
+        ))
+    })?;
+
+    // 2. Future-version guard (Boundary #1). A DB stamped with a version
+    //    this binary doesn't know is "from the future" — refuse to touch
+    //    it so a stale binary can't silently downgrade the schema.
+    if current > LATEST_USER_VERSION {
+        return Err(Error::Sqlite(format!(
+            "unknown future schema: user_version = {current} but this build only knows \
+             up to version {LATEST_USER_VERSION}; upgrade the binary before opening this DB"
+        )));
+    }
+
+    // 3. Idempotent fast path (F6). Already at the latest version → no
+    //    writes, no transactions, just return.
+    if current == LATEST_USER_VERSION {
+        return Ok(());
+    }
+
+    // 4. Apply each pending migration in its own transaction. We use an
+    //    explicit BEGIN/COMMIT (NOT execute_batch's implicit per-statement
+    //    auto-commit) so a mid-step fault rolls the whole step back and
+    //    leaves user_version unchanged (Boundary #2).
+    //
+    //    Within a step, the migration function is free to use execute_batch
+    //    for its DDL — rusqlite routes those through the open transaction
+    //    without committing. The PRAGMA user_version = N at the end of each
+    //    step advances the stamp atomically with the DDL.
+    let registry = migrations();
+    // `current` is bounded above by `LATEST_USER_VERSION` (u32, currently 1)
+    // and `registry.len()` is tiny (1 entry per schema version), so the
+    // skip count and target version never overflow u32 in practice. The
+    // `try_from` calls below defend against a pathological registry size
+    // and keep clippy's cast lints quiet without `allow` attributes.
+    let start = usize::try_from(current).expect("user_version fits in usize");
+    for (step_idx, step_fn) in registry.iter().enumerate().skip(start) {
+        let step_idx = u32::try_from(step_idx).expect("registry index fits in u32");
+        let target_version = step_idx + 1;
+        // Open the transaction. We use `unchecked_transaction` (rather
+        // than `transaction`) because the public signature is
+        // `migrate(conn: &Connection)` — matching `schema::init` — and
+        // `Connection::transaction` requires `&mut`. `unchecked_transaction`
+        // gives us a `Transaction<'_>` off a shared borrow; the safety
+        // obligation (no other statements on `conn` while the tx is live)
+        // is satisfied because we don't hand `conn` to anything else
+        // inside the loop body.
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| Error::Sqlite(e.to_string()))?;
+        step_fn(&tx)?;
+        // Commit. If this fails (e.g. busy), rusqlite returns Err and the
+        // Transaction's Drop issues ROLLBACK — user_version is untouched.
+        tx.commit().map_err(|e| Error::Sqlite(e.to_string()))?;
+        // Defensive: assert the step actually advanced the stamp. A buggy
+        // migration that forgets `PRAGMA user_version = N` would otherwise
+        // leave us in a loop or silently at the wrong version.
+        let stamped: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .map_err(|e| Error::Sqlite(e.to_string()))?;
+        let stamped = u32::try_from(stamped).map_err(|_| {
+            Error::Sqlite(format!(
+                "post-migration user_version = {stamped} is negative or > u32::MAX; DB corrupt"
+            ))
+        })?;
+        if stamped != target_version {
+            return Err(Error::Sqlite(format!(
+                "migration v{step_idx}→v{target_version} committed but left user_version = \
+                 {stamped}; the step must stamp PRAGMA user_version = {target_version}"
+            )));
+        }
+    }
+
     Ok(())
 }
 
@@ -282,43 +358,41 @@ mod tests {
 
     // -----------------------------------------------------------------
     // Boundary #2 — migration fails mid-way → transaction rolls back,
-    // user_version unchanged. We inject the fault by poisoning the DB:
-    // after the v0→v1 step creates `current_cycle`, we can't easily make
-    // the *next* statement fail mid-batch. Instead, we simulate a
-    // future v2 step that faults, by first migrating v0→v1, stamping
-    // user_version = 1, then running a `migrate_with_fault` that we
-    // drive through the public surface.
+    // user_version unchanged. We inject a fault by flipping the
+    // connection into read-only mode (`PRAGMA query_only = ON`) before
+    // calling migrate. The v0→v1 step's `CREATE TABLE` then fails
+    // inside the transaction; rusqlite's `Transaction` drops with an
+    // error and issues ROLLBACK, so neither the tables nor the
+    // `user_version = 1` stamp land.
     //
-    // The cleanest hermetic check the *current* registry admits is:
-    // pre-create a table that conflicts with the migration DDL (so the
-    // v0→v1 step's `CREATE TABLE` fails), call migrate, and assert the
-    // error surfaces AND user_version stays at 0. We force the fault by
-    // creating a `current_cycle` VIEW (not a table) — `CREATE TABLE IF
-    // NOT EXISTS current_cycle` then fails because the name is taken by
-    // a non-table object, mid-batch, leaving the schema unchanged.
+    // Why query_only (rather than poisoning sqlite_master with a
+    // conflicting VIEW): SQLite's `CREATE TABLE IF NOT EXISTS x` is
+    // *too* forgiving — if the name `x` is already taken by any object
+    // it silently skips the statement rather than erroring. `query_only
+    // = ON` instead rejects every write (DDL included) with
+    // SQLITE_READONLY, giving a hermetic, deterministic mid-step fault.
     // -----------------------------------------------------------------
     /// Cited: Story 4.3 TDD contract Boundary #2.
     #[test]
     fn migration_fault_rolls_back_transaction() {
         let (conn, _dir) = open_temp();
-        // Poison the schema: declare `current_cycle` as a VIEW. The v0→v1
-        // step's `CREATE TABLE IF NOT EXISTS current_cycle` then errors
-        // ("object name is already used") mid-batch. Because the step
-        // runs inside a transaction (GREEN contract), nothing it did
-        // before the fault is committed — and critically `user_version`
-        // is NOT advanced.
-        conn.execute_batch("CREATE VIEW current_cycle AS SELECT 1 AS x;")
-            .expect("creating a conflicting VIEW must succeed for test setup");
+        // Poison the connection: read-only mode rejects all DDL/DML.
+        conn.pragma_update(None, "query_only", "ON")
+            .expect("PRAGMA query_only = ON must succeed for test setup");
         assert_eq!(
             user_version(&conn),
             0,
             "test setup: user_version still 0 before migrate"
         );
 
-        let err = migrate(&conn).expect_err("migrate MUST fail on a poisoned schema");
+        let err = migrate(&conn).expect_err("migrate MUST fail under query_only = ON");
         // Any SQLite error is acceptable — the contract is "migrate
         // surfaces the fault rather than silently advancing".
         let _ = err.to_string();
+
+        // Lift the read-only lock so the post-conditions can read.
+        conn.pragma_update(None, "query_only", "OFF")
+            .expect("PRAGMA query_only = OFF must succeed for post-condition");
 
         // The load-bearing assertion: user_version MUST be unchanged.
         assert_eq!(
@@ -326,19 +400,16 @@ mod tests {
             0,
             "user_version MUST be unchanged after a rolled-back migration (Boundary #2)"
         );
-        // The other table must NOT exist — the transaction rolled back,
-        // so the DDL after the faulting statement never landed.
-        let n_history: i64 = conn
+        // The tables must NOT exist — the transaction rolled back, so
+        // the DDL never landed.
+        let n_tables: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master \
-                 WHERE type = 'table' AND name = 'bandwidth_history'",
+                 WHERE type = 'table' AND name IN ('current_cycle', 'bandwidth_history')",
                 [],
                 |row| row.get(0),
             )
             .expect("post-fault sqlite_master query must succeed");
-        assert_eq!(
-            n_history, 0,
-            "bandwidth_history MUST NOT exist after rollback"
-        );
+        assert_eq!(n_tables, 0, "neither AD-11 table MUST exist after rollback");
     }
 }
