@@ -1,9 +1,11 @@
 //! `sidebar-persistence` — SQLite-backed bandwidth state store (AD-11, Stories 4.1-4.3).
 //!
 //! Owns all SQLite access in the workspace (guardrail G21). Story 4.1
-//! delivers schema initialization ([`schema::init`]); Stories 4.2/4.3 add
-//! the read/write/rollover primitives on top.
+//! delivers schema initialization ([`schema::init`]); Story 4.2 adds the
+//! read/write/rollover primitives ([`bandwidth_repo`]); Story 4.3 will add
+//! the `user_version` migration module.
 
+pub mod bandwidth_repo;
 pub mod schema;
 
 /// Story 0.1 smoke marker — proves the crate is reachable via `cargo test`.
