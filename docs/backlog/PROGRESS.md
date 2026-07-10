@@ -45,28 +45,28 @@ The swarm reads this file at task-startup to identify the ready set (stories who
 | 4.3 | merged | 2026-07-09T11Z | #22 | L0:4 | migration (v0→v1 via user_version registry). Epic 4 COMPLETE. |
 | 5.1 | merged | 2026-07-09T12Z | #23 | L0:6 | MonthlyAccumulator (in-memory, T-23 wraparound). F7 proptest. Pure domain. |
 | 5.2 | merged | 2026-07-09T14Z | #26 | L0:21 | BandwidthAccountant tokio task (subscribe + accumulate + flush + rollover). Clock trait (F3), T-15 debounce, G15 flush-error safety. Epic 5 COMPLETE. |
-| 5.3 | pending | — | — | — | — |
-| 6.1 | pending | — | — | — | — |
-| 6.2 | pending | — | — | — | — |
-| 6.3 | pending | — | — | — | — |
-| 6.4 | pending | — | — | — | — |
+| 5.3 | merged | 2026-07-10T05Z | #27 | L0:6 | BandwidthView DTO + builder (days_until_reset via Clock). Pure domain. Epic 5 COMPLETE. |
+| 6.1 | merged | 2026-07-10T06Z | #29 | L0:24 | Transparent/borderless/topmost viewport + DWM peek-exclude + capture-cloak. NOTE: capture-cloak uses DWMWA_CLOAK (DWMWA_CLOAKED_BY_CAPTURABLE_CONTENT absent in windows 0.62) — needs SetWindowDisplayAffinity follow-up. unsafe FFI (G2). |
+| 6.2 | merged | 2026-07-10T06Z | #29 | L0:24 | AppBar dock registration (SHAppBarMessage ABM_NEW/SETPOS/REMOVE). unsafe FFI. |
+| 6.3 | merged | 2026-07-10T06Z | #29 | L0:24 | Per-Monitor DPI Awareness v2 (SetProcessDpiAwarenessContext). unsafe FFI. |
+| 6.4 | merged | 2026-07-10T06Z | #30 | L0:23 | OhmSupervisor (probe + elevated launch via ShellExecuteExW + Job Object G10 + LHM config patch). Dep-free config write (no XML parser). TierChangeCallback seam for 7.4. unsafe FFI. Epic 6 COMPLETE. |
 | 6.5 | pending | — | — | — | — |
 | 6.6 | pending | — | — | — | — |
-| 7.1 | pending | — | — | — | — |
-| 7.2 | pending | — | — | — | — |
-| 7.3 | pending | — | — | — | — |
+| 7.1 | merged | 2026-07-10T05Z | #28 | L0:8 | Provider registry (tier-filtered via classify_for_v1). All 6 adapters wired. |
+| 7.2 | merged | 2026-07-10T06Z | #31 | L0:7 | Poller task (interval + spawn_blocking + catch_unwind/AssertUnwindSafe + broadcast). G15 panic-skip. Injectable InstantClock. |
+| 7.3 | merged | 2026-07-10T06Z | #32 | L0:11 | Two-tier launch probe (no UAC — &OhmSupervisor borrow prevents launch_elevated; T-45 port fallback; tier-broadcast seam). Epic 7 COMPLETE. |
 | 7.4 | pending | — | — | — | — |
 | 7.5 | pending | — | — | — | — |
-| 8.1 | pending | — | — | — | — |
-| 8.2 | pending | — | — | — | — |
-| 8.3 | pending | — | — | — | — |
-| 8.4 | pending | — | — | — | — |
-| 8.5 | pending | — | — | — | — |
-| 8.6 | pending | — | — | — | — |
-| 8.7 | pending | — | — | — | — |
-| 8.8 | pending | — | — | — | — |
-| 8.9 | pending | — | — | — | — |
-| 8.10 | pending | — | — | — | — |
+| 8.1 | merged | 2026-07-10T06Z | #33 | L0:11 | AppState + egui::App (repaint on broadcast drain, G15 RwLock poison recovery, F8 egui_kittest). 3 egui transitive advisories muted in deny.toml (ttf-parser/quick-xml, build-time-only on Win11). |
+| 8.2 | merged | 2026-07-10T06Z | #34 | L0:8 | Status pill (Basic gray/Full green, click→launch_elevated, tooltip). |
+| 8.3 | merged | 2026-07-10T06Z | #34 | L0:14 | Metric row (NFR-8 format dispatch: MetricKind×Unit→format_*; raw_values/temp_unit/decimal_base respect; T-20 NaN→"--"). |
+| 8.4 | merged | 2026-07-10T07Z | #35 | L0:13 | Bandwidth panel (per-NIC rows, history table, empty/reset-today/disconnected states). v2 MARQUEE. |
+| 8.5 | merged | 2026-07-10T07Z | #35 | L0:9 | Settings panel (cycle_start_day/temp/raw/decimal/poll/dock/theme; no-retroactive-resplit tooltip; autosave debounced). |
+| 8.6 | merged | 2026-07-10T07Z | #36 | L0:13 | Theme + accent color UI (#RGB/#RRGGBB/#RRGGBBAA parser, fallback #4CAF50). |
+| 8.7 | merged | 2026-07-10T07Z | #36 | L0:7 | Sparkline widget (RollingWindow mini line chart, NaN→gap, overflow downsample). |
+| 8.8 | merged | 2026-07-10T07Z | #36 | L0:11 | Threshold alert UI (check_threshold→row color Normal/Warning/Critical; hysteresis). |
+| 8.9 | merged | 2026-07-10T07Z | #37 | L0:22 | Metric enable/disable + drag-reorder (native egui DnD, [metrics] enabled+order config). |
+| 8.10 | merged | 2026-07-10T07Z | #37 | L0:11 | First-run wizard (docked edge/monitor/cycle_start_day/theme; G24 poller gate; first_run_complete). Epic 8 COMPLETE — END OF CODING. |
 | 9.1 | pending | — | — | — | — |
 | 9.2 | pending | — | — | — | — |
 | 9.3 | pending | — | — | — | — |
@@ -79,8 +79,9 @@ The swarm reads this file at task-startup to identify the ready set (stories who
 
 ## Summary
 - Total stories: 59
-- Merged: 27 / 59 (45.8%) — Stories 0.1-0.7, 1.1-1.6, 2.1-2.3, 3.1-3.6, 4.1-4.3, 5.1-5.2 (Epics 0+1+2+3+4+5 COMPLETE)
-- Ready for pickup: {5.3, 6.1-6.6, 7.1-7.5, 8.x, 11.1-11.4}
+- Merged: 42 / 59 (71.2%) — Stories 0.1-0.7, 1.1-1.6, 2.1-2.3, 3.1-3.6, 4.1-4.3, 5.1-5.3, 6.1-6.4, 7.1-7.3, 8.1-8.10 (Epics 0+1+2+3+4+5+6+7+8 COMPLETE — END OF CODING)
+- Ready for pickup: {3.2b, 6.5, 6.6, 7.4, 7.5, 9.1-9.3, 10.1, 10.2, 11.1-11.4} — post-coding (release/QA/CI stories)
+- Workspace tests on main: 446 passing, 0 failing, 11 ignored (hardware/UAC smokes)
 - Blocked on HITL: 0
 - Long-term blocked: 0
 
