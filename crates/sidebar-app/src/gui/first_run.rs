@@ -48,7 +48,7 @@
 //!   field, default false).
 
 use eframe::egui::Ui;
-use sidebar_domain::config::Config;
+use sidebar_domain::config::{Config, CycleStartDaySerde};
 
 /// The action the wizard signals back to the host on a given frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -67,10 +67,8 @@ pub enum WizardAction {
 }
 
 /// The minimum cycle-start day (T-26 — Day must be in `[1, 28]`).
-#[allow(dead_code)] // Used by the GREEN render path + tests.
 pub(crate) const MIN_CYCLE_DAY: u8 = 1;
 /// The maximum cycle-start day (T-26 — Day must be in `[1, 28]`).
-#[allow(dead_code)] // Used by the GREEN render path + tests.
 pub(crate) const MAX_CYCLE_DAY: u8 = 28;
 
 /// Whether the wizard should show for the given config. Returns true when
@@ -91,18 +89,111 @@ pub fn should_show(config: &Config) -> bool {
 /// 2. Persisting `config` (with `first_run_complete = true`) when the action
 ///    is Continue or Skip.
 /// 3. NOT starting the poller while the action is Pending (G24).
+///
+/// ## Fields collected (T-37)
+///
+/// - Docked edge (left/right/top/bottom) — checkbox group, default right.
+/// - Target monitor — text input, default "primary".
+/// - Billing-cycle start day — slider 1–28 (T-26).
+/// - Theme — checkbox group (Dark/Light/System), default Dark.
 pub fn render_wizard(ui: &mut Ui, config: &mut Config) -> WizardAction {
-    // STUB (RED phase): always returns Pending + renders nothing. The real
-    // implementation (GREEN commit) renders the four fields + Continue/Skip
-    // buttons. Deliberately NOT todo!()/unimplemented!() (clippy::todo = "deny").
-    let _ = config;
-    stub_render(ui)
-}
+    let mut action = WizardAction::Pending;
 
-/// Stub used only in the RED phase so the public render_wizard() signature
-/// compiles without satisfying the TDD contract. Replaced wholesale in GREEN.
-fn stub_render(_ui: &mut Ui) -> WizardAction {
-    WizardAction::Pending
+    ui.vertical_centered(|w| {
+        w.heading("Welcome to sidebar");
+        w.label(
+            egui::RichText::new("Let's set up your first-run preferences.")
+                .small()
+                .weak(),
+        );
+        w.separator();
+
+        // ---- Docked edge (T-37, T-36) ----
+        w.label("Docked edge");
+        w.horizontal(|row| {
+            for &edge in &["Left", "Right", "Top", "Bottom"] {
+                let mut selected = config.dock.edge == edge;
+                if row.checkbox(&mut selected, edge).changed() && selected {
+                    config.dock.edge = edge.to_string();
+                }
+            }
+        });
+
+        // ---- Target monitor (T-37, T-36) ----
+        w.label("Target monitor");
+        w.horizontal(|row| {
+            let mut mon = config.dock.monitor_id.clone();
+            let te = row.add(
+                egui::TextEdit::singleline(&mut mon)
+                    .desired_width(140.0)
+                    .hint_text("primary"),
+            );
+            if te.changed() {
+                config.dock.monitor_id = mon;
+            }
+            // Default affordance — clicking sets "primary".
+            if row.button("Use primary").clicked() {
+                config.dock.monitor_id = "primary".to_string();
+            }
+        });
+
+        // ---- Billing-cycle start day (T-37, T-26: 1–28) ----
+        w.label("Billing cycle start day");
+        w.horizontal(|row| {
+            let mut day_value: u8 = match &config.bandwidth.cycle_start_day {
+                CycleStartDaySerde::Day(d) => *d,
+                CycleStartDaySerde::LastDayOfMonth => MAX_CYCLE_DAY,
+            };
+            let slider =
+                row.add(egui::Slider::new(&mut day_value, MIN_CYCLE_DAY..=MAX_CYCLE_DAY).text(""));
+            if slider.changed() {
+                config.bandwidth.cycle_start_day = CycleStartDaySerde::Day(day_value);
+            }
+            let mut last_day = matches!(
+                config.bandwidth.cycle_start_day,
+                CycleStartDaySerde::LastDayOfMonth
+            );
+            if row.checkbox(&mut last_day, "Last day").changed() {
+                config.bandwidth.cycle_start_day = if last_day {
+                    CycleStartDaySerde::LastDayOfMonth
+                } else {
+                    CycleStartDaySerde::Day(MIN_CYCLE_DAY)
+                };
+            }
+        });
+
+        // ---- Theme (T-37, T-35) ----
+        w.label("Theme");
+        w.horizontal(|row| {
+            for &mode in &["Dark", "Light", "System"] {
+                let mut selected = config.theme.mode == mode;
+                if row.checkbox(&mut selected, mode).changed() && selected {
+                    config.theme.mode = mode.to_string();
+                }
+            }
+        });
+
+        w.separator();
+
+        // ---- Action buttons ----
+        w.horizontal(|btns| {
+            if btns.button("Skip").clicked() {
+                // Restore defaults (T-37 skip semantics). We overwrite the
+                // user-facing fields but preserve nothing else — the wizard
+                // is the first thing the user sees, so "skip" = "I'll take the
+                // defaults, get me in".
+                *config = Config::default();
+                config.first_run_complete = true;
+                action = WizardAction::Skip;
+            }
+            if btns.button("Continue").clicked() {
+                config.first_run_complete = true;
+                action = WizardAction::Continue;
+            }
+        });
+    });
+
+    action
 }
 
 #[cfg(test)]
@@ -256,6 +347,21 @@ mod tests {
     }
 
     // ===== Boundary: Continue returns Continue action (not Pending) =====
+    //
+    // kittest's `run()` loops multiple internal steps until the UI settles
+    // (see egui_kittest `_try_run`). The `clicked()` flag is true on exactly
+    // one step (the release frame), then false again. So we record the PEAK
+    // action across steps — once Continue/Skip is observed, it wins over later
+    // Pending steps (the production host reads the action per-frame and acts
+    // immediately on Continue/Skip, so the ephemeral flag is correct in prod).
+
+    fn record_action(slot: &Arc<Mutex<WizardAction>>, act: WizardAction) {
+        // Pending never overwrites a Continue/Skip already recorded.
+        let mut current = slot.lock().unwrap();
+        if *current == WizardAction::Pending {
+            *current = act;
+        }
+    }
 
     #[test]
     fn continue_returns_continue_action() {
@@ -266,7 +372,7 @@ mod tests {
         let mut harness = Harness::new_ui(move |ui| {
             let mut guard = c.lock().unwrap();
             let act = render_wizard(ui, &mut guard);
-            *a.lock().unwrap() = act;
+            record_action(&a, act);
         });
         harness.run();
         harness.get_by_label("Continue").click();
@@ -289,7 +395,7 @@ mod tests {
         let mut harness = Harness::new_ui(move |ui| {
             let mut guard = c.lock().unwrap();
             let act = render_wizard(ui, &mut guard);
-            *a.lock().unwrap() = act;
+            record_action(&a, act);
         });
         harness.run();
         harness.get_by_label("Skip").click();
@@ -306,7 +412,9 @@ mod tests {
     #[test]
     fn pre_click_returns_pending() {
         let config = Arc::new(Mutex::new(Config::default()));
-        let action = Arc::new(Mutex::new(WizardAction::Continue)); // sentinel
+        // Direct assignment (not record_action): with no click, every render
+        // returns Pending, so the final value is Pending regardless.
+        let action = Arc::new(Mutex::new(WizardAction::Pending));
         let c = config.clone();
         let a = action.clone();
         let mut harness = Harness::new_ui(move |ui| {

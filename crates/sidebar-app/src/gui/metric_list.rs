@@ -36,11 +36,24 @@
 //! - nfr-thresholds.md T-21 (metric rendering).
 //! - sidebar-domain::config::MetricsConfig (Story 1.5).
 
-use eframe::egui::Ui;
+use eframe::egui::{Frame, Ui};
 use sidebar_domain::config::MetricsConfig;
 
 /// Placeholder text shown when no metrics are enabled (Boundary: all-disabled).
 pub const NO_METRICS_TEXT: &str = "No metrics enabled";
+
+/// The drag-handle glyph (braille pattern dots — renders as a grip icon in
+/// egui's default font). Dragging the row by this handle reorders the metric.
+const DRAG_HANDLE: &str = "⠿";
+
+/// The type used as the DnD payload when reordering a metric row. The payload
+/// carries the metric name being dragged; the drop zone reads it on release.
+///
+/// egui's DnD plugin keys payloads by type — wrapping the name in a dedicated
+/// struct keeps the payload isolated from any other `Arc<String>` the host
+/// might drag in the same frame (the `id_salt` further namespaces via the
+/// `egui::Id` on each `dnd_drag_source`).
+struct MetricPayload(String);
 
 /// Render the metric enable/disable + reorder panel into `ui`, editing
 /// `metrics` in place. The host passes `on_change: &dyn Fn()` which is
@@ -51,17 +64,99 @@ pub const NO_METRICS_TEXT: &str = "No metrics enabled";
 /// `id_salt` disambiguates the egui::Id namespace when multiple metric lists
 /// are rendered in the same frame (the F8 tests + the production settings
 /// panel both render a list — distinct salts keep the DnD payloads isolated).
+///
+/// ## Layout
+///
+/// Each row is `[⠿ drag handle] [☐ checkbox] [metric name]`. The checkbox
+/// reflects + toggles membership in `enabled`. The drag handle is a
+/// `dnd_drag_source`; each row's body is a `dnd_drop_zone` so dropping a
+/// payload onto row N inserts it at position N. A final trailing drop zone
+/// catches drops below the last row (insert at end).
 pub fn render(ui: &mut Ui, metrics: &mut MetricsConfig, id_salt: &str, on_change: &dyn Fn()) {
-    // STUB (RED phase): renders nothing meaningful. The real implementation
-    // (GREEN commit) wires the egui 0.35 DnD API + per-row checkboxes.
-    // Deliberately NOT todo!()/unimplemented!() (clippy::todo = "deny").
-    let _ = (metrics, id_salt, on_change);
-    stub_render(ui);
-}
+    // Snapshot the order into a local Vec so we can iterate by index + mutate
+    // `metrics.order` in place when a reorder completes (the egui borrow
+    // checker would otherwise complain about borrowing `metrics` while its
+    // fields are borrowed by the row closure).
+    let names: Vec<String> = metrics.order.clone();
 
-/// Stub used only in the RED phase so the public render() signature compiles
-/// without satisfying the TDD contract. Replaced wholesale in GREEN.
-fn stub_render(_ui: &mut Ui) {}
+    if names.is_empty() {
+        ui.label(NO_METRICS_TEXT);
+        return;
+    }
+
+    // Boundary #1: all-disabled placeholder. We render the rows (so the user
+    // can re-enable) but surface the placeholder text first so the user knows
+    // why the live sidebar is empty.
+    if metrics.enabled.is_empty() {
+        ui.label(
+            egui::RichText::new(NO_METRICS_TEXT)
+                .color(ui.style().visuals.weak_text_color())
+                .italics(),
+        );
+        ui.separator();
+    }
+
+    let mut changed = false;
+    for (idx, name) in names.iter().enumerate() {
+        let row_id = ui.id().with(id_salt).with(idx);
+        let drop_id = ui.id().with(id_salt).with("drop").with(idx);
+
+        // Per-row drop zone: dropping a metric payload here inserts it at idx.
+        let (_inner, dropped) =
+            ui.dnd_drop_zone::<MetricPayload, _>(Frame::group(ui.style()), |row| {
+                // Drag handle — the dnd_drag_source paints the payload at the
+                // cursor while dragging. The handle label is the visible affordance.
+                row.horizontal(|h| {
+                    let drag = h.dnd_drag_source(row_id, MetricPayload(name.clone()), |src| {
+                        src.label(DRAG_HANDLE);
+                    });
+                    let _ = drag;
+
+                    // Per-row checkbox — toggles membership in `enabled`.
+                    let mut is_enabled = metrics.enabled.iter().any(|e| e == name);
+                    let cb = h.checkbox(&mut is_enabled, name.as_str());
+                    if cb.changed() {
+                        let now_enabled = toggle_enabled(metrics, name);
+                        // Reconcile: if the checkbox flipped to unchecked but the
+                        // helper reports enabled (or vice-versa) we trust the
+                        // helper (source of truth). The local `is_enabled` is just
+                        // the pre-toggle state read above.
+                        let _ = now_enabled;
+                        changed = true;
+                    }
+                });
+            });
+        let _ = drop_id;
+
+        // If a payload was released on this row, reorder: move the dragged
+        // name to `idx`. We search `order` for the source index + apply
+        // `move_metric`.
+        if let Some(payload) = dropped {
+            let from = metrics.order.iter().position(|n| n == &payload.0);
+            if let Some(from_idx) = from {
+                move_metric(&mut metrics.order, from_idx, idx);
+                changed = true;
+            }
+        }
+    }
+
+    // Trailing drop zone: dropping below the last row inserts at the end.
+    let trailing_idx = names.len();
+    let (_inner, dropped) = ui.dnd_drop_zone::<MetricPayload, _>(Frame::group(ui.style()), |row| {
+        row.label(" "); // thin drop target below the list
+    });
+    if let Some(payload) = dropped {
+        let from = metrics.order.iter().position(|n| n == &payload.0);
+        if let Some(from_idx) = from {
+            move_metric(&mut metrics.order, from_idx, trailing_idx);
+            changed = true;
+        }
+    }
+
+    if changed {
+        on_change();
+    }
+}
 
 // ===========================================================================
 // Pure-fn helpers (extracted for testability — the live render path mutates
@@ -70,7 +165,6 @@ fn stub_render(_ui: &mut Ui) {}
 
 /// Move the metric at `from_idx` to `to_idx`, shifting the intervening
 /// entries. No-op on out-of-range or equal indices (defensive).
-#[allow(dead_code)] // Used by the GREEN render path + tests.
 pub(crate) fn move_metric(order: &mut Vec<String>, from_idx: usize, to_idx: usize) {
     if from_idx == to_idx || from_idx >= order.len() || to_idx >= order.len() {
         return;
@@ -82,7 +176,6 @@ pub(crate) fn move_metric(order: &mut Vec<String>, from_idx: usize, to_idx: usiz
 /// Return the metric names that are BOTH in `order` AND `enabled`, preserving
 /// the `order` sequence. This is what the live sidebar view renders.
 #[must_use]
-#[allow(dead_code)] // Used by the GREEN render path + tests.
 pub(crate) fn enabled_in_order(metrics: &MetricsConfig) -> Vec<String> {
     metrics
         .order
@@ -94,7 +187,6 @@ pub(crate) fn enabled_in_order(metrics: &MetricsConfig) -> Vec<String> {
 
 /// Toggle a metric's membership in `enabled`. Returns true if the metric
 /// is now enabled (i.e. it was just added).
-#[allow(dead_code)] // Used by the GREEN render path + tests.
 pub(crate) fn toggle_enabled(metrics: &mut MetricsConfig, name: &str) -> bool {
     if let Some(pos) = metrics.enabled.iter().position(|e| e == name) {
         metrics.enabled.remove(pos);

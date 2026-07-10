@@ -398,8 +398,33 @@ pub fn render_sidebar(
         let display = config.display.clone();
         let accent = theme::parse_accent(&config.theme.accent);
         let default = ui.style().visuals.text_color();
-        let visible = readings.len().min(MAX_ROWS);
-        for reading in readings.iter().take(visible) {
+
+        // Story 8.9: when [metrics] config is set, filter + reorder the live
+        // rows to only the enabled metrics, in the configured order. When
+        // `order` is empty (default), we fall back to the poller-supplied
+        // sequence (Story 8.1 behavior) so the empty-config path stays
+        // unchanged. The metric-name strings in config use the MetricKind
+        // variant Debug names (e.g. "CpuUtilization"); we compare via the
+        // Debug format to avoid adding a Display impl to the domain enum.
+        let ordered: Vec<&Reading> = if config.metrics.order.is_empty() {
+            readings.iter().take(MAX_ROWS).collect()
+        } else {
+            let enabled_kinds = metric_list::enabled_in_order(&config.metrics);
+            let mut out: Vec<&Reading> = Vec::new();
+            for kind_name in &enabled_kinds {
+                for reading in readings {
+                    if out.len() >= MAX_ROWS {
+                        break;
+                    }
+                    if format!("{:?}", reading.kind) == *kind_name {
+                        out.push(reading);
+                    }
+                }
+            }
+            out
+        };
+
+        for reading in &ordered {
             // Story 8.8: classify + pick the row color. The render path is
             // stateless here (we always feed `AlertState::Normal` as prev);
             // the SidebarView will hold per-sensor prev-state in a follow-up
@@ -413,7 +438,7 @@ pub fn render_sidebar(
             );
             metric_row::render_with_color(ui, reading, &display, color);
         }
-        if readings.len() > MAX_ROWS {
+        if readings.len() > MAX_ROWS && config.metrics.order.is_empty() {
             let omitted = readings.len() - MAX_ROWS;
             ui.label(format!("+{omitted} more (truncated)"));
         }
@@ -1030,6 +1055,43 @@ mod tests {
         assert!(
             labels.contains("95"),
             "critical CPU temp must still render its value (got: {labels})"
+        );
+    }
+
+    // ===== Story 8.9 wiring: [metrics] config filters + reorders the live view =====
+
+    #[test]
+    fn render_sidebar_filters_metrics_by_enabled_in_order() {
+        // Two readings: CpuUtilization + CpuPower. Config enables only
+        // CpuUtilization → only that row renders in the live view (Boundary:
+        // metric in order but not enabled → ignored).
+        let readings = vec![
+            reading(MetricKind::CpuUtilization, 42.0, Unit::Percent),
+            reading(MetricKind::CpuPower, 65.0, Unit::Watts),
+        ];
+        let mut config = Config::default();
+        config.metrics.enabled = vec!["CpuUtilization".to_string()];
+        config.metrics.order = vec!["CpuUtilization".to_string(), "CpuPower".to_string()];
+        let view = SidebarView::default();
+        let mut harness = Harness::new_ui(|ui| {
+            render_sidebar(
+                ui,
+                &readings,
+                ProviderTier::Basic,
+                &mut config,
+                &view,
+                &|| {},
+            );
+        });
+        harness.run();
+        let labels = all_labels(&harness).join(" | ");
+        assert!(
+            labels.contains("42%"),
+            "enabled metric CpuUtilization must render (got: {labels})"
+        );
+        assert!(
+            !labels.contains("65 W") && !labels.contains("65W"),
+            "disabled metric CpuPower must NOT render in the live view (got: {labels})"
         );
     }
 }

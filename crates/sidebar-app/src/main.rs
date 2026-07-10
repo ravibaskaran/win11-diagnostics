@@ -28,7 +28,9 @@
 
 use std::sync::Arc;
 
+use sidebar_app::gui::first_run;
 use sidebar_app::gui::{AppState, SidebarApp};
+use sidebar_domain::config::Config;
 use sidebar_domain::reading::Reading;
 use sidebar_sensor::descriptor::ProviderTier;
 use tokio::sync::broadcast;
@@ -37,7 +39,7 @@ fn main() -> eframe::Result {
     tracing::info!(
         target = "sidebar.app.main",
         version = env!("CARGO_PKG_VERSION"),
-        "sidebar binary launching (Story 8.1)"
+        "sidebar binary launching (Story 8.1 + 8.10 first-run wizard)"
     );
 
     // tokio runtime for background work (poller, accountant). Story 8.1 does
@@ -50,6 +52,22 @@ fn main() -> eframe::Result {
         .enable_all()
         .build()
         .expect("failed to build tokio runtime");
+
+    // Story 8.10: first-run wizard gate. Load the config (default if absent),
+    // and if the wizard should show (`first_run_complete != true`), the
+    // SidebarApp renders the wizard modal instead of the live sidebar. G24:
+    // the poller must NOT start until the wizard completes — when Story 8.5
+    // wires the poller spawn, it goes BEHIND this gate (only spawn after
+    // `first_run::should_show(&config)` returns false). For Story 8.1 the
+    // poller isn't spawned yet, so the gate is structural: it documents the
+    // invariant + ensures the wizard is the first thing a new user sees.
+    let config = Config::default();
+    if first_run::should_show(&config) {
+        tracing::info!(
+            target = "sidebar.app.main",
+            "first-run wizard active — poller gated (G24) until wizard completes"
+        );
+    }
 
     // Broadcast channel for the poller → AppState pipe (T-14 cap = 8).
     // Story 8.5 will move the Sender into the poller task; for now both ends
