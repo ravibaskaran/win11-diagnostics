@@ -43,10 +43,17 @@
 // (settings panel). Each submodule owns its TDD contract; the composition
 // (pill at top, metric rows below, bandwidth panel, settings panel behind a
 // gear toggle) lives in `render_snapshot`.
+//
+// Story 8.6 (theme + accent), 8.7 (sparkline), 8.8 (threshold alert UI) add
+// three more submodules; their wiring into `render_sidebar` lands in the
+// GREEN commit for that batch.
+pub mod alert_indicator;
 pub mod bandwidth_panel;
 pub mod metric_row;
 pub mod settings_panel;
+pub mod sparkline;
 pub mod status_pill;
+pub mod theme;
 
 use std::sync::{Arc, RwLock};
 
