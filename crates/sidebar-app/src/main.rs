@@ -109,15 +109,14 @@ fn main() -> eframe::Result {
         let client = RealHttpClient::new();
         let supervisor = OhmSupervisor::new(client, &config_dir);
         let raw_tx = event_channel.raw_tx.clone();
-        let cb: sidebar_platform::ohm_supervisor::TierChangeCallback =
-            Box::new(move |new_tier| {
-                let mapped = if matches!(new_tier, ProviderTier::Full) {
-                    sidebar_domain::event::Tier::Full
-                } else {
-                    sidebar_domain::event::Tier::Basic
-                };
-                let _ = raw_tx.send(sidebar_domain::event::Event::TierChanged(mapped));
-            });
+        let cb: sidebar_platform::ohm_supervisor::TierChangeCallback = Box::new(move |new_tier| {
+            let mapped = if matches!(new_tier, ProviderTier::Full) {
+                sidebar_domain::event::Tier::Full
+            } else {
+                sidebar_domain::event::Tier::Basic
+            };
+            let _ = raw_tx.send(sidebar_domain::event::Event::TierChanged(mapped));
+        });
         let mut supervisor = supervisor;
         supervisor.set_tier_change_broadcaster(Some(cb));
 
