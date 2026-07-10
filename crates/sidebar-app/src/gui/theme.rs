@@ -29,7 +29,7 @@
 //! the assertion-based approach: every visual contract is a value-level
 //! `assert_eq!`, not a human-reviewed image diff.
 
-use eframe::egui::{Color32, Context};
+use eframe::egui::{self, Color32, Context};
 
 /// Default accent (T-35 — `#4CAF50`, a Material green).
 pub const DEFAULT_ACCENT: Color32 = Color32::from_rgb(0x4C, 0xAF, 0x50);
@@ -74,11 +74,17 @@ impl ThemeMode {
 /// The accent is injected via `ctx.global_style_mut(|s| s.visuals.selection
 /// .bg_fill = color)` so selection rows, hovered widgets, and the active
 /// settings radio use the user's accent.
-///
-/// **RED-phase stub**: this is a no-op so the dark-visuals / red-selection
-/// assertions FAIL, locking the contract.
-pub fn apply(_ctx: &Context, _mode: ThemeMode, _accent: &str) {
-    // RED-phase stub: deliberately does NOT mutate the context.
+pub fn apply(ctx: &Context, mode: ThemeMode, accent: &str) {
+    let preference = match mode {
+        ThemeMode::Dark => egui::ThemePreference::Dark,
+        ThemeMode::Light => egui::ThemePreference::Light,
+        ThemeMode::System => egui::ThemePreference::System,
+    };
+    ctx.set_theme(preference);
+    let accent_color = parse_accent(accent);
+    ctx.global_style_mut(|s| {
+        s.visuals.selection.bg_fill = accent_color;
+    });
 }
 
 /// Parse an accent-color hex string.
@@ -90,12 +96,62 @@ pub fn apply(_ctx: &Context, _mode: ThemeMode, _accent: &str) {
 ///
 /// Any invalid input (empty, wrong length, non-hex chars, missing/extra `#`)
 /// returns [`DEFAULT_ACCENT`] (`#4CAF50`) and logs at `warn!` (T-35 boundary).
-///
-/// **RED-phase stub**: always returns [`DEFAULT_ACCENT`] — the `#FF0000 → red`
-/// and `#RGB → expanded` assertions FAIL, the `garbage → fallback` test
-/// passes trivially.
 #[must_use]
-pub fn parse_accent(_s: &str) -> Color32 {
+pub fn parse_accent(s: &str) -> Color32 {
+    let trimmed = s.trim();
+    let without_hash = trimmed.strip_prefix('#').unwrap_or(trimmed);
+    match without_hash.len() {
+        3 => {
+            // #RGB → each digit doubled. We re-parse the doubled string so a
+            // single code path validates hex digits.
+            let chars: Vec<char> = without_hash.chars().collect();
+            let doubled: String = chars.iter().flat_map(|&c| [c, c]).collect();
+            hex_to_color(&doubled).unwrap_or_else(|| fallback(s))
+        }
+        6 => hex_to_color(without_hash).unwrap_or_else(|| fallback(s)),
+        8 => {
+            // #RRGGBBAA — parse first six as RGB, last two as alpha.
+            // ASCII-only path: hex digits are 1 byte each, so byte slicing is
+            // safe *after* we know the string is pure ASCII. Non-ASCII falls
+            // back.
+            if !without_hash.is_ascii() {
+                return fallback(s);
+            }
+            match hex_to_color(&without_hash[..6]) {
+                Some(rgb) => match u8::from_str_radix(&without_hash[6..8], 16) {
+                    Ok(alpha) => {
+                        let [red, green, blue, _] = rgb.to_array();
+                        Color32::from_rgba_unmultiplied(red, green, blue, alpha)
+                    }
+                    Err(_) => fallback(s),
+                },
+                None => fallback(s),
+            }
+        }
+        _ => fallback(s),
+    }
+}
+
+/// Convert a 6-char hex string (`RRGGBB`) to an opaque [`Color32`]. Returns
+/// `None` if any digit isn't a valid hex byte (single validation path for
+/// both the 3-digit-doubled and 6-digit forms).
+fn hex_to_color(hex: &str) -> Option<Color32> {
+    if hex.len() != 6 {
+        return None;
+    }
+    let red = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let green = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let blue = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some(Color32::from_rgb(red, green, blue))
+}
+
+/// Log the parse failure and return [`DEFAULT_ACCENT`] (T-35 boundary).
+fn fallback(input: &str) -> Color32 {
+    tracing::warn!(
+        target = "sidebar.app.theme",
+        input = %input,
+        "invalid accent hex — falling back to #4CAF50 (T-35)"
+    );
     DEFAULT_ACCENT
 }
 
@@ -193,7 +249,10 @@ mod tests {
     #[test]
     fn parse_accent_eight_digit_form_with_alpha() {
         let color = parse_accent("#FF000080");
-        let [red, green, blue, alpha] = color.to_array();
+        // `to_array()` returns premultiplied alpha (egui stores internally
+        // premultiplied). Use `to_srgba_unmultiplied()` to round-trip the
+        // original straight-alpha values.
+        let [red, green, blue, alpha] = color.to_srgba_unmultiplied();
         assert_eq!((red, green, blue, alpha), (0xFF, 0x00, 0x00, 0x80));
     }
 

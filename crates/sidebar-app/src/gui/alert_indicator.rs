@@ -20,13 +20,9 @@
 //! - nfr-thresholds.md T-20 (NaN handling), T-35 (theme + accent)
 
 use eframe::egui::Color32;
-// RED-phase: `check_threshold` + `MetricKind` are used by the GREEN classify()
-// impl; they're imported here so the GREEN diff is the body only.
-#[allow(unused_imports)]
 use sidebar_domain::alert::check_threshold;
 use sidebar_domain::alert::AlertState;
 use sidebar_domain::config::ThresholdConfig;
-#[allow(unused_imports)]
 use sidebar_domain::reading::MetricKind;
 use sidebar_domain::reading::Reading;
 
@@ -43,19 +39,17 @@ use sidebar_domain::reading::Reading;
 ///
 /// Returns `(color, new_state)` so the render path can stash the state for
 /// the next frame's hysteresis input.
-///
-/// **RED-phase stub**: always returns `(default, AlertState::Normal)` — the
-/// critical→red + warning→accent assertions FAIL, the `None → default` and
-/// `NaN → default` tests pass trivially.
 #[must_use]
 pub fn color_for(
-    _reading: &Reading,
-    _threshold: Option<&ThresholdConfig>,
-    _prev_state: AlertState,
-    _accent: Color32,
+    reading: &Reading,
+    threshold: Option<&ThresholdConfig>,
+    prev_state: AlertState,
+    accent: Color32,
     default: Color32,
 ) -> (Color32, AlertState) {
-    (default, AlertState::Normal)
+    let state = classify(reading, threshold, prev_state);
+    let color = color_for_state(state, accent, default);
+    (color, state)
 }
 
 /// Classify a reading's alert state via the Story 1.2 [`check_threshold`].
@@ -63,15 +57,28 @@ pub fn color_for(
 /// the config (CPU temps → `cpu_temp_*`, GPU temps → `gpu_temp_*`); other
 /// kinds return [`AlertState::Normal`] (we don't alert on non-temperature
 /// metrics in v1).
-///
-/// **RED-phase stub**: always returns [`AlertState::Normal`].
 #[must_use]
 pub fn classify(
-    _reading: &Reading,
-    _threshold: Option<&ThresholdConfig>,
-    _prev_state: AlertState,
+    reading: &Reading,
+    threshold: Option<&ThresholdConfig>,
+    prev_state: AlertState,
 ) -> AlertState {
-    AlertState::Normal
+    let Some(t) = threshold else {
+        return AlertState::Normal;
+    };
+    // NaN reading → Normal (T-20). check_threshold handles NaN internally,
+    // but we short-circuit here so non-temperature NaN readings also resolve
+    // to Normal without needing a MetricKind mapping.
+    if reading.value.is_nan() {
+        return AlertState::Normal;
+    }
+    let (warn, crit) = match reading.kind {
+        MetricKind::CpuTemperature => (t.cpu_temp_warn, t.cpu_temp_critical),
+        MetricKind::GpuTemperature => (t.gpu_temp_warn, t.gpu_temp_critical),
+        // v1 alerts only on CPU/GPU temperatures (Story 8.8 spec §2).
+        _ => return AlertState::Normal,
+    };
+    check_threshold(reading.value, warn, HYSTERESIS_C, crit, prev_state)
 }
 
 /// Critical-alert red (PRD §3 — `#F44336`, Material red). Mirrors

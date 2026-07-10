@@ -65,6 +65,90 @@ pub fn render(ui: &mut Ui, window: &mut RollingWindow, width: f32) {
     paint_segments(ui, rect, &segments);
 }
 
+/// Same as [`render`] but takes an immutable window snapshot (clone) — for
+/// callers that want to render without making the deque contiguous in place.
+pub fn render_snapshot(ui: &mut Ui, snapshot: &[f64], width: f32) {
+    let size = Vec2::new(width, DEFAULT_HEIGHT);
+    if snapshot.is_empty() {
+        ui.label(EMPTY_TEXT);
+        return;
+    }
+    let (rect, _response) = ui.allocate_at_least(size, egui::Sense::hover());
+    let segments = render_segments_from_slice(snapshot, rect);
+    paint_segments(ui, rect, &segments);
+}
+
+/// Pure-fn variant operating on a slice — shared core between [`render`]
+/// (which pulls a slice from the window) and [`render_snapshot`].
+fn render_segments_from_slice(values: &[f64], rect: Rect) -> Vec<Vec<Pos2>> {
+    if values.is_empty() {
+        return Vec::new();
+    }
+    let n = values.len();
+    let denom = n.saturating_sub(1).max(1);
+
+    let width = rect.width().max(1.0);
+    let height = rect.height();
+    let left = rect.left();
+    let top = rect.top();
+    let center_y = top + height * 0.5;
+
+    let finite: Vec<f64> = values.iter().copied().filter(|v| !v.is_nan()).collect();
+    if finite.is_empty() {
+        return Vec::new();
+    }
+    let min = finite.iter().copied().fold(f64::INFINITY, f64::min);
+    let max = finite.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let range_zero = (max - min).abs() < f64::EPSILON;
+
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let pixel_budget = (width as usize).max(1);
+    let stride = if finite.len() > pixel_budget {
+        finite.len().div_ceil(pixel_budget)
+    } else {
+        1
+    };
+
+    let mut segments: Vec<Vec<Pos2>> = Vec::new();
+    let mut current: Vec<Pos2> = Vec::new();
+    let mut kept_index: usize = 0;
+    for (i, &value) in values.iter().enumerate() {
+        if value.is_nan() {
+            if !current.is_empty() {
+                segments.push(std::mem::take(&mut current));
+            }
+            continue;
+        }
+        let is_last_finite = i + 1 == n || values[i + 1..].iter().all(|v| v.is_nan());
+        let kept = kept_index.is_multiple_of(stride) || is_last_finite;
+        if kept {
+            // Index → x position. The usize→f32 cast loses precision above
+            // ~16M (2^24), but a sparkline with 16M samples is absurd (T-22
+            // caps at 600); the cast is safe under the documented contract.
+            #[allow(clippy::cast_precision_loss)]
+            let x_ratio = i as f32 / denom as f32;
+            let x = left + x_ratio * width;
+            let x = x.min(rect.right());
+            let y = if range_zero {
+                center_y
+            } else {
+                let t = (value - min) / (max - min);
+                // f64→f32 truncation is intentional (egui paints in f32); the
+                // sub-LSB loss is invisible at sparkline resolution.
+                #[allow(clippy::cast_possible_truncation)]
+                let t_f32 = t as f32;
+                top + (1.0 - t_f32) * height
+            };
+            current.push(Pos2::new(x, y));
+        }
+        kept_index += 1;
+    }
+    if !current.is_empty() {
+        segments.push(current);
+    }
+    segments
+}
+
 /// Compute the per-segment point lists for a window inside `rect`. Each
 /// returned `Vec<Pos2>` is a contiguous run of finite values; NaN values
 /// split the runs (gap rendering per Story 1.6).
@@ -77,13 +161,13 @@ pub fn render(ui: &mut Ui, window: &mut RollingWindow, width: f32) {
 /// `samples / pixels` (integer) — every Nth sample wins. This keeps the
 /// vertex count at or below the pixel count (T-22 cap is 600 samples vs a
 /// 100px sparkline → 6:1 downsampling worst case).
+///
+/// `&mut` is required because [`RollingWindow::as_slice`] needs `&mut self`
+/// to make the underlying VecDeque contiguous.
 #[must_use]
-pub fn render_segments(window: &RollingWindow, rect: Rect) -> Vec<Vec<Pos2>> {
-    // Story 8.7 RED stub: no segments computed, so the ascending-segments
-    // assertions FAIL. The empty-window branch is handled in `render` so the
-    // empty test passes.
-    let _ = (window, rect);
-    Vec::new()
+pub fn render_segments(window: &mut RollingWindow, rect: Rect) -> Vec<Vec<Pos2>> {
+    let raw: &[f64] = window.as_slice();
+    render_segments_from_slice(raw, rect)
 }
 
 /// Paint the computed segments into `ui`'s painter.
@@ -140,7 +224,7 @@ mod tests {
         w.push(10.0);
         w.push(20.0);
         w.push(30.0);
-        let segments = render_segments(&w, test_rect());
+        let segments = render_segments(&mut w, test_rect());
         assert_eq!(
             segments.len(),
             1,
@@ -185,7 +269,7 @@ mod tests {
         w.push(10.0);
         w.push(f64::NAN);
         w.push(30.0);
-        let segments = render_segments(&w, test_rect());
+        let segments = render_segments(&mut w, test_rect());
         assert_eq!(
             segments.len(),
             2,
@@ -207,7 +291,7 @@ mod tests {
         w.push(f64::NAN);
         w.push(40.0);
         w.push(50.0);
-        let segments = render_segments(&w, test_rect());
+        let segments = render_segments(&mut w, test_rect());
         assert_eq!(segments.len(), 2);
         assert_eq!(segments[0].len(), 2);
         assert_eq!(segments[1].len(), 2);
@@ -227,7 +311,7 @@ mod tests {
         }
         // 100px-wide rect → at most 101 vertices (one per pixel + endpoint).
         let rect = test_rect();
-        let segments = render_segments(&w, rect);
+        let segments = render_segments(&mut w, rect);
         let total_vertices: usize = segments.iter().map(std::vec::Vec::len).sum();
         // The cast is safe: rect.width() is a small positive pixel count.
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -247,7 +331,7 @@ mod tests {
         w.push(42.0);
         w.push(42.0);
         let rect = test_rect();
-        let segments = render_segments(&w, rect);
+        let segments = render_segments(&mut w, rect);
         assert_eq!(segments.len(), 1);
         let run = &segments[0];
         assert_eq!(run.len(), 3);
