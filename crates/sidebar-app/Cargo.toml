@@ -30,12 +30,16 @@ serde_json = { workspace = true }       # MIT/Apache-2.0 — NFR-1 bench parsing
 tokio = { workspace = true }            # MIT — broadcast + interval + spawn_blocking (AD-6)
 tokio-util = { workspace = true }       # MIT — CancellationToken (shutdown signal, T-19)
 tracing = { workspace = true }          # MIT — structured logging (panic-skip G15)
+tracing-subscriber = { workspace = true }  # MIT — log subscriber for the binary launch sequence (Integration main.rs)
 thiserror = { workspace = true }        # MIT/Apache-2.0 — PollerError derive (consistent with sidebar-domain::error)
 chrono = { workspace = true }           # MIT OR Apache-2.0 — NaiveDate for bandwidth panel tests (Story 8.4)
+toml = { workspace = true }             # MIT OR Apache-2.0 — config.toml serialization (Integration main.rs persist_config)
+rusqlite = { workspace = true }         # MIT — SQLite bindings (Integration main.rs accountant thread: open Connection on the LocalSet thread)
 egui = { workspace = true }             # MIT — immediate-mode GUI (Story 8.1)
 eframe = { workspace = true }           # MIT — egui desktop shell (Story 8.1)
 sidebar-domain = { path = "../sidebar-domain" }   # internal — Reading, MetricKind, Config::ohm.http_port (T-45, Story 7.3)
-sidebar-bandwidth = { path = "../sidebar-bandwidth" }  # internal — BandwidthView DTO (Story 5.3, Story 8.4 render target)
+sidebar-bandwidth = { path = "../sidebar-bandwidth" }  # internal — BandwidthView DTO (Story 5.3, Story 8.4 render target) + BandwidthAccountant (Integration main.rs)
+sidebar-persistence = { path = "../sidebar-persistence" }  # internal — schema::init + bandwidth_repo (Integration main.rs accountant spawn)
 sidebar-sensor = { path = "../sidebar-sensor" }   # internal — SensorProvider trait, SensorDescriptor, classify_for_v1, ProviderTier
 sidebar-platform = { path = "../sidebar-platform" }  # internal — OhmSupervisor (probe engine, Story 6.4) — Story 7.3 delegates to it
 sidebar-adapter-sysinfo = { path = "../sidebar-adapter-sysinfo" }  # internal — SysinfoAdapter (Tier::Basic)
@@ -43,7 +47,7 @@ sidebar-adapter-battery = { path = "../sidebar-adapter-battery" }  # internal �
 sidebar-adapter-pdh = { path = "../sidebar-adapter-pdh" }          # internal — PdhAdapter (Tier::Basic)
 sidebar-adapter-net = { path = "../sidebar-adapter-net" }          # internal — NetAdapter (Tier::Both)
 sidebar-adapter-nvml = { path = "../sidebar-adapter-nvml" }        # internal — NvmlAdapter (Tier::Basic, NVML-unavailable-safe)
-sidebar-adapter-ohm = { path = "../sidebar-adapter-ohm" }          # internal — OhmAdapter (Tier::Full)
+sidebar-adapter-ohm = { path = "../sidebar-adapter-ohm" }          # internal — OhmAdapter (Tier::Full) + RealHttpClient (Integration main.rs probe)
 
 # Dev-only deps for workspace-level integration tests (tests/*.rs in this
 # crate) + parse_threshold unit tests.
