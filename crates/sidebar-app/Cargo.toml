@@ -12,9 +12,18 @@ description = "sidebar binary — Win11 hardware diagnostics sidebar"
 # Story 7.1: provider registry depends on sidebar-sensor (trait + classifier) +
 # every shipped adapter (sidebar-adapter-*). These are path deps → no new
 # external licenses enter the manifest.
+# Story 7.2: poller task uses tokio (broadcast + interval + spawn_blocking) and
+# tokio-util (CancellationToken — same shutdown signal the accountant uses).
+# tracing is already a transitive dep of the adapters; pulling it in here makes
+# the poller's structured logging explicit. All workspace-managed, so no new
+# license entries beyond the already-vetted workspace set (T-32).
 [dependencies]
 serde = { workspace = true }            # MIT/Apache-2.0 — derive for Estimate
 serde_json = { workspace = true }       # MIT/Apache-2.0 — NFR-1 bench parsing
+tokio = { workspace = true }            # MIT — broadcast + interval + spawn_blocking (AD-6)
+tokio-util = { workspace = true }       # MIT — CancellationToken (shutdown signal, T-19)
+tracing = { workspace = true }          # MIT — structured logging (panic-skip G15)
+thiserror = { workspace = true }        # MIT/Apache-2.0 — PollerError derive (consistent with sidebar-domain::error)
 sidebar-domain = { path = "../sidebar-domain" }   # internal — Reading, MetricKind (transitively used by adapters)
 sidebar-sensor = { path = "../sidebar-sensor" }   # internal — SensorProvider trait, SensorDescriptor, classify_for_v1
 sidebar-adapter-sysinfo = { path = "../sidebar-adapter-sysinfo" }  # internal — SysinfoAdapter (Tier::Basic)
