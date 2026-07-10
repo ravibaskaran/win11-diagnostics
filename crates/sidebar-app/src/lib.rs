@@ -10,6 +10,7 @@
 pub mod parse_threshold;
 pub mod poller;
 pub mod provider_registry;
+pub mod tier_probe;
 
 /// Story 0.1 smoke marker (kept for the workspace-shape test contract).
 #[must_use]
