@@ -39,9 +39,13 @@
 //! - guardrails.md G15 (RwLock poison recovery)
 //! - tdd-fixtures.md F8 (egui_kittest harness)
 
-// Story 8.2 + 8.3 GUI components. Each submodule owns its TDD contract; the
-// composition (pill at top, metric rows below) lives in `render_snapshot`.
+// Story 8.2 + 8.3 GUI components + Story 8.4 (bandwidth panel) + Story 8.5
+// (settings panel). Each submodule owns its TDD contract; the composition
+// (pill at top, metric rows below, bandwidth panel, settings panel behind a
+// gear toggle) lives in `render_snapshot`.
+pub mod bandwidth_panel;
 pub mod metric_row;
+pub mod settings_panel;
 pub mod status_pill;
 
 use std::sync::{Arc, RwLock};

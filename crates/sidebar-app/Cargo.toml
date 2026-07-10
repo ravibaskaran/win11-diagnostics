@@ -31,9 +31,11 @@ tokio = { workspace = true }            # MIT — broadcast + interval + spawn_b
 tokio-util = { workspace = true }       # MIT — CancellationToken (shutdown signal, T-19)
 tracing = { workspace = true }          # MIT — structured logging (panic-skip G15)
 thiserror = { workspace = true }        # MIT/Apache-2.0 — PollerError derive (consistent with sidebar-domain::error)
+chrono = { workspace = true }           # MIT OR Apache-2.0 — NaiveDate for bandwidth panel tests (Story 8.4)
 egui = { workspace = true }             # MIT — immediate-mode GUI (Story 8.1)
 eframe = { workspace = true }           # MIT — egui desktop shell (Story 8.1)
 sidebar-domain = { path = "../sidebar-domain" }   # internal — Reading, MetricKind, Config::ohm.http_port (T-45, Story 7.3)
+sidebar-bandwidth = { path = "../sidebar-bandwidth" }  # internal — BandwidthView DTO (Story 5.3, Story 8.4 render target)
 sidebar-sensor = { path = "../sidebar-sensor" }   # internal — SensorProvider trait, SensorDescriptor, classify_for_v1, ProviderTier
 sidebar-platform = { path = "../sidebar-platform" }  # internal — OhmSupervisor (probe engine, Story 6.4) — Story 7.3 delegates to it
 sidebar-adapter-sysinfo = { path = "../sidebar-adapter-sysinfo" }  # internal — SysinfoAdapter (Tier::Basic)
