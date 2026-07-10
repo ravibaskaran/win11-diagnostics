@@ -56,6 +56,13 @@ pub const NO_RESPLIT_TOOLTIP: &str = "Billing-cycle start day applies to the \
 /// passes `on_change: &dyn Fn()` which is invoked whenever the user changes
 /// any field — the host is responsible for persisting `config.toml` (debounced
 /// per PRD §5.5.8).
+//
+// Note: this function surfaces one field-group per section (cycle day, temp
+// unit, raw values, byte base, poll interval, dock edge, theme, + Story 8.9
+// metric list). Splitting each into its own fn would fragment the linear
+// top-to-bottom layout the panel presents visually; the 101-line count is the
+// natural floor for eight sections.
+#[allow(clippy::too_many_lines)]
 pub fn render(ui: &mut Ui, config: &mut Config, on_change: &dyn Fn()) {
     let mut changed = false;
 
@@ -173,6 +180,11 @@ pub fn render(ui: &mut Ui, config: &mut Config, on_change: &dyn Fn()) {
 
     // ---- Theme (T-35) ----
     theme_section(ui, &mut config.theme, &mut changed);
+
+    // ---- Story 8.9: metric enable/disable + reorder ----
+    ui.separator();
+    ui.label("Metrics");
+    crate::gui::metric_list::render(ui, &mut config.metrics, "settings", on_change);
 
     if changed {
         on_change();
