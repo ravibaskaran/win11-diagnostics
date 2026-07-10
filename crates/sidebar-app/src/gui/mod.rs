@@ -265,12 +265,13 @@ pub(crate) fn build_viewport(prefs: ViewportPrefs) -> egui::ViewportBuilder {
 /// query both independently — the Story 8.1 Happy Path contract asserts the
 /// snapshot contains BOTH "CPU" and "42%" as distinct queryable nodes.
 pub fn render_snapshot(ui: &mut Ui, readings: &[Reading], tier: ProviderTier) {
-    let tier_label = match tier {
-        ProviderTier::Basic => "BASIC",
-        ProviderTier::Full => "FULL",
-        ProviderTier::Both => "BOTH",
-    };
-    ui.label(format!("Tier: {tier_label}"));
+    // Story 8.2: status pill at the top (Basic gray / Full green + tooltip).
+    // The pill click is the ONLY launch-elevated entry point (PRD §5.4). At
+    // the render_snapshot layer we wire a no-op callback — the real
+    // `OhmSupervisor::launch_elevated` is bound in Story 8.5 (settings panel
+    // + launch sequence) when the AppState owns the supervisor handle.
+    status_pill::render(ui, tier, &|| {});
+
     ui.separator();
 
     if readings.is_empty() {
@@ -278,9 +279,14 @@ pub fn render_snapshot(ui: &mut Ui, readings: &[Reading], tier: ProviderTier) {
         return;
     }
 
+    // Story 8.3: metric rows via the NFR-8 dispatch (MetricKind × Unit →
+    // format_*). Default DisplayConfig (human-readable, Celsius, decimal GB).
+    // Story 8.5 (settings panel) will plumb the real configured DisplayConfig
+    // through here once AppState owns a Config handle.
+    let display = default_display_config();
     let visible = readings.len().min(MAX_ROWS);
     for reading in readings.iter().take(visible) {
-        render_metric_row(ui, reading);
+        metric_row::render(ui, reading, &display);
     }
 
     // T-21 truncation marker. We render the count explicitly so a 1000-reading
@@ -292,14 +298,11 @@ pub fn render_snapshot(ui: &mut Ui, readings: &[Reading], tier: ProviderTier) {
     }
 }
 
-/// Render one metric row: a short kind label + a formatted value. Splitting
-/// the labels (rather than one combined "CPU: 42%" string) keeps the F8
-/// access tree queryable per-field, which the Story 8.1 contract relies on.
-fn render_metric_row(ui: &mut Ui, reading: &Reading) {
-    ui.horizontal(|row| {
-        row.label(kind_label(reading.kind));
-        row.label(format_reading(reading));
-    });
+/// Default display config used by [`render_snapshot`] when the caller has no
+/// configured `[display]` section yet. Story 8.5 replaces this with the real
+/// `Config::display` once AppState owns a `Config` handle.
+fn default_display_config() -> sidebar_domain::config::DisplayConfig {
+    sidebar_domain::config::DisplayConfig::default()
 }
 
 /// Short uppercase label for a [`MetricKind`] — the per-row "kind" the F8
@@ -364,6 +367,7 @@ pub(crate) fn kind_label(kind: MetricKind) -> &'static str {
     clippy::cast_precision_loss
 )]
 #[must_use]
+#[allow(dead_code)] // Kept for the Story 8.1 format-delegation test; the live render path now uses gui::metric_row::format_reading_with_config (Story 8.3).
 pub(crate) fn format_reading(reading: &Reading) -> String {
     let Reading { value, unit, .. } = reading;
     match unit {
@@ -440,6 +444,7 @@ pub(crate) fn format_reading(reading: &Reading) -> String {
 /// Format an uptime in seconds as `Xh Ym` or `Ym Zs` (compact, no trailing
 /// unit when zero). Keeps the metric row width-bounded for the sidebar.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(dead_code)] // Called only by format_reading above (Story 8.1 path, kept for its test).
 fn format_uptime(secs: f64) -> String {
     if !secs.is_finite() {
         return "--".to_string();

@@ -11,14 +11,8 @@
 //! - Story 8.2 TDD contract (Happy Path #1-#2, Boundary #1-#2)
 //! - architecture.md §4 + AD-8 (status pill click → `launch_elevated`)
 //! - guardrails.md HITL — UAC trigger must be explicit user action only.
-//!
-//! ## RED phase
-//!
-//! `render` is a STUB that renders nothing — the tests below encode the
-//! Story 8.2 contract and are expected to FAIL at this commit. The GREEN
-//! commit implements the real pill.
 
-use eframe::egui::Ui;
+use eframe::egui::{self, Color32, Ui};
 use sidebar_sensor::descriptor::ProviderTier;
 
 /// Tooltip shown when the pill is in Basic mode (PRD §5.3, verbatim).
@@ -30,6 +24,14 @@ pub const TOOLTIP_BASIC: &str = "Basic mode. CPU temperature, fan speeds, \
 pub const TOOLTIP_FULL: &str = "Full mode. OpenHardwareMonitor is running. \
      All sensors active.";
 
+/// Muted gray fill for the BASIC pill (PRD §5.3 — "muted gray"). A neutral
+/// mid-gray that reads as inactive in both light and dark egui themes.
+const BASIC_FILL: Color32 = Color32::from_rgb(120, 120, 120);
+
+/// Accent green fill for the FULL pill (PRD §5.3 — "accent green"). A vivid
+/// green that reads as "active / OK" across themes.
+const FULL_FILL: Color32 = Color32::from_rgb(46, 160, 67);
+
 /// Render the status pill.
 ///
 /// - `tier` — the current runtime tier.
@@ -37,20 +39,38 @@ pub const TOOLTIP_FULL: &str = "Full mode. OpenHardwareMonitor is running. \
 ///   This is the **only** elevation entry point (PRD §5.4 / HITL). The Full
 ///   tier click is a no-op (the supervisor is already running).
 ///
-/// STUB — renders nothing in RED phase.
-pub fn render(_ui: &mut Ui, _tier: ProviderTier, _on_click_launch: &dyn Fn()) {
-    // Intentionally empty: RED phase stub. GREEN commit adds the real pill
-    // (button + tooltip + click handler).
+/// Design:
+/// - The pill is an `egui::Button` with a colored fill + the tier label.
+/// - The tooltip is wired via `response.on_hover_text(...)` so it surfaces in
+///   the accesskit tree (kittest F8 contract).
+/// - On click, if `click_triggers_launch(tier)` returns true, we invoke the
+///   callback. HITL: this is the user's explicit action — no auto-elevation.
+pub fn render(ui: &mut Ui, tier: ProviderTier, on_click_launch: &dyn Fn()) {
+    let label = tier_label(tier);
+    let fill = pill_fill(tier);
+    let tooltip = pill_tooltip(tier);
+
+    let button = egui::Button::new(label).fill(fill).corner_radius(8);
+    let response = ui.add(button);
+    let response = response.on_hover_text(tooltip);
+
+    // HITL (PRD §5.4): only an explicit user click triggers launch_elevated.
+    // Full tier click is a no-op (supervisor already running). Both is a
+    // provider declaration, not a runtime mode — treat as Basic-clickable.
+    if response.clicked() && click_triggers_launch(tier) {
+        tracing::info!(
+            target = "sidebar.app.status_pill",
+            tier = ?tier,
+            "user clicked status pill — invoking launch_elevated (HITL explicit action)"
+        );
+        on_click_launch();
+    }
 }
 
 /// Build the label string for a tier ("BASIC" / "FULL" / "BOTH").
 ///
 /// Exposed `pub(crate)` so the snapshot renderer and tests can share the
 /// canonical mapping without re-declaring it.
-///
-/// RED phase: unused in the lib build until the GREEN commit wires it into
-/// `render`. The `dead_code` allow is removed at GREEN.
-#[allow(dead_code)]
 #[must_use]
 pub(crate) fn tier_label(tier: ProviderTier) -> &'static str {
     match tier {
@@ -64,12 +84,30 @@ pub(crate) fn tier_label(tier: ProviderTier) -> &'static str {
 /// Only `Basic` triggers it (Full is already running; `Both` is a provider
 /// declaration, not a runtime mode — rendered as Basic-equivalent for click
 /// purposes since the user may still want to upgrade).
-///
-/// RED phase: unused in the lib build until GREEN.
-#[allow(dead_code)]
 #[must_use]
 pub(crate) fn click_triggers_launch(tier: ProviderTier) -> bool {
     matches!(tier, ProviderTier::Basic | ProviderTier::Both)
+}
+
+/// Pick the pill fill color per tier (PRD §5.3 — Basic gray, Full green).
+/// Both is a provider declaration surfaced in the header as a neutral pill.
+#[must_use]
+pub(crate) fn pill_fill(tier: ProviderTier) -> Color32 {
+    match tier {
+        ProviderTier::Basic | ProviderTier::Both => BASIC_FILL,
+        ProviderTier::Full => FULL_FILL,
+    }
+}
+
+/// Pick the tooltip text per tier (PRD §5.3 verbatim).
+#[must_use]
+pub(crate) fn pill_tooltip(tier: ProviderTier) -> &'static str {
+    match tier {
+        // Both is a provider declaration; show the Basic tooltip so the user
+        // still has the "click to enable Full" affordance.
+        ProviderTier::Basic | ProviderTier::Both => TOOLTIP_BASIC,
+        ProviderTier::Full => TOOLTIP_FULL,
+    }
 }
 
 #[cfg(test)]
@@ -80,7 +118,6 @@ mod tests {
     //! stub, so the kittest access tree contains nothing pill-related.
 
     use super::*;
-    use eframe::egui;
     use egui_kittest::kittest::{NodeT, Queryable};
     use egui_kittest::Harness;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -234,10 +271,20 @@ mod tests {
         assert!(!click_triggers_launch(ProviderTier::Full));
     }
 
-    /// Compile-time anchor: the egui import is used in GREEN; this suppresses
-    /// the unused-import warning in RED without `#[allow]` noise.
+    /// Sanity: pill_fill picks the PRD §5.3 colors.
     #[test]
-    fn egui_import_anchor() {
-        let _ = egui::Vec2::ZERO;
+    fn pill_fill_picks_prd_colors() {
+        assert_eq!(pill_fill(ProviderTier::Basic), BASIC_FILL);
+        assert_eq!(pill_fill(ProviderTier::Full), FULL_FILL);
+        // Both reuses the muted gray (provider declaration, not a mode).
+        assert_eq!(pill_fill(ProviderTier::Both), BASIC_FILL);
+    }
+
+    /// Sanity: pill_tooltip picks the PRD §5.3 verbatim text per tier.
+    #[test]
+    fn pill_tooltip_picks_prd_text() {
+        assert_eq!(pill_tooltip(ProviderTier::Basic), TOOLTIP_BASIC);
+        assert_eq!(pill_tooltip(ProviderTier::Full), TOOLTIP_FULL);
+        assert_eq!(pill_tooltip(ProviderTier::Both), TOOLTIP_BASIC);
     }
 }
