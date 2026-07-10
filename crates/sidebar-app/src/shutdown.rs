@@ -117,26 +117,40 @@ pub trait ShutdownTargets: Send {
     fn teardown_ohm(&mut self) -> impl std::future::Future<Output = Result<(), String>> + Send;
 }
 
-/// RED STUB — Story 7.5 GREEN will implement the T-39 phase hierarchy.
+/// Execute the T-39 graceful-shutdown phase hierarchy.
 ///
-/// This stub returns immediately WITHOUT calling `targets.force_flush()` or
-/// `targets.teardown_ohm()`. The F13 test asserts the flush was called
-/// (via a mock counter) → fails on the stub → meaningful RED. The stub also
-/// does not respect the cancel token or apply per-phase timeouts; those land
-/// in GREEN.
+/// Phase sequence (nfr-thresholds.md T-39):
+///   1. `t=0ms`: the cancel token is ALREADY fired by the caller (the signal
+///      handler / WM_CLOSE hook calls `cancel.cancel()` before invoking this
+///      function). Nothing to do here — the poller/accountant tasks observing
+///      the token begin unwinding concurrently.
+///   2. `t=0–500ms`: `targets.force_flush()` — the accountant's final flush.
+///      Race against [`PHASE_FLUSH_BUDGET`]; on timeout log `error!` + advance
+///      (Boundary #1).
+///   3. `t=500–2000ms`: `targets.teardown_ohm()` — OhmSupervisor shutdown.
+///      Race against [`PHASE_OHM_BUDGET`]; on timeout log `error!` + return
+///      `TimedOut` (the Job Object G10 reaps the elevated child on process
+///      exit, so a timeout here is non-fatal).
+///   4. `t=2000–3000ms`: runtime drop is the caller's responsibility (the
+///      binary drops the tokio runtime after this function returns).
+///   5. `t=3000ms`: forced exit is the caller's last-resort — if the runtime
+///      drop itself hangs, the binary calls `std::process::exit(0)`.
 ///
-/// The `shutdown_started` guard IS implemented even in the stub so the
-/// double-signal test (Boundary #4) compiles against the real entry point.
-#[allow(clippy::missing_panics_doc, clippy::unused_async)]
+/// G15: a flush that returns `Err` is logged and the phase is recorded as
+/// `Completed` (the accountant continued; the error is the accountant's
+/// concern). Shutdown never aborts on a target error.
+///
+/// Boundary #4: the `shutdown_started` flag gates re-entry. The second call
+/// returns a `NotConfigured` report immediately (no-op).
+#[allow(clippy::missing_panics_doc)]
 pub async fn run_shutdown<T: ShutdownTargets>(
     _cancel: CancellationToken,
-    _targets: &mut T,
+    targets: &mut T,
     shutdown_started: &AtomicBool,
 ) -> ShutdownReport {
     // Boundary #4 — double-signal guard. The first caller flips the flag and
     // proceeds; a second caller (Ctrl+C twice) sees the flag already set and
-    // returns immediately with a "no-op" report. GREEN strengthens this to
-    // return the in-flight report; the stub just returns a default.
+    // returns immediately with a "no-op" report.
     if shutdown_started.swap(true, Ordering::SeqCst) {
         tracing::warn!("shutdown already in progress — second signal is a no-op");
         return ShutdownReport {
@@ -145,10 +159,67 @@ pub async fn run_shutdown<T: ShutdownTargets>(
         };
     }
 
-    // STUB: no phases invoked. GREEN implements the T-39 hierarchy.
+    tracing::info!("shutdown: T-39 phase hierarchy starting");
+
+    // ---- Phase 2: accountant force-flush (≤500ms per T-39) ----
+    let flush_outcome = run_phase("force_flush", PHASE_FLUSH_BUDGET, targets.force_flush()).await;
+
+    // ---- Phase 3: OhmSupervisor teardown (≤2000ms per T-39) ----
+    // This runs unconditionally — even if flush timed out (Boundary #1) the
+    // OHM child must still be torn down.
+    let ohm_outcome = run_phase("teardown_ohm", PHASE_OHM_BUDGET, targets.teardown_ohm()).await;
+
+    tracing::info!(
+        flush = ?flush_outcome,
+        ohm = ?ohm_outcome,
+        "shutdown: T-39 phases complete"
+    );
+
     ShutdownReport {
-        flush: PhaseOutcome::NotConfigured,
-        ohm: PhaseOutcome::NotConfigured,
+        flush: flush_outcome,
+        ohm: ohm_outcome,
+    }
+}
+
+/// Run one T-39 phase with a per-phase timeout. Returns:
+/// - [`PhaseOutcome::Completed`] if the phase returned `Ok` OR `Err` within
+///   budget (G15: an `Err` is logged but the phase still "ran to completion"
+///   from the orchestrator's view — shutdown continues).
+/// - [`PhaseOutcome::TimedOut`] if the phase exceeded its budget. The future
+///   is dropped on timeout (cancelling it); for the accountant this means
+///   the in-memory accumulator state may be partially flushed (data loss
+///   accepted per R11). For OHM, the Job Object (G10) reaps the child on
+///   process exit regardless.
+async fn run_phase<F>(name: &'static str, budget: Duration, phase: F) -> PhaseOutcome
+where
+    F: std::future::Future<Output = Result<(), String>>,
+{
+    // `budget.as_millis()` is `u128`; the budgets here are ≤3000ms so the
+    // cast to u64 is safe. The allow is scoped to this function.
+    #[allow(clippy::cast_possible_truncation)]
+    let budget_ms = budget.as_millis() as u64;
+    match tokio::time::timeout(budget, phase).await {
+        Ok(Ok(())) => {
+            tracing::info!(phase = name, budget_ms, "phase completed");
+            PhaseOutcome::Completed
+        }
+        Ok(Err(msg)) => {
+            // G15 — the target surfaced a non-recoverable error (e.g. SQLite
+            // disk full). Log + record as Completed (the phase ran; the error
+            // is the target's concern). Shutdown continues.
+            tracing::error!(phase = name, error = %msg, "phase errored (G15 — continuing)");
+            PhaseOutcome::Completed
+        }
+        Err(_elapsed) => {
+            // T-39 budget exceeded. Log + advance. The future is dropped
+            // (cancelled) by tokio::time::timeout on Elapsed.
+            tracing::error!(
+                phase = name,
+                budget_ms,
+                "phase TIMED OUT (T-39) — advancing (G15/G10 safety net applies)"
+            );
+            PhaseOutcome::TimedOut
+        }
     }
 }
 
@@ -192,7 +263,7 @@ pub fn spawn_signal_handler(cancel: CancellationToken) -> tokio::task::JoinHandl
 /// # Errors
 /// This function does not return an error — T-39/G15 mandate that shutdown
 /// always continues. Per-phase failures are recorded in the [`ShutdownReport`].
-#[allow(clippy::missing_panics_doc, clippy::unused_async)]
+#[allow(clippy::missing_panics_doc)]
 pub async fn shutdown_once<T: ShutdownTargets>(
     cancel: CancellationToken,
     targets: &mut T,
@@ -229,19 +300,29 @@ mod tests {
     //! real wall-clock beyond their phase budgets.
 
     use super::*;
+    use std::future::Future;
+    use std::pin::Pin;
     use std::sync::{Arc, Mutex};
     use std::time::Instant;
 
+    /// A boxed future returned by a mock behavior closure. Using
+    /// `Pin<Box<dyn Future>>` lets each test return either an immediately-
+    /// ready future (`async { Ok(()) }`), an error future, or a NEVER-resolving
+    /// future (`std::future::pending()`) to simulate a hang that the
+    /// orchestrator's `tokio::time::timeout` can cancel.
+    type MockFuture = Pin<Box<dyn Future<Output = Result<(), String>> + Send>>;
+
     /// Injectable mock targets for F13 tests. Each method records its call
     /// count in shared counters so tests can assert the orchestrator invoked
-    /// the phase. The `flush_behavior` / `ohm_behavior` closures let each test
-    /// control whether the phase completes immediately, hangs, or errors.
+    /// the phase. The `flush_behavior` / `ohm_behavior` closures return a
+    /// boxed future so a test can simulate a hang via `pending()` (which IS
+    /// cancellable by `tokio::time::timeout`, unlike `std::thread::sleep`).
     #[allow(dead_code)]
     struct MockTargets {
         flush_calls: Arc<Mutex<usize>>,
         ohm_calls: Arc<Mutex<usize>>,
-        flush_behavior: Box<dyn Fn() -> Result<(), String> + Send + Sync>,
-        ohm_behavior: Box<dyn Fn() -> Result<(), String> + Send + Sync>,
+        flush_behavior: Box<dyn Fn() -> MockFuture + Send + Sync>,
+        ohm_behavior: Box<dyn Fn() -> MockFuture + Send + Sync>,
     }
 
     impl MockTargets {
@@ -255,11 +336,11 @@ mod tests {
                 ohm_calls: ohm_calls.clone(),
                 flush_behavior: Box::new(move || {
                     *fc.lock().unwrap() += 1;
-                    Ok(())
+                    Box::pin(async { Ok(()) })
                 }),
                 ohm_behavior: Box::new(move || {
                     *oc.lock().unwrap() += 1;
-                    Ok(())
+                    Box::pin(async { Ok(()) })
                 }),
             };
             (me, flush_calls, ohm_calls)
@@ -268,10 +349,10 @@ mod tests {
 
     impl ShutdownTargets for MockTargets {
         async fn force_flush(&mut self) -> Result<(), String> {
-            (self.flush_behavior)()
+            (self.flush_behavior)().await
         }
         async fn teardown_ohm(&mut self) -> Result<(), String> {
-            (self.ohm_behavior)()
+            (self.ohm_behavior)().await
         }
     }
 
@@ -361,14 +442,15 @@ mod tests {
             ohm_calls: ohm_calls.clone(),
             flush_behavior: Box::new(move || {
                 *fc.lock().unwrap() += 1;
-                // Signal that we entered, then hang. Use a long sleep (longer
-                // than the phase budget) to simulate the hang.
-                std::thread::sleep(Duration::from_secs(10));
-                Ok(())
+                // Signal that we entered, then hang. `pending()` is a
+                // never-resolving future that IS cancellable by
+                // `tokio::time::timeout` (unlike `std::thread::sleep`, which
+                // blocks the OS thread and prevents the timeout from firing).
+                Box::pin(std::future::pending())
             }),
             ohm_behavior: Box::new(move || {
                 *oc.lock().unwrap() += 1;
-                Ok(())
+                Box::pin(async { Ok(()) })
             }),
         };
 
@@ -418,12 +500,13 @@ mod tests {
             ohm_calls: ohm_calls.clone(),
             flush_behavior: Box::new(move || {
                 *fc.lock().unwrap() += 1;
-                Ok(())
+                Box::pin(async { Ok(()) })
             }),
             ohm_behavior: Box::new(move || {
                 *oc.lock().unwrap() += 1;
-                std::thread::sleep(Duration::from_secs(10));
-                Ok(())
+                // `pending()` — never resolves, but IS cancellable by
+                // `tokio::time::timeout` (unlike `std::thread::sleep`).
+                Box::pin(std::future::pending())
             }),
         };
 
@@ -467,11 +550,13 @@ mod tests {
             ohm_calls: ohm_calls.clone(),
             flush_behavior: Box::new(move || {
                 *fc.lock().unwrap() += 1;
-                Err("SQLite disk full (G15 — data loss accepted per R11)".to_string())
+                Box::pin(async {
+                    Err("SQLite disk full (G15 — data loss accepted per R11)".to_string())
+                })
             }),
             ohm_behavior: Box::new(move || {
                 *oc.lock().unwrap() += 1;
-                Ok(())
+                Box::pin(async { Ok(()) })
             }),
         };
 
