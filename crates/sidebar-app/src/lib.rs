@@ -7,6 +7,7 @@
 //!
 //! Future stories add GUI/poller wiring modules here.
 
+pub mod gui;
 pub mod parse_threshold;
 pub mod poller;
 pub mod provider_registry;

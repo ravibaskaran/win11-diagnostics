@@ -21,6 +21,9 @@ description = "sidebar binary — Win11 hardware diagnostics sidebar"
 # 6.4); the launch-time two-tier probe delegates to it. The trait exposure
 # (HttpClient) is a re-export from sidebar-adapter-ohm (already a dep), so no
 # new transitive license surface.
+# Story 8.1: egui + eframe bring the GUI shell (MIT, pre-pinned in the
+# workspace manifest). egui_kittest (MIT) is the headless test harness for
+# F8 snapshot/label assertions.
 [dependencies]
 serde = { workspace = true }            # MIT/Apache-2.0 — derive for Estimate
 serde_json = { workspace = true }       # MIT/Apache-2.0 — NFR-1 bench parsing
@@ -28,6 +31,8 @@ tokio = { workspace = true }            # MIT — broadcast + interval + spawn_b
 tokio-util = { workspace = true }       # MIT — CancellationToken (shutdown signal, T-19)
 tracing = { workspace = true }          # MIT — structured logging (panic-skip G15)
 thiserror = { workspace = true }        # MIT/Apache-2.0 — PollerError derive (consistent with sidebar-domain::error)
+egui = { workspace = true }             # MIT — immediate-mode GUI (Story 8.1)
+eframe = { workspace = true }           # MIT — egui desktop shell (Story 8.1)
 sidebar-domain = { path = "../sidebar-domain" }   # internal — Reading, MetricKind, Config::ohm.http_port (T-45, Story 7.3)
 sidebar-sensor = { path = "../sidebar-sensor" }   # internal — SensorProvider trait, SensorDescriptor, classify_for_v1, ProviderTier
 sidebar-platform = { path = "../sidebar-platform" }  # internal — OhmSupervisor (probe engine, Story 6.4) — Story 7.3 delegates to it
@@ -47,6 +52,7 @@ tempfile = { workspace = true }         # MIT/Apache-2.0 — TempDir for parse_t
 toml = { workspace = true }             # MIT/Apache-2.0 — parse Cargo.toml in profile_contract test
 mockall = { workspace = true }          # MIT/Apache-2.0 — MockHttpClient for tier_probe tests (Story 7.3)
 which = "7"                             # MIT — locate pwsh.exe in dev_env_scripts test
+egui_kittest = { workspace = true }     # MIT — headless egui test harness (F8, Story 8.1)
 
 [lints]
 workspace = true
