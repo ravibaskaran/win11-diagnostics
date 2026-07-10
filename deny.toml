@@ -12,6 +12,15 @@
 
 [licenses]
 # T-32 allowlist. Adding requires architect sign-off (G19).
+# Story 8.1 additions: egui/eframe pull in three new transitive licenses:
+#   - BSL-1.0 (Boost Software License — OSI approved, permissive; NOT the
+#     Source-Sensitive BSL). Used by `clipboard-win` + `error-code` via
+#     `arboard` → `egui-winit` → `eframe`.
+#   - OFL-1.1 (SIL Open Font License — OSI approved, permissive). Used by
+#     `epaint_default_fonts` for the bundled Ubuntu fonts.
+#   - Ubuntu-font-1.0 (Ubuntu Font Licence — permissive, OSI-compatible
+#     redistribution). Used alongside OFL-1.1 for the same Ubuntu fonts.
+# All three are permissive, OSI-reviewed, and GPL-compatible.
 allow = [
     "MIT",
     "Apache-2.0",
@@ -25,6 +34,9 @@ allow = [
     "Unicode-3.0",
     "CC0-1.0",
     "Unlicense",
+    "BSL-1.0",         # Boost Software License (Story 8.1 — clipboard-win, error-code via eframe)
+    "OFL-1.1",         # SIL Open Font License (Story 8.1 — epaint_default_fonts)
+    "Ubuntu-font-1.0", # Ubuntu Font Licence (Story 8.1 — epaint_default_fonts)
 ]
 confidence-threshold = 0.93
 
@@ -43,8 +55,28 @@ yanked = "deny"
 # To mute a specific advisory, add its RUSTSEC ID with a comment explaining
 # why + an expiry date (T-33 requires both).
 ignore = [
-    # Example:
-    # "RUSTSEC-2024-XXXX",  # upstream fix pending; no MSRV-compatible fix; recheck 2026-10-01
+    # ttf-parser is unmaintained upstream (RUSTSEC-2026-0192). It is a
+    # transitive dep of eframe 0.35 via winit → sctk-adwaita → ab_glyph →
+    # owned_ttf_parser → ttf-parser; we cannot replace it without forking
+    # winit. The advisory is "unmaintained" (no known exploit; the crate
+    # still works correctly for egui's font parsing). Recheck when winit
+    # publishes a release that swaps ttf-parser for skrifa (the recommended
+    # alternative) — tracked at https://github.com/rust-windowing/winit.
+    "RUSTSEC-2026-0192",  # ttf-parser unmaintained; eframe→winit transitive; recheck 2026-10-01
+
+    # quick-xml 0.39 has two DoS advisories (RUSTSEC-2026-0194 quadratic
+    # attribute check, RUSTSEC-2026-0195 unbounded namespace allocation).
+    # quick-xml is a transitive BUILD-TIME dep of eframe via
+    # winit → smithay-client-toolkit → wayland-scanner, which uses quick-xml
+    # ONLY to parse the static Wayland protocol XML files at compile time
+    # (build.rs). It is NOT linked into the runtime binary's hot path, and
+    # the sidebar targets Windows 11 exclusively (Wayland code is dead on
+    # our target). The fix (quick-xml ≥ 0.41) requires wayland-scanner ≥ 0.32
+    # which requires winit ≥ 0.31 which requires eframe ≥ 0.36 — out of
+    # scope for Story 8.1's pinned egui 0.35. Recheck when eframe publishes
+    # a 0.36+ release (tracked at https://github.com/emilk/egui/releases).
+    "RUSTSEC-2026-0194",  # quick-xml quad attr check; build-time only; Win11 target; recheck 2026-10-01
+    "RUSTSEC-2026-0195",  # quick-xml unbounded ns alloc; build-time only; Win11 target; recheck 2026-10-01
 ]
 
 [sources]
