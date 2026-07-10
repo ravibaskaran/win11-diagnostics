@@ -39,15 +39,21 @@
 //! - guardrails.md G15 (RwLock poison recovery)
 //! - tdd-fixtures.md F8 (egui_kittest harness)
 
-// Story 8.2 + 8.3 GUI components. Each submodule owns its TDD contract; the
-// composition (pill at top, metric rows below) lives in `render_snapshot`.
+// Story 8.2 + 8.3 GUI components + Story 8.4 (bandwidth panel) + Story 8.5
+// (settings panel). Each submodule owns its TDD contract; the composition
+// (pill at top, metric rows below, bandwidth panel, settings panel behind a
+// gear toggle) lives in `render_snapshot`.
+pub mod bandwidth_panel;
 pub mod metric_row;
+pub mod settings_panel;
 pub mod status_pill;
 
 use std::sync::{Arc, RwLock};
 
 use eframe::egui;
 use egui::Ui;
+use sidebar_bandwidth::view::BandwidthView;
+use sidebar_domain::config::Config;
 use sidebar_domain::format::{
     format_bps, format_bytes, format_hz, format_percent, format_power, format_rpm, format_temp,
     format_voltage, Base, TempUnit,
@@ -303,6 +309,100 @@ pub fn render_snapshot(ui: &mut Ui, readings: &[Reading], tier: ProviderTier) {
 /// `Config::display` once AppState owns a `Config` handle.
 fn default_display_config() -> sidebar_domain::config::DisplayConfig {
     sidebar_domain::config::DisplayConfig::default()
+}
+
+/// Composed sidebar view for the Story 8.4 + 8.5 wiring.
+///
+/// Holds the optional [`BandwidthView`] (Story 5.3 DTO — None when bandwidth
+/// tracking is disabled) and a gear-toggle flag (when true, the settings panel
+/// replaces the metric rows). The host constructs one of these per frame from
+/// its AppState handles.
+#[derive(Clone, Default)]
+pub struct SidebarView {
+    /// The bandwidth panel DTO. `None` means "no bandwidth tracking" — the
+    /// bandwidth panel renders its empty placeholder.
+    pub bandwidth: Option<BandwidthView>,
+    /// When true, render the settings panel instead of the metric rows.
+    /// Toggled by the gear button in the header (Story 8.5).
+    pub settings_open: bool,
+}
+
+/// Composed top-level render wiring together: status pill + gear toggle +
+/// (settings panel when open, otherwise metric rows + bandwidth panel).
+///
+/// This is the Story 8.4 + 8.5 composition. The simpler [`render_snapshot`]
+/// remains for the Story 8.1 tests; the production render path
+/// ([`SidebarApp::ui`]) will switch to this function once AppState owns the
+/// Config + BandwidthView handles (Story 8.5 launch sequence).
+pub fn render_sidebar(
+    ui: &mut Ui,
+    readings: &[Reading],
+    tier: ProviderTier,
+    config: &mut Config,
+    view: &SidebarView,
+    on_change: &dyn Fn(),
+) {
+    // Header: status pill (left) + gear toggle (right). The gear toggles the
+    // settings panel (Story 8.5 HITL guardrail G11 — no-retroactive-resplit
+    // surfaced as a tooltip inside the settings panel).
+    ui.horizontal(|header| {
+        status_pill::render(header, tier, &|| {});
+        header.with_layout(egui::Layout::right_to_left(egui::Align::Center), |right| {
+            let mut open = view.settings_open;
+            let gear = right.checkbox(&mut open, "⚙");
+            // The local `open` is dropped here; the persistent state lives in
+            // the host's SidebarView. We surface the toggle event through the
+            // on_change callback — the host updates its SidebarView. This keeps
+            // the render path side-effect-free (Story 8.1 logic/ui split).
+            if gear.changed() {
+                on_change();
+            }
+            // NOTE: the host is responsible for flipping SidebarView.settings_open
+            // in response to on_change. The render path reads view.settings_open
+            // and writes nothing — it just signals via on_change.
+        });
+    });
+
+    ui.separator();
+
+    if view.settings_open {
+        // Settings panel (Story 8.5) — replaces the metric rows + bandwidth
+        // panel while open. The panel surfaces the no-retroactive-resplit
+        // tooltip (PRD §5.5.8) and the T-3 poll-interval warning inline.
+        settings_panel::render(ui, config, on_change);
+        return;
+    }
+
+    if readings.is_empty() {
+        ui.label(WAITING_TEXT);
+    } else {
+        let display = config.display.clone();
+        let visible = readings.len().min(MAX_ROWS);
+        for reading in readings.iter().take(visible) {
+            metric_row::render(ui, reading, &display);
+        }
+        if readings.len() > MAX_ROWS {
+            let omitted = readings.len() - MAX_ROWS;
+            ui.label(format!("+{omitted} more (truncated)"));
+        }
+    }
+
+    // Bandwidth panel (Story 8.4) — below the metric rows.
+    ui.separator();
+    if let Some(bw) = &view.bandwidth {
+        bandwidth_panel::render(ui, bw, &config.display);
+    } else {
+        bandwidth_panel::render(
+            ui,
+            &BandwidthView {
+                current: vec![],
+                history: vec![],
+                days_until_reset: 0,
+                next_reset_date: chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap_or_default(),
+            },
+            &config.display,
+        );
+    }
 }
 
 /// Short uppercase label for a [`MetricKind`] — the per-row "kind" the F8
@@ -730,5 +830,71 @@ mod tests {
 
         let temp = reading(MetricKind::CpuTemperature, 62.0, Unit::Celsius);
         assert_eq!(format_reading(&temp), "62 °C");
+    }
+
+    // ===== Story 8.4 + 8.5 composition: render_sidebar =====
+    //
+    // These tests lock in the wiring contract: gear toggle surfaces settings,
+    // bandwidth panel renders below metric rows when settings closed.
+
+    #[test]
+    fn render_sidebar_settings_open_shows_settings_panel() {
+        let readings = vec![reading(MetricKind::CpuUtilization, 42.0, Unit::Percent)];
+        let mut config = Config::default();
+        let view = SidebarView {
+            bandwidth: None,
+            settings_open: true,
+        };
+        let mut harness = Harness::new_ui(|ui| {
+            render_sidebar(
+                ui,
+                &readings,
+                ProviderTier::Basic,
+                &mut config,
+                &view,
+                &|| {},
+            );
+        });
+        harness.run();
+        let labels = all_labels(&harness).join(" | ");
+        assert!(
+            labels.contains("Billing cycle start day"),
+            "settings_open=true must surface the settings panel (got: {labels})"
+        );
+        assert!(
+            labels.contains(settings_panel::NO_RESPLIT_TOOLTIP),
+            "settings panel must surface the no-retroactive-resplit tooltip (got: {labels})"
+        );
+    }
+
+    #[test]
+    fn render_sidebar_settings_closed_shows_bandwidth_placeholder() {
+        // No bandwidth view → bandwidth panel renders its empty placeholder.
+        let readings = vec![reading(MetricKind::CpuUtilization, 42.0, Unit::Percent)];
+        let mut config = Config::default();
+        let view = SidebarView {
+            bandwidth: None,
+            settings_open: false,
+        };
+        let mut harness = Harness::new_ui(|ui| {
+            render_sidebar(
+                ui,
+                &readings,
+                ProviderTier::Basic,
+                &mut config,
+                &view,
+                &|| {},
+            );
+        });
+        harness.run();
+        let labels = all_labels(&harness).join(" | ");
+        assert!(
+            labels.contains(bandwidth_panel::EMPTY_TEXT),
+            "settings_open=false + no bandwidth view must render the bandwidth placeholder (got: {labels})"
+        );
+        assert!(
+            labels.contains("42%"),
+            "settings_open=false must still render the metric rows (got: {labels})"
+        );
     }
 }

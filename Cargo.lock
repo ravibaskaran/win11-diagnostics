@@ -3383,6 +3383,7 @@ name = "sidebar-app"
 version = "0.0.0"
 dependencies = [
  "cargo_metadata",
+ "chrono",
  "eframe",
  "egui",
  "egui_kittest",
@@ -3396,6 +3397,7 @@ dependencies = [
  "sidebar-adapter-ohm",
  "sidebar-adapter-pdh",
  "sidebar-adapter-sysinfo",
+ "sidebar-bandwidth",
  "sidebar-domain",
  "sidebar-platform",
  "sidebar-sensor",
