@@ -70,6 +70,24 @@ pub fn exclude_from_peek(hwnd: HWND) -> Result<()> {
 /// closest public-API equivalent to the "capture cloak" streamer-privacy
 /// feature described in Story 6.1. See module docs for the discrepancy note.
 ///
+/// # TODO(6.1-followup): use SetWindowDisplayAffinity for true capture exclusion
+///
+/// `DWMWA_CLOAK` hides the window from the USER (DWM stops composing it to
+/// the desktop), which is NOT the same as hiding it from screen capture
+/// (OBS/Game Bar/Snipping Tool). Story 6.1 specified
+/// `DWMWA_CLOAKED_BY_CAPTURABLE_CONTENT`, which does NOT exist as a settable
+/// attribute in the `windows = 0.62.2` bindings (nor in upstream `dwmapi.h`
+/// at the Win11 24H2 SDK). The correct API for streamer-privacy capture
+/// exclusion is [`SetWindowDisplayAffinity`] with `WDA_EXCLUDEFROMCAPTURE`
+/// (Win10 2004+, `windows::Win32::Graphics::Gdi::SetWindowDisplayAffinity`).
+/// That call lives outside DWM and needs its own `[features]` gate
+/// (`Win32_Graphics_Gdi`). When a story lands the real capture-cloak UX,
+/// replace this body with `SetWindowDisplayAffinity(hwnd, if enabled {
+/// WDA_EXCLUDEFROMCAPTURE } else { WDA_NONE })` and retire `DWMWA_CLOAK`
+/// here. Until then, callers setting `hide_from_capture = true` in config
+/// get DWM-level cloaking (window vanishes) rather than capture exclusion —
+/// documented behavior, not a silent bug.
+///
 /// # Default
 /// OFF — most users want the sidebar captured in OBS / Snipping Tool.
 ///
