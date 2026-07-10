@@ -70,6 +70,7 @@
 //! - tdd-fixtures.md F2 (mock broadcast), F4 (mock provider), F10
 //!   (panic-catch)
 
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -147,21 +148,29 @@ pub struct Poller {
 impl Poller {
     /// Construct a new poller with the default system clock.
     ///
-    /// `interval` is clamped to at least [`MIN_POLL_INTERVAL`] (T-3).
+    /// `interval` is clamped to at least [`MIN_POLL_INTERVAL`] (T-3) — the
+    /// production entrypoint never ships a sub-second poller.
     #[must_use]
     pub fn new(
         providers: Vec<Arc<dyn SensorProvider>>,
         interval: Duration,
         tx: broadcast::Sender<Vec<Reading>>,
     ) -> Self {
-        Self::with_clock(providers, interval, tx, Arc::new(SystemInstantClock::new()))
+        Self::with_clock_raw(
+            providers,
+            clamp_interval(interval),
+            tx,
+            Arc::new(SystemInstantClock::new()),
+        )
     }
 
     /// Construct a poller with an injected clock (tests).
     ///
-    /// Production uses [`Poller::new`]; tests pass a controllable clock so
-    /// the "single timestamp per tick" contract is verifiable without time
-    /// travel.
+    /// The interval is clamped to at least [`MIN_POLL_INTERVAL`] (T-3) — the
+    /// clamp is a safety property that applies in tests too, EXCEPT for the
+    /// tick-cadence tests which need a sub-second interval to drive multiple
+    /// ticks within a test's wall-clock budget. Those tests use
+    /// [`Poller::with_clock_raw`].
     #[must_use]
     pub fn with_clock(
         providers: Vec<Arc<dyn SensorProvider>>,
@@ -169,9 +178,26 @@ impl Poller {
         tx: broadcast::Sender<Vec<Reading>>,
         clock: Arc<dyn InstantClock>,
     ) -> Self {
+        Self::with_clock_raw(providers, clamp_interval(interval), tx, clock)
+    }
+
+    /// Construct a poller with an injected clock AND an un-clamped interval.
+    ///
+    /// This is the test-only escape hatch for the tick-cadence tests (Happy
+    /// Path #2, Boundary #1, #2) which need a 100ms interval to observe 3
+    /// ticks in 350ms. The clamp (T-3) is validated separately in
+    /// `zero_interval_clamped_to_one_second`. Production code MUST use
+    /// [`Poller::new`] (which clamps); this constructor trusts the caller.
+    #[must_use]
+    pub fn with_clock_raw(
+        providers: Vec<Arc<dyn SensorProvider>>,
+        interval: Duration,
+        tx: broadcast::Sender<Vec<Reading>>,
+        clock: Arc<dyn InstantClock>,
+    ) -> Self {
         Self {
             providers,
-            interval: clamp_interval(interval),
+            interval,
             tx,
             clock,
         }
@@ -186,20 +212,134 @@ impl Poller {
     /// # Errors
     ///
     /// Returns [`PollerError::BroadcastClosed`] if the broadcast closes
-    /// before shutdown fires.
-    #[allow(clippy::too_many_lines, clippy::unused_async)]
+    /// (no receivers) before the shutdown token fires.
     pub async fn run(self, shutdown: CancellationToken) -> Result<(), PollerError> {
-        let _ = (
-            self.providers,
-            self.interval,
-            self.tx,
-            self.clock,
-            &shutdown,
-        );
-        // RED STUB — immediately returns Ok without publishing. The real
-        // loop lands in the GREEN commit. Triggers the "two providers → 4
-        // readings" happy-path test failure.
-        Ok(())
+        // MissedTickBehavior::Delay (boundary #2): if a tick's fan-out takes
+        // longer than `interval`, the NEXT tick fires one `interval` after
+        // the slow tick COMPLETES (not immediately). This is the documented
+        // skip-overlapping-tick strategy — we never queue concurrent
+        // fan-outs, which would risk overlapping sysinfo global-lock holds.
+        let mut ticker = tokio::time::interval(self.interval);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // tokio::time::interval fires an immediate first tick on the first
+        // `tick().await`. Publish an initial snapshot immediately on startup
+        // so the GUI shows data before the first interval elapses.
+
+        loop {
+            tokio::select! {
+                biased; // shutdown takes priority so a cancel during a tick
+                        // returns promptly instead of waiting for the next tick.
+                () = shutdown.cancelled() => {
+                    tracing::info!("Poller: shutdown signal — exiting");
+                    return Ok(());
+                }
+                _ = ticker.tick() => {
+                    let readings = self.tick().await;
+                    if let Ok(n) = self.tx.send(readings) {
+                        tracing::trace!(
+                            receivers = n,
+                            "Poller: published tick"
+                        );
+                    } else {
+                        // No active receivers — the GUI/accountant all
+                        // dropped their receivers. Treat as clean exit.
+                        tracing::info!(
+                            "Poller: broadcast closed (no receivers) — exiting"
+                        );
+                        return Err(PollerError::BroadcastClosed);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Run one tick: capture the tick instant, fan out across all providers
+    /// (each on its own blocking thread), catch panics per provider (G15),
+    /// concatenate the survivors' readings, and stamp every reading with the
+    /// single tick instant.
+    ///
+    /// A panicking provider contributes zero readings and is logged; the
+    /// other providers' readings still flow through.
+    async fn tick(&self) -> Vec<Reading> {
+        let tick_instant = self.clock.now();
+
+        // Spawn each provider's `read_all` on the blocking pool. The handles
+        // are awaited in order; the spawn itself off-loads the blocking
+        // syscall so the order of awaiting doesn't change wall-clock cost.
+        let mut handles = Vec::with_capacity(self.providers.len());
+        for provider in &self.providers {
+            let provider = Arc::clone(provider);
+            handles.push(tokio::task::spawn_blocking(move || {
+                // SAFETY (G15, HITL — G11): `catch_unwind` requires the
+                // closure be `UnwindSafe`. `Arc<dyn SensorProvider>` is not
+                // `UnwindSafe` by construction — the compiler cannot prove
+                // the underlying impl doesn't hold `&mut` across the call.
+                // `AssertUnwindSafe` asserts the opposite.
+                //
+                // Justification for the assertion:
+                //   1. `SensorProvider: Send + Sync` (trait bound), and
+                //      `read_all(&self)` takes `&self` — no exclusive borrow
+                //      crosses the catch boundary.
+                //   2. Any shared mutable state inside a panicking adapter is
+                //      OWNED by that adapter (behind its own Mutex/atomic).
+                //      The poller never touches adapter internals directly.
+                //   3. After a panic, the poller treats the provider as
+                //      "produced zero readings this tick" and continues to
+                //      use the SAME `Arc<dyn SensorProvider>` on subsequent
+                //      ticks — adapters MUST be panic-recoverable. The
+                //      caveat `AssertUnwindSafe` accepts is exactly this: "a
+                //      panic might leave visible inconsistent state in the
+                //      caught closure." We accept it because the alternative
+                //      (letting the panic unwind and killing the poller task)
+                //      is worse — one flaky adapter would take down the
+                //      entire sensor pipeline.
+                //   4. This is the documented v1 decision (Story 7.2 spec,
+                //      "DECIDE: wrap each call in AssertUnwindSafe since
+                //      SensorProvider: Send + Sync and we accept the
+                //      unwind-safety caveat for poller resilience"). HITL
+                //      review flagged at G11.
+                let result = std::panic::catch_unwind(AssertUnwindSafe(|| provider.read_all()));
+                (provider.descriptor().name, result)
+            }));
+        }
+
+        // Await all handles, concatenate survivors, stamp.
+        let mut out: Vec<Reading> = Vec::new();
+        for handle in handles {
+            // spawn_blocking's JoinError (panic inside the blocking thread
+            // beyond the catch_unwind) is also a panic path — treat it
+            // identically to catch_unwind's Err: log + skip.
+            match handle.await {
+                Ok((_name, Ok(readings))) => {
+                    out.extend(readings);
+                }
+                Ok((name, Err(panic_payload))) => {
+                    tracing::error!(
+                        provider = name,
+                        "Poller: provider panicked during read_all — skipping (G15)"
+                    );
+                    // Drop the panic payload (`Box<dyn Any>`); we don't
+                    // downcast it — the panic-hook already wrote diagnostics.
+                    drop(panic_payload);
+                }
+                Err(join_err) => {
+                    tracing::error!(
+                        error = %join_err,
+                        "Poller: blocking task join failed — skipping provider (G15)"
+                    );
+                }
+            }
+        }
+
+        // Stamp every reading with the single tick instant. The adapters
+        // stamp `Instant::now()` inside `read_all`; we overwrite that here so
+        // all readings in one tick share one coherent timestamp (downstream
+        // consumers see a consistent snapshot, not N providers' staggered
+        // `now()` calls).
+        for r in &mut out {
+            r.timestamp = tick_instant;
+        }
+        out
     }
 }
 
@@ -365,7 +505,8 @@ mod tests {
             ]
         });
 
-        let poller = Poller::with_clock(vec![p1, p2], Duration::from_millis(100), h.tx, h.clock);
+        let poller =
+            Poller::with_clock_raw(vec![p1, p2], Duration::from_millis(100), h.tx, h.clock);
         let shutdown = CancellationToken::new();
         let cancel = shutdown.clone();
         // Stop after one publish to keep the test bounded.
@@ -405,7 +546,7 @@ mod tests {
             vec![reading("cpu", "0", MetricKind::CpuUtilization)]
         });
 
-        let poller = Poller::with_clock(vec![p], Duration::from_millis(100), h.tx, h.clock);
+        let poller = Poller::with_clock_raw(vec![p], Duration::from_millis(100), h.tx, h.clock);
         let shutdown = CancellationToken::new();
         let cancel = shutdown.clone();
         tokio::spawn(async move {
@@ -440,7 +581,8 @@ mod tests {
             vec![reading("cpu", "0", MetricKind::CpuUtilization)]
         });
 
-        let poller = Poller::with_clock(vec![bad, good], Duration::from_millis(100), h.tx, h.clock);
+        let poller =
+            Poller::with_clock_raw(vec![bad, good], Duration::from_millis(100), h.tx, h.clock);
         let shutdown = CancellationToken::new();
         let cancel = shutdown.clone();
         tokio::spawn(async move {
@@ -471,26 +613,39 @@ mod tests {
 
     /// Story 7.2 Boundary #3 (T-14). Capacity 8; a slow receiver that
     /// doesn't drain sees `Lagged(n)` and the oldest messages are dropped.
-    /// We don't drain the receiver while the poller pushes >8 messages; on
-    /// the next recv we expect a `Lagged` error.
+    ///
+    /// We drive the lag at the broadcast channel level directly: with no
+    /// receiver draining, push more than capacity messages, then the next
+    /// `recv()` MUST return `Err(Lagged(n))` (the channel dropped the oldest
+    /// to make room). This validates T-14 (capacity 8, oldest dropped on lag)
+    /// independent of the poller's interval timing.
     #[tokio::test]
     async fn receiver_lags_oldest_dropped() {
-        let h = harness();
-        let p = stub("cpu", || {
-            vec![reading("cpu", "0", MetricKind::CpuUtilization)]
-        });
+        let mut h = harness();
+        // Push capacity+5 messages without draining. The channel buffers the
+        // first 8; the extra 5 cause the oldest 5 to be dropped, and the
+        // receiver's next recv reports `Lagged(5)`.
+        for _ in 0..13 {
+            // send returns Err only when there are NO receivers; we have one
+            // (h.rx), so each send succeeds even though the receiver hasn't
+            // drained.
+            let _ =
+                h.tx.send(vec![reading("cpu", "0", MetricKind::CpuUtilization)]);
+        }
 
-        // T-14: broadcast capacity is 8 (fixed in harness). A receiver that
-        // doesn't drain sees `Lagged(n)` and the oldest messages are dropped.
-        // RED placeholder: we assert the channel is wired (sender publishes a
-        // message that one receiver can observe). The GREEN commit drives the
-        // lag path directly at the broadcast level (pre-fill the channel past
-        // capacity, then assert `recv()` returns `Err(Lagged)`).
-        let _ = p;
-        let _ =
-            h.tx.send(vec![reading("cpu", "0", MetricKind::CpuUtilization)]);
-        // The sender exists and accepts a message — RED compiles, GREEN adds
-        // the real lag assertion.
+        match h.rx.recv().await {
+            Err(broadcast::error::RecvError::Lagged(n)) => {
+                assert!(
+                    n > 0,
+                    "lag count must be positive when receiver fell behind"
+                );
+                // After the Lagged signal, the receiver can still observe
+                // later messages (the channel is not poisoned).
+                let next = h.rx.recv().await;
+                assert!(next.is_ok(), "receiver recovers after Lagged (T-14)");
+            }
+            other => panic!("expected Lagged, got {other:?}"),
+        }
     }
 
     // ===== Boundary #4: interval = 0 → clamped to 1s (T-3) =====
@@ -543,7 +698,7 @@ mod tests {
             vec![reading("cpu", "0", MetricKind::CpuUtilization)]
         });
 
-        let poller = Poller::with_clock(vec![slow], Duration::from_millis(100), h.tx, h.clock);
+        let poller = Poller::with_clock_raw(vec![slow], Duration::from_millis(100), h.tx, h.clock);
         let shutdown = CancellationToken::new();
         let cancel = shutdown.clone();
         tokio::spawn(async move {
