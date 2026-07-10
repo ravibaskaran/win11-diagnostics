@@ -57,7 +57,7 @@
 //!   broadcast 500ms coalesce), T-45 (port fallback 17127-17137)
 //! - guardrails.md G11 (HITL on "no UAC on default first launch")
 
-use sidebar_adapter_ohm::http::HttpClient;
+use sidebar_adapter_ohm::http::{HttpClient, OhmError};
 use sidebar_platform::ohm_supervisor::{
     is_lhm_signature, OhmSupervisor, TierChangeCallback, PORT_RANGE_END, PORT_RANGE_START,
 };
@@ -127,15 +127,179 @@ pub fn run_launch_probe<C: HttpClient>(
     previous_tier: Option<ProviderTier>,
     tier_change: Option<&TierChangeCallback>,
 ) -> ProbeResult {
-    // RED STUB: always returns Basic. The real probe sequence + port-fallback
-    // walk + tier-change broadcast lands in the GREEN commit. This stub
-    // exists so the TDD contract tests can be written first and FAIL before
-    // the implementation lands (Story 7.3 RED commit per G1).
-    let _ = (supervisor, config_port, previous_tier, tier_change);
-    ProbeResult {
+    // Build the probe walk order: config_port first, then the rest of the
+    // T-45 chain (17127..17137) skipping whichever port == config_port so
+    // we don't probe it twice. If config_port is OUTSIDE the T-45 range
+    // (e.g. user-configured 8085), it's tried first then the full chain.
+    let mut ports: Vec<u16> = Vec::with_capacity(11);
+    ports.push(config_port);
+    for p in PORT_RANGE_START..=PORT_RANGE_END {
+        if p != config_port {
+            ports.push(p);
+        }
+    }
+
+    // Walk the chain. The first port that returns Full wins. We also classify
+    // the failure mode to compose the right hint:
+    // - any port returned a non-LHM body → "port unavailable" hint
+    // - every port refused/timeout → "install LHM" hint
+    let mut saw_non_lhm_body = false;
+    let mut saw_connection_refused = false;
+    for port in ports {
+        match supervisor.probe(port) {
+            ProviderTier::Full => {
+                let result = ProbeResult {
+                    tier: ProviderTier::Full,
+                    resolved_port: Some(port),
+                    hint: None,
+                };
+                fire_tier_change(tier_change, previous_tier, ProviderTier::Full);
+                tracing::info!(port, config_port, "launch probe resolved Full tier");
+                return result;
+            }
+            ProviderTier::Basic | ProviderTier::Both => {
+                // We can't directly tell from `probe()`'s Basic return
+                // WHETHER the port refused connection (free) vs returned a
+                // foreign body (occupied) — the supervisor collapses both to
+                // Basic. We re-probe via the supervisor's client to classify
+                // the failure mode for the hint. This is a second 500ms-T-10
+                // HTTP GET per non-Full port; in practice the refused/timeout
+                // path is sub-ms on localhost, so the cost is negligible.
+                //
+                // The re-probe is read-only and never triggers UAC.
+                if let Some(reason) = classify_basic_port(supervisor, port) {
+                    if reason == BasicReason::NonLhmBody {
+                        saw_non_lhm_body = true;
+                    } else {
+                        saw_connection_refused = true;
+                    }
+                }
+                tracing::debug!(
+                    port,
+                    config_port,
+                    "launch probe: port returned Basic, walking T-45 chain"
+                );
+            }
+        }
+    }
+
+    // No port in the chain returned Full — Basic tier. Compose the hint.
+    let hint_str = compose_basic_hint(saw_non_lhm_body, saw_connection_refused);
+    let hint = Some(hint_str);
+    let result = ProbeResult {
         tier: ProviderTier::Basic,
         resolved_port: None,
-        hint: None,
+        hint,
+    };
+    fire_tier_change(tier_change, previous_tier, ProviderTier::Basic);
+    tracing::info!(
+        config_port,
+        saw_non_lhm_body,
+        saw_connection_refused,
+        "launch probe resolved Basic tier (no LHM detected on T-45 chain)"
+    );
+    result
+}
+
+/// Reasons a port returned Basic (used to compose the right user-facing hint).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BasicReason {
+    /// Connection refused / timeout — the port is free, LHM just isn't
+    /// running. Hint: "install / launch LHM".
+    Free,
+    /// Something answered with a non-LHM body — port occupied by a foreign
+    /// service. Hint: "LHM port unavailable".
+    NonLhmBody,
+}
+
+/// Re-probe `port` via the supervisor's underlying client to classify WHY it
+/// returned Basic. Returns `None` if the second probe's outcome doesn't match
+/// the first (a flaky port — shouldn't happen on localhost; treat as
+/// inconclusive).
+///
+/// This issues one more HTTP GET (T-10 bounded). Read-only — no UAC. The
+/// first probe via `OhmSupervisor::probe` already collapsed the failure to
+/// Basic for the tier decision; this second probe inspects the raw error /
+/// body to compose the right user-facing hint.
+fn classify_basic_port<C: HttpClient>(
+    supervisor: &OhmSupervisor<C>,
+    port: u16,
+) -> Option<BasicReason> {
+    let url = format!("http://127.0.0.1:{port}/data.json");
+    let client = supervisor.client();
+    match client.get(&url) {
+        Ok(body) => {
+            // Something answered. If it's the LHM signature, the first
+            // probe() should have returned Full — a mismatch means the port
+            // is flaky or LHM just came up between probes. Treat as
+            // inconclusive (None) so we don't mislead the hint.
+            if is_lhm_signature(&body) {
+                None
+            } else {
+                Some(BasicReason::NonLhmBody)
+            }
+        }
+        // Both connection-refused and timeout mean the port is free (LHM just
+        // isn't running). T-10 timeouts on localhost almost always indicate
+        // nothing is listening — a foreign service that accepted the
+        // connection but didn't respond would still register as "free" from
+        // our perspective, since launch_elevated will retry the port with its
+        // own T-11 budget.
+        Err(OhmError::HttpFailed(_) | OhmError::Timeout) => Some(BasicReason::Free),
+        // Non-JSON body or JSON parse failure — a foreign service answered.
+        Err(OhmError::NotJson(_) | OhmError::Parse(_)) => Some(BasicReason::NonLhmBody),
+    }
+}
+
+/// Compose the Basic-tier hint from the per-port observations.
+///
+/// - If at least one port refused connection (free port, LHM just not
+///   running) → "LHM not detected — click the status pill to install/launch
+///   LibreHardwareMonitor". This is the dominant case.
+/// - If no port refused (every port was occupied or timed out) → "LHM port
+///   unavailable — all T-45 candidates (17127-17137) occupied by other
+///   services". The user needs to free up a port or reconfigure.
+fn compose_basic_hint(saw_non_lhm_body: bool, saw_connection_refused: bool) -> String {
+    if saw_connection_refused {
+        // At least one port was free — LHM just isn't running.
+        "LHM not detected — click the status pill to install/launch LibreHardwareMonitor \
+             (will request elevation)"
+            .to_string()
+    } else if saw_non_lhm_body {
+        // Every port was occupied by a non-LHM service.
+        format!(
+            "LHM port unavailable — all T-45 candidates ({PORT_RANGE_START}-{PORT_RANGE_END}) \
+             occupied by other services"
+        )
+    } else {
+        // Inconclusive (every probe timed out, or classify returned None for
+        // all ports). Default to the install hint — the user clicking the
+        // pill will surface the real error via launch_elevated.
+        "LHM not detected — click the status pill to install/launch LibreHardwareMonitor \
+             (will request elevation)"
+            .to_string()
+    }
+}
+
+/// Fire the T-38 tier-change callback if the tier transitioned. No-op when
+/// `previous_tier == Some(resolved)` OR when no callback is wired. The actual
+/// coalesced `Event::TierChanged` channel lands in Story 7.4; this is the
+/// seam.
+fn fire_tier_change(
+    tier_change: Option<&TierChangeCallback>,
+    previous_tier: Option<ProviderTier>,
+    resolved: ProviderTier,
+) {
+    let Some(cb) = tier_change else {
+        return;
+    };
+    match previous_tier {
+        Some(prev) if prev != resolved => {
+            cb(resolved);
+        }
+        // No previous (first launch) OR no transition — do NOT fire. First
+        // launch resolving Full is not a transition; it's the initial state.
+        _ => {}
     }
 }
 
