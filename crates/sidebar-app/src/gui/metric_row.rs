@@ -43,7 +43,7 @@
 //!   T-30 (precision rules)
 //! - sidebar-domain::format (Story 1.3) + sidebar-domain::config (Story 1.5)
 
-use eframe::egui::Ui;
+use eframe::egui::{Color32, Ui};
 use sidebar_domain::config::DisplayConfig;
 use sidebar_domain::format::{self, Base, TempUnit};
 use sidebar_domain::reading::{BatteryState, MetricKind, Reading, Unit};
@@ -62,6 +62,21 @@ pub fn render(ui: &mut Ui, reading: &Reading, display: &DisplayConfig) {
     ui.horizontal(|row| {
         row.label(kind_label(reading.kind));
         row.label(formatted);
+    });
+}
+
+/// Story 8.8 — same as [`render`] but tints both labels with the given color.
+///
+/// `color` is the alert color from [`crate::gui::alert_indicator::color_for`]:
+/// the default text color for `Normal`, the accent for `Warning`, and
+/// `CRITICAL_RED` for `Critical`. Tinting the value label (not just the kind)
+/// keeps the alert visible at a glance even when the row scrolls past the
+/// status pill.
+pub fn render_with_color(ui: &mut Ui, reading: &Reading, display: &DisplayConfig, color: Color32) {
+    let formatted = format_reading_with_config(reading, display);
+    ui.horizontal(|row| {
+        row.colored_label(color, kind_label(reading.kind));
+        row.colored_label(color, formatted);
     });
 }
 

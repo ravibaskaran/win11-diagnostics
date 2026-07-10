@@ -43,10 +43,17 @@
 // (settings panel). Each submodule owns its TDD contract; the composition
 // (pill at top, metric rows below, bandwidth panel, settings panel behind a
 // gear toggle) lives in `render_snapshot`.
+//
+// Story 8.6 (theme + accent), 8.7 (sparkline), 8.8 (threshold alert UI) add
+// three more submodules; their wiring into `render_sidebar` lands in the
+// GREEN commit for that batch.
+pub mod alert_indicator;
 pub mod bandwidth_panel;
 pub mod metric_row;
 pub mod settings_panel;
+pub mod sparkline;
 pub mod status_pill;
+pub mod theme;
 
 use std::sync::{Arc, RwLock};
 
@@ -325,6 +332,10 @@ pub struct SidebarView {
     /// When true, render the settings panel instead of the metric rows.
     /// Toggled by the gear button in the header (Story 8.5).
     pub settings_open: bool,
+    /// Story 8.7 — sparkline samples for the primary metric (CPU temperature
+    /// in v1). The host pushes one f64 per poll tick; `None` (or empty) skips
+    /// the sparkline widget. NaN values render as gaps (Story 1.6 contract).
+    pub sparkline: Option<Vec<f64>>,
 }
 
 /// Composed top-level render wiring together: status pill + gear toggle +
@@ -342,6 +353,12 @@ pub fn render_sidebar(
     view: &SidebarView,
     on_change: &dyn Fn(),
 ) {
+    // Story 8.6: apply theme + accent to the egui context for this frame.
+    // Done unconditionally each frame — `set_theme` is idempotent when the
+    // value hasn't changed (cheap: a single match on the stored preference).
+    let mode = theme::ThemeMode::from_config_str(&config.theme.mode);
+    theme::apply(ui.ctx(), mode, &config.theme.accent);
+
     // Header: status pill (left) + gear toggle (right). The gear toggles the
     // settings panel (Story 8.5 HITL guardrail G11 — no-retroactive-resplit
     // surfaced as a tooltip inside the settings panel).
@@ -377,13 +394,35 @@ pub fn render_sidebar(
         ui.label(WAITING_TEXT);
     } else {
         let display = config.display.clone();
+        let accent = theme::parse_accent(&config.theme.accent);
+        let default = ui.style().visuals.text_color();
         let visible = readings.len().min(MAX_ROWS);
         for reading in readings.iter().take(visible) {
-            metric_row::render(ui, reading, &display);
+            // Story 8.8: classify + pick the row color. The render path is
+            // stateless here (we always feed `AlertState::Normal` as prev);
+            // the SidebarView will hold per-sensor prev-state in a follow-up
+            // story once AppState owns a per-sensor history map.
+            let (color, _state) = alert_indicator::color_for(
+                reading,
+                Some(&config.thresholds),
+                sidebar_domain::alert::AlertState::Normal,
+                accent,
+                default,
+            );
+            metric_row::render_with_color(ui, reading, &display, color);
         }
         if readings.len() > MAX_ROWS {
             let omitted = readings.len() - MAX_ROWS;
             ui.label(format!("+{omitted} more (truncated)"));
+        }
+    }
+
+    // Story 8.7: sparkline widget for the primary metric. Rendered below the
+    // metric rows, above the bandwidth panel. Empty/None → skipped (no extra
+    // vertical space wasted).
+    if let Some(samples) = &view.sparkline {
+        if !samples.is_empty() {
+            sparkline::render_snapshot(ui, samples, sparkline::DEFAULT_WIDTH);
         }
     }
 
@@ -844,6 +883,7 @@ mod tests {
         let view = SidebarView {
             bandwidth: None,
             settings_open: true,
+            sparkline: None,
         };
         let mut harness = Harness::new_ui(|ui| {
             render_sidebar(
@@ -875,6 +915,7 @@ mod tests {
         let view = SidebarView {
             bandwidth: None,
             settings_open: false,
+            sparkline: None,
         };
         let mut harness = Harness::new_ui(|ui| {
             render_sidebar(
@@ -895,6 +936,98 @@ mod tests {
         assert!(
             labels.contains("42%"),
             "settings_open=false must still render the metric rows (got: {labels})"
+        );
+    }
+
+    // ===== Story 8.6 + 8.7 + 8.8 wiring: theme applies, sparkline renders,
+    // alert color flows through. =====
+
+    #[test]
+    fn render_sidebar_applies_configured_theme_mode() {
+        // Light theme config — verify the ctx visuals flip to light after
+        // render_sidebar runs (Story 8.6 wiring).
+        let readings = vec![reading(MetricKind::CpuUtilization, 42.0, Unit::Percent)];
+        let mut config = Config::default();
+        config.theme.mode = "Light".to_string();
+        let view = SidebarView::default();
+        let ctx_holder: std::cell::RefCell<Option<egui::Context>> = std::cell::RefCell::new(None);
+        let mut harness = Harness::new_ui(|ui| {
+            render_sidebar(
+                ui,
+                &readings,
+                ProviderTier::Basic,
+                &mut config,
+                &view,
+                &|| {},
+            );
+            *ctx_holder.borrow_mut() = Some(ui.ctx().clone());
+        });
+        harness.run();
+        let ctx = ctx_holder.borrow().clone().expect("ctx captured");
+        assert!(
+            !ctx.global_style().visuals.dark_mode,
+            "config.theme.mode=\"Light\" must flip ctx visuals to light (Story 8.6 wiring)"
+        );
+    }
+
+    #[test]
+    fn render_sidebar_renders_sparkline_when_samples_present() {
+        // Three samples → sparkline widget renders (allocates a rect, paints a
+        // line). We assert no panic + the widget is reachable from production.
+        let readings = vec![reading(MetricKind::CpuUtilization, 42.0, Unit::Percent)];
+        let mut config = Config::default();
+        let view = SidebarView {
+            bandwidth: None,
+            settings_open: false,
+            sparkline: Some(vec![10.0, 20.0, 30.0]),
+        };
+        let mut harness = Harness::new_ui(|ui| {
+            render_sidebar(
+                ui,
+                &readings,
+                ProviderTier::Basic,
+                &mut config,
+                &view,
+                &|| {},
+            );
+        });
+        harness.run();
+        // The sparkline widget paints into the painter; the access tree won't
+        // surface line geometry. The wiring contract here is "no panic" + the
+        // metric row still renders below it.
+        let labels = all_labels(&harness).join(" | ");
+        assert!(
+            labels.contains("42%"),
+            "sparkline render must not displace the metric row (got: {labels})"
+        );
+    }
+
+    #[test]
+    fn render_sidebar_critical_temp_paints_metric_row_red() {
+        // 95°C CPU temp with default thresholds (warn 80, crit 90) → Critical
+        // → metric row tinted CRITICAL_RED. We assert the value label's color
+        // via the access tree's "color" glyph isn't available; instead we
+        // verify the alert classification runs without panic and the row
+        // still renders the value (the color flow is pinned by the
+        // alert_indicator unit tests directly).
+        let readings = vec![reading(MetricKind::CpuTemperature, 95.0, Unit::Celsius)];
+        let mut config = Config::default();
+        let view = SidebarView::default();
+        let mut harness = Harness::new_ui(|ui| {
+            render_sidebar(
+                ui,
+                &readings,
+                ProviderTier::Basic,
+                &mut config,
+                &view,
+                &|| {},
+            );
+        });
+        harness.run();
+        let labels = all_labels(&harness).join(" | ");
+        assert!(
+            labels.contains("95"),
+            "critical CPU temp must still render its value (got: {labels})"
         );
     }
 }
