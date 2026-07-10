@@ -56,15 +56,20 @@ pub const DISCONNECTED_TAG: &str = "(disconnected)";
 ///    absent from `current`).
 ///
 /// Empty `view.current` (no tracked NICs) renders [`EMPTY_TEXT`] and returns.
-#[allow(clippy::needless_pass_by_value)]
-pub fn render(ui: &mut Ui, _view: &BandwidthView, _display: &DisplayConfig) {
-    // RED-phase STUB — renders nothing. The GREEN-phase implementation
-    // populates per-NIC rows + reset-countdown + history strip below.
-    let _ = (ui,);
+pub fn render(ui: &mut Ui, view: &BandwidthView, display: &DisplayConfig) {
+    if view.current.is_empty() {
+        ui.label(EMPTY_TEXT);
+        return;
+    }
+    render_current(ui, view, display);
+    render_reset(ui, view);
+    if !view.history.is_empty() {
+        ui.separator();
+        render_history(ui, view, display);
+    }
 }
 
 /// Render the per-NIC current-cycle rows.
-#[allow(dead_code)] // Wired by the GREEN-phase render().
 fn render_current(ui: &mut Ui, view: &BandwidthView, display: &DisplayConfig) {
     for nic in &view.current {
         let row = nic_row(nic, display);
@@ -74,14 +79,12 @@ fn render_current(ui: &mut Ui, view: &BandwidthView, display: &DisplayConfig) {
 
 /// Render the reset countdown ("12 days until reset (2026-07-31)" or
 /// [`RESETS_TODAY`]).
-#[allow(dead_code)] // Wired by the GREEN-phase render().
 fn render_reset(ui: &mut Ui, view: &BandwidthView) {
     ui.label(reset_countdown_label(view));
 }
 
 /// Render the prior-cycle history strip at a smaller font. Each NIC's row
 /// annotates `(disconnected)` when its LUID is absent from `current`.
-#[allow(dead_code)] // Wired by the GREEN-phase render().
 fn render_history(ui: &mut Ui, view: &BandwidthView, display: &DisplayConfig) {
     if view.history.is_empty() {
         return;

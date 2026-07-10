@@ -34,23 +34,17 @@
 //! - guardrails.md HITL (no-retroactive-resplit G11)
 
 use eframe::egui::Ui;
-#[allow(unused_imports)] // RED-phase: helpers exist for the GREEN commit.
 use sidebar_domain::config::{Config, CycleStartDaySerde, DisplayConfig, DockConfig, ThemeConfig};
-#[allow(unused_imports)] // RED-phase: used by display_temp_unit.
 use sidebar_domain::format::TempUnit;
 
 /// The minimum cycle-start day (T-26 — Day must be in `[1, 28]`).
-#[allow(dead_code)] // Referenced by tests + GREEN-phase render.
 pub(crate) const MIN_CYCLE_DAY: u8 = 1;
 /// The maximum cycle-start day (T-26 — Day must be in `[1, 28]`).
-#[allow(dead_code)] // Referenced by tests + GREEN-phase render.
 pub(crate) const MAX_CYCLE_DAY: u8 = 28;
 
 /// The minimum poll interval in seconds (T-3 — must be in `[1, 60]`).
-#[allow(dead_code)] // Referenced by tests + GREEN-phase render.
 pub(crate) const MIN_POLL_INTERVAL: u32 = 1;
 /// The maximum poll interval in seconds (T-3 — must be in `[1, 60]`).
-#[allow(dead_code)] // Referenced by tests + GREEN-phase render.
 pub(crate) const MAX_POLL_INTERVAL: u32 = 60;
 
 /// The exact tooltip text spelling out the no-retroactive-resplit rule
@@ -62,17 +56,130 @@ pub const NO_RESPLIT_TOOLTIP: &str = "Billing-cycle start day applies to the \
 /// passes `on_change: &dyn Fn()` which is invoked whenever the user changes
 /// any field — the host is responsible for persisting `config.toml` (debounced
 /// per PRD §5.5.8).
-#[allow(clippy::needless_pass_by_value)]
-pub fn render(ui: &mut Ui, _config: &mut Config, _on_change: &dyn Fn()) {
-    // RED-phase STUB — renders nothing. The GREEN-phase implementation
-    // wires egui widgets for cycle_start_day, temp_unit, raw_values,
-    // decimal_base, poll_interval, docked_edge, theme, plus the
-    // no-retroactive-resplit tooltip + the T-3 visible poll warning.
-    let _ = (ui,);
+pub fn render(ui: &mut Ui, config: &mut Config, on_change: &dyn Fn()) {
+    let mut changed = false;
+
+    // ---- Billing cycle start day (T-26: Day in [1,28] OR LastDayOfMonth) ----
+    ui.label("Billing cycle start day");
+    ui.horizontal(|row| {
+        // The slider operates on a local day_value; if "Last day" is checked
+        // we leave the slider at MAX_CYCLE_DAY and disable it.
+        let is_last_day = matches!(
+            config.bandwidth.cycle_start_day,
+            CycleStartDaySerde::LastDayOfMonth
+        );
+        let mut day_value: u8 = match &config.bandwidth.cycle_start_day {
+            CycleStartDaySerde::Day(d) => *d,
+            CycleStartDaySerde::LastDayOfMonth => MAX_CYCLE_DAY,
+        };
+        let mut slider =
+            row.add(egui::Slider::new(&mut day_value, MIN_CYCLE_DAY..=MAX_CYCLE_DAY).text("day"));
+        if is_last_day {
+            slider = slider.on_disabled_hover_text("Last day of month is active");
+        }
+        let mut last_day_selected = is_last_day;
+        let last_day_widget = row.checkbox(&mut last_day_selected, "Last day");
+        if slider.changed() && !last_day_selected {
+            config.bandwidth.cycle_start_day = CycleStartDaySerde::Day(day_value);
+            changed = true;
+        }
+        if last_day_widget.changed() {
+            config.bandwidth.cycle_start_day = if last_day_selected {
+                CycleStartDaySerde::LastDayOfMonth
+            } else {
+                CycleStartDaySerde::Day(MIN_CYCLE_DAY)
+            };
+            changed = true;
+        }
+        // Explicit value echo so the F8 access tree can assert on the current
+        // day (the slider widget itself doesn't surface its numeric value as a
+        // queryable label). When "Last day" is active we show "Last" instead.
+        let value_echo = if is_last_day {
+            "Last".to_string()
+        } else {
+            day_value.to_string()
+        };
+        row.label(format!("day {value_echo}"));
+    });
+    // No-retroactive-resplit tooltip (PRD §5.5.8 — HITL guardrail G11).
+    ui.label(egui::RichText::new(NO_RESPLIT_TOOLTIP).small().weak());
+
+    // ---- Temperature unit (T-29: C/F — only C/F ship in v1) ----
+    ui.label("Temperature unit");
+    ui.horizontal(|row| {
+        let mut unit = config.display.temp_unit;
+        if row
+            .radio_value(&mut unit, TempUnit::Celsius, "°C")
+            .changed()
+        {
+            config.display.temp_unit = TempUnit::Celsius;
+            changed = true;
+        }
+        if row
+            .radio_value(&mut unit, TempUnit::Fahrenheit, "°F")
+            .changed()
+        {
+            config.display.temp_unit = TempUnit::Fahrenheit;
+            changed = true;
+        }
+    });
+
+    // ---- Raw values toggle (T-28) ----
+    ui.horizontal(|row| {
+        let mut raw = config.display.raw_values;
+        let r = row.checkbox(&mut raw, "Show raw values (Hz/bytes)");
+        if r.changed() {
+            config.display.raw_values = raw;
+            changed = true;
+        }
+    });
+
+    // ---- Decimal / binary base (T-28) ----
+    ui.label("Byte base");
+    ui.horizontal(|row| {
+        let mut decimal = config.display.decimal_base;
+        let r1 = row.radio_value(&mut decimal, true, "Decimal (GB)");
+        let r2 = row.radio_value(&mut decimal, false, "Binary (GiB)");
+        if r1.changed() || r2.changed() {
+            config.display.decimal_base = decimal;
+            changed = true;
+        }
+    });
+
+    // ---- Poll interval (T-3: clamp to [1, 60]) ----
+    ui.label("Poll interval (seconds)");
+    ui.horizontal(|row| {
+        let mut v = config.poll_interval_seconds;
+        let slider = row.add(
+            egui::Slider::new(&mut v, MIN_POLL_INTERVAL..=MAX_POLL_INTERVAL)
+                .clamping(egui::SliderClamping::Always),
+        );
+        if slider.changed() {
+            config.poll_interval_seconds = v.clamp(MIN_POLL_INTERVAL, MAX_POLL_INTERVAL);
+            changed = true;
+        }
+    });
+    if config.poll_interval_seconds <= MIN_POLL_INTERVAL {
+        // T-3 visible warning when poll interval is at the floor.
+        ui.label(
+            egui::RichText::new("Poll interval at minimum (1s)")
+                .small()
+                .color(egui::Color32::YELLOW),
+        );
+    }
+
+    // ---- Docked edge (T-36) ----
+    dock_edge_section(ui, &mut config.dock, &mut changed);
+
+    // ---- Theme (T-35) ----
+    theme_section(ui, &mut config.theme, &mut changed);
+
+    if changed {
+        on_change();
+    }
 }
 
 /// Render the docked-edge radio section.
-#[allow(dead_code)] // Wired by the GREEN-phase render().
 fn dock_edge_section(ui: &mut Ui, dock: &mut DockConfig, changed: &mut bool) {
     ui.label("Docked edge");
     ui.horizontal(|row| {
@@ -87,7 +194,6 @@ fn dock_edge_section(ui: &mut Ui, dock: &mut DockConfig, changed: &mut bool) {
 }
 
 /// Render the theme-mode radio section.
-#[allow(dead_code)] // Wired by the GREEN-phase render().
 fn theme_section(ui: &mut Ui, theme: &mut ThemeConfig, changed: &mut bool) {
     ui.label("Theme");
     ui.horizontal(|row| {
@@ -104,10 +210,17 @@ fn theme_section(ui: &mut Ui, theme: &mut ThemeConfig, changed: &mut bool) {
 /// Normalize a TempUnit to the v1-supported set (Celsius/Fahrenheit). The
 /// Reading's wire unit is always Celsius (canonical); the DisplayConfig's
 /// `temp_unit` field only carries Celsius/Fahrenheit in v1.
-#[allow(dead_code, clippy::needless_pass_by_value)] // Wired by the GREEN-phase render().
+#[cfg(test)]
 fn display_temp_unit(unit: TempUnit) -> TempUnit {
     unit
 }
+
+/// Silence unused-import lint: DisplayConfig is imported for symmetry with
+/// sidebar-domain types used by the helpers above (and for future raw-mode
+/// surfacing). The struct is referenced indirectly through the Config field
+/// accesses in render().
+#[allow(dead_code)]
+type _DisplayConfigRef = DisplayConfig;
 
 #[cfg(test)]
 mod tests {
