@@ -14,6 +14,7 @@ pub mod alert;
 pub mod billing;
 pub mod config;
 pub mod error;
+pub mod event;
 pub mod format;
 pub mod graph;
 pub mod reading;
