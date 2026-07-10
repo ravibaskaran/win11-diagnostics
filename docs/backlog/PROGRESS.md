@@ -55,8 +55,8 @@ The swarm reads this file at task-startup to identify the ready set (stories who
 | 7.1 | merged | 2026-07-10T05Z | #28 | L0:8 | Provider registry (tier-filtered via classify_for_v1). All 6 adapters wired. |
 | 7.2 | merged | 2026-07-10T06Z | #31 | L0:7 | Poller task (interval + spawn_blocking + catch_unwind/AssertUnwindSafe + broadcast). G15 panic-skip. Injectable InstantClock. |
 | 7.3 | merged | 2026-07-10T06Z | #32 | L0:11 | Two-tier launch probe (no UAC — &OhmSupervisor borrow prevents launch_elevated; T-45 port fallback; tier-broadcast seam). Epic 7 COMPLETE. |
-| 7.4 | pending | — | — | — | — |
-| 7.5 | pending | — | — | — | — |
+| 7.4 | merged | 2026-07-10T13Z | #39 | L0:15 | EventChannel (broadcast + raw_tx seam) + spawn_coalescer 500ms tier-change debounce (T-38). Cross-thread TierChanged→GUI flip. |
+| 7.5 | merged | 2026-07-10T13Z | #38 | L0:18 | Graceful shutdown orchestrator (T-39 phases: cancel→force_flush→teardown_ohm; ShutdownTargets trait; cancellable via pending() not sleep). |
 | 8.1 | merged | 2026-07-10T06Z | #33 | L0:11 | AppState + egui::App (repaint on broadcast drain, G15 RwLock poison recovery, F8 egui_kittest). 3 egui transitive advisories muted in deny.toml (ttf-parser/quick-xml, build-time-only on Win11). |
 | 8.2 | merged | 2026-07-10T06Z | #34 | L0:8 | Status pill (Basic gray/Full green, click→launch_elevated, tooltip). |
 | 8.3 | merged | 2026-07-10T06Z | #34 | L0:14 | Metric row (NFR-8 format dispatch: MetricKind×Unit→format_*; raw_values/temp_unit/decimal_base respect; T-20 NaN→"--"). |
@@ -67,6 +67,7 @@ The swarm reads this file at task-startup to identify the ready set (stories who
 | 8.8 | merged | 2026-07-10T07Z | #36 | L0:11 | Threshold alert UI (check_threshold→row color Normal/Warning/Critical; hysteresis). |
 | 8.9 | merged | 2026-07-10T07Z | #37 | L0:22 | Metric enable/disable + drag-reorder (native egui DnD, [metrics] enabled+order config). |
 | 8.10 | merged | 2026-07-10T07Z | #37 | L0:11 | First-run wizard (docked edge/monitor/cycle_start_day/theme; G24 poller gate; first_run_complete). Epic 8 COMPLETE — END OF CODING. |
+| INT | merged | 2026-07-10T14Z | #40 | — | **Integration main wiring**: main.rs 14-step launch sequence (config→tier probe→registry→poller→accountant→EventChannel→AppState→eframe→shutdown). Async tier probe on spawn_blocking (fixes silent hang from firewalled-loopback TCP timeout). First-run wizard gate (G24). G25 green: 465 tests / 0 fail / 12 ignored, clippy clean, deny all ok. Release .exe (17MB) launches <1s, renders live CPU/GPU/RAM readings + BASIC pill, runs 30s+ no crash. **FUNCTIONAL APP.** |
 | 9.1 | pending | — | — | — | — |
 | 9.2 | pending | — | — | — | — |
 | 9.3 | pending | — | — | — | — |
@@ -79,9 +80,9 @@ The swarm reads this file at task-startup to identify the ready set (stories who
 
 ## Summary
 - Total stories: 59
-- Merged: 42 / 59 (71.2%) — Stories 0.1-0.7, 1.1-1.6, 2.1-2.3, 3.1-3.6, 4.1-4.3, 5.1-5.3, 6.1-6.4, 7.1-7.3, 8.1-8.10 (Epics 0+1+2+3+4+5+6+7+8 COMPLETE — END OF CODING)
-- Ready for pickup: {3.2b, 6.5, 6.6, 7.4, 7.5, 9.1-9.3, 10.1, 10.2, 11.1-11.4} — post-coding (release/QA/CI stories)
-- Workspace tests on main: 446 passing, 0 failing, 11 ignored (hardware/UAC smokes)
+- Merged: 44 / 59 (74.6%) — Stories 0.1-0.7, 1.1-1.6, 2.1-2.3, 3.1-3.6, 4.1-4.3, 5.1-5.3, 6.1-6.4, 7.1-7.5, 8.1-8.10 + INT (Epics 0+1+2+3+4+5+6+7+8 COMPLETE — END OF CODING + main.rs integration wiring)
+- Ready for pickup: {3.2b, 6.5, 6.6, 9.1-9.3, 10.1, 10.2, 11.1-11.4} — post-coding (release/QA/CI stories)
+- Workspace tests on main: 465 passing, 0 failing, 12 ignored (hardware/UAC smokes)
 - Blocked on HITL: 0
 - Long-term blocked: 0
 
