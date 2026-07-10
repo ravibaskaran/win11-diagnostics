@@ -1147,6 +1147,7 @@ name = "sidebar-app"
 version = "0.0.0"
 dependencies = [
  "cargo_metadata",
+ "mockall",
  "semver",
  "serde",
  "serde_json",
@@ -1157,6 +1158,7 @@ dependencies = [
  "sidebar-adapter-pdh",
  "sidebar-adapter-sysinfo",
  "sidebar-domain",
+ "sidebar-platform",
  "sidebar-sensor",
  "tempfile",
  "thiserror 1.0.69",

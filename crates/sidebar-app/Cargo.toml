@@ -17,6 +17,10 @@ description = "sidebar binary — Win11 hardware diagnostics sidebar"
 # tracing is already a transitive dep of the adapters; pulling it in here makes
 # the poller's structured logging explicit. All workspace-managed, so no new
 # license entries beyond the already-vetted workspace set (T-32).
+# Story 7.3: sidebar-platform dep brings OhmSupervisor (probe engine, Story
+# 6.4); the launch-time two-tier probe delegates to it. The trait exposure
+# (HttpClient) is a re-export from sidebar-adapter-ohm (already a dep), so no
+# new transitive license surface.
 [dependencies]
 serde = { workspace = true }            # MIT/Apache-2.0 — derive for Estimate
 serde_json = { workspace = true }       # MIT/Apache-2.0 — NFR-1 bench parsing
@@ -24,8 +28,9 @@ tokio = { workspace = true }            # MIT — broadcast + interval + spawn_b
 tokio-util = { workspace = true }       # MIT — CancellationToken (shutdown signal, T-19)
 tracing = { workspace = true }          # MIT — structured logging (panic-skip G15)
 thiserror = { workspace = true }        # MIT/Apache-2.0 — PollerError derive (consistent with sidebar-domain::error)
-sidebar-domain = { path = "../sidebar-domain" }   # internal — Reading, MetricKind (transitively used by adapters)
-sidebar-sensor = { path = "../sidebar-sensor" }   # internal — SensorProvider trait, SensorDescriptor, classify_for_v1
+sidebar-domain = { path = "../sidebar-domain" }   # internal — Reading, MetricKind, Config::ohm.http_port (T-45, Story 7.3)
+sidebar-sensor = { path = "../sidebar-sensor" }   # internal — SensorProvider trait, SensorDescriptor, classify_for_v1, ProviderTier
+sidebar-platform = { path = "../sidebar-platform" }  # internal — OhmSupervisor (probe engine, Story 6.4) — Story 7.3 delegates to it
 sidebar-adapter-sysinfo = { path = "../sidebar-adapter-sysinfo" }  # internal — SysinfoAdapter (Tier::Basic)
 sidebar-adapter-battery = { path = "../sidebar-adapter-battery" }  # internal — BatteryAdapter (Tier::Basic)
 sidebar-adapter-pdh = { path = "../sidebar-adapter-pdh" }          # internal — PdhAdapter (Tier::Basic)
@@ -40,6 +45,7 @@ cargo_metadata = { workspace = true }   # MIT — workspace introspection
 semver = { workspace = true }           # MIT/Apache-2.0 — version parsing
 tempfile = { workspace = true }         # MIT/Apache-2.0 — TempDir for parse_threshold tests (F1)
 toml = { workspace = true }             # MIT/Apache-2.0 — parse Cargo.toml in profile_contract test
+mockall = { workspace = true }          # MIT/Apache-2.0 — MockHttpClient for tier_probe tests (Story 7.3)
 which = "7"                             # MIT — locate pwsh.exe in dev_env_scripts test
 
 [lints]

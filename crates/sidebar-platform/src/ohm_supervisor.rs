@@ -205,6 +205,18 @@ impl<C: HttpClient> OhmSupervisor<C> {
         self.resolved_port
     }
 
+    /// Borrow the underlying HTTP client. Exposed so the launch-time tier
+    /// probe (Story 7.3) can classify WHY a port returned Basic (connection
+    /// refused vs non-LHM body vs timeout) when composing the user-facing
+    /// hint — `probe()` collapses all failures to `Basic` for the tier
+    /// decision, but the hint needs the reason. The client is read-only via
+    /// `HttpClient::get(&self, ...)`, so borrowing it does not compromise
+    /// the supervisor's lifecycle ownership. Cited: Story 7.3.
+    #[must_use]
+    pub fn client(&self) -> &C {
+        &self.client
+    }
+
     /// `true` iff sidebar launched the child (G10 ownership check).
     #[must_use]
     pub fn sidebar_launched(&self) -> bool {
