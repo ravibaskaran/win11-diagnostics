@@ -49,6 +49,8 @@
 // GREEN commit for that batch.
 pub mod alert_indicator;
 pub mod bandwidth_panel;
+pub mod first_run;
+pub mod metric_list;
 pub mod metric_row;
 pub mod settings_panel;
 pub mod sparkline;
