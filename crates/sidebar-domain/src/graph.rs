@@ -87,6 +87,89 @@ impl RollingWindow {
     }
 }
 
+// ===========================================================================
+// Story 12.2 — per-metric history map.
+// ===========================================================================
+
+/// A key identifying a single metric stream for the per-metric history.
+///
+/// Stories 8.x render each `Reading` by `(category, instance, kind)`; this
+/// key mirrors that triple so the history map aligns with the render path.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MetricKey {
+    /// Sensor category (e.g. `"cpu"`, `"gpu"`).
+    pub category: String,
+    /// Sensor instance (e.g. `"package"`, `"0"`).
+    pub instance: String,
+    /// Metric kind name (the `Debug` form of `MetricKind`, e.g.
+    /// `"CpuUtilization"`).
+    pub kind: String,
+}
+
+/// Story 12.2 — per-metric rolling-history map. Holds one `RollingWindow`
+/// per `MetricKey`, pushing new values as readings arrive. The GUI reads
+/// each metric's window to render a short history graph alongside the
+/// sparkline (T-22: default 60 samples, configurable 10–600).
+///
+/// Pure logic — no IO, no GUI. The poller pushes; the GUI reads.
+///
+/// Cited: Story 12.2 DoD, architecture.md §7.1, nfr-thresholds.md T-22.
+#[derive(Debug, Clone)]
+pub struct MetricHistory {
+    window_size: usize,
+    windows: std::collections::HashMap<MetricKey, RollingWindow>,
+}
+
+impl MetricHistory {
+    /// Construct with the T-22 window size (default 60; range 10–600).
+    #[must_use]
+    pub fn new(window_size: usize) -> Self {
+        let clamped = window_size.clamp(10, 600);
+        Self {
+            window_size: clamped,
+            windows: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Push a value for the given metric key. Creates the window lazily on
+    /// first sighting.
+    pub fn push(&mut self, key: MetricKey, value: f64) {
+        self.windows
+            .entry(key)
+            .or_insert_with(|| RollingWindow::new(self.window_size))
+            .push(value);
+    }
+
+    /// Borrow the rolling window for `key`, if it exists.
+    #[must_use]
+    pub fn get(&self, key: &MetricKey) -> Option<&RollingWindow> {
+        self.windows.get(key)
+    }
+
+    /// Borrow the rolling window for `key` mutably (for `as_slice`).
+    pub fn get_mut(&mut self, key: &MetricKey) -> Option<&mut RollingWindow> {
+        self.windows.get_mut(key)
+    }
+
+    /// The configured window size (post-clamp).
+    #[must_use]
+    pub fn window_size(&self) -> usize {
+        self.window_size
+    }
+
+    /// Number of distinct metrics tracked.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.windows.len()
+    }
+
+    /// True when no metrics have been pushed.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.windows.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,5 +237,57 @@ mod tests {
         assert!(!w.is_full());
         w.push(2.0);
         assert!(w.is_full());
+    }
+
+    // ----- Story 12.2: MetricHistory -----
+
+    fn key(category: &str, instance: &str, kind: &str) -> MetricKey {
+        MetricKey {
+            category: category.to_string(),
+            instance: instance.to_string(),
+            kind: kind.to_string(),
+        }
+    }
+
+    #[test]
+    fn metric_history_push_creates_and_evicts_per_metric() {
+        // T-22 minimum window is 10; push 11 values to prove eviction.
+        let mut h = MetricHistory::new(10);
+        let cpu = key("cpu", "package", "CpuUtilization");
+        for i in 0..11_i32 {
+            h.push(cpu.clone(), f64::from(i));
+        }
+        let w = h.get(&cpu).expect("CPU window exists");
+        assert_eq!(w.len(), 10, "window evicts to capacity (T-22 min)");
+    }
+
+    #[test]
+    fn metric_history_tracks_distinct_metrics_independently() {
+        let mut h = MetricHistory::new(60);
+        let cpu = key("cpu", "package", "CpuUtilization");
+        let gpu = key("gpu", "0", "GpuUtilization");
+        h.push(cpu.clone(), 42.0);
+        h.push(gpu.clone(), 65.0);
+        assert_eq!(h.len(), 2, "two distinct metrics tracked");
+        // Pushing to one doesn't affect the other.
+        h.push(cpu.clone(), 43.0);
+        assert_eq!(
+            h.get(&gpu).map(RollingWindow::len),
+            Some(1),
+            "GPU window unaffected by CPU push"
+        );
+        assert_eq!(
+            h.get(&cpu).map(RollingWindow::len),
+            Some(2),
+            "CPU window grew"
+        );
+    }
+
+    #[test]
+    fn metric_history_clamps_window_size_to_t22_range() {
+        let h_small = MetricHistory::new(0);
+        assert_eq!(h_small.window_size(), 10, "min window is 10 (T-22)");
+        let h_big = MetricHistory::new(9999);
+        assert_eq!(h_big.window_size(), 600, "max window is 600 (T-22)");
     }
 }
