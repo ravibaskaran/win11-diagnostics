@@ -46,7 +46,8 @@ pub struct EventChannel {
     pub raw_tx: broadcast::Sender<Event>,
     /// Subscribers receive here (GUI, poller registry rebuild).
     pub coalesced_tx: broadcast::Sender<Event>,
-    /// The background coalescer task. Detach in production; await in tests.
+    /// The background coalescer task. The integration shutdown path awaits
+    /// this handle so no worker remains detached after eframe exits.
     pub coalescer: JoinHandle<()>,
 }
 
@@ -300,7 +301,10 @@ mod tests {
         assert_eq!(received, Event::Shutdown);
 
         // The coalescer task should exit shortly after Shutdown.
-        let _ = tokio::time::timeout(Duration::from_millis(500), &mut channel.coalescer).await;
+        tokio::time::timeout(Duration::from_millis(500), &mut channel.coalescer)
+            .await
+            .expect("coalescer must terminate after Shutdown")
+            .expect("coalescer task must join cleanly");
     }
 
     // ----- Boundary #4: raw channel close → coalescer flushes + exits -----
@@ -308,7 +312,7 @@ mod tests {
     /// Cited: Story 7.4, G15.
     #[tokio::test]
     async fn raw_channel_close_flushes_pending_and_exits() {
-        let channel = EventChannel::new();
+        let mut channel = EventChannel::new();
         let mut rx = channel.subscribe();
 
         // Send a tier change (pending in the debounce window).
@@ -324,6 +328,10 @@ mod tests {
                 .expect("pending tier should be flushed on close")
                 .expect("recv ok");
         assert_eq!(received, Event::TierChanged(Tier::Full));
+        tokio::time::timeout(Duration::from_millis(500), &mut channel.coalescer)
+            .await
+            .expect("coalescer must terminate after raw channel close")
+            .expect("coalescer task must join cleanly");
     }
 
     // ----- Integration: full channel end-to-end -----

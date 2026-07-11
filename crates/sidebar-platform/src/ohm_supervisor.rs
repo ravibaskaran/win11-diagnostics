@@ -1243,9 +1243,14 @@ mod tests {
         assert!(!sv.sidebar_launched(), "still did not launch");
     }
 
+    #[allow(clippy::struct_excessive_bools)]
     #[derive(Debug, Default)]
     struct FakeLaunchResources {
         cleanup_flags: u8,
+        child_started: bool,
+        job_created: bool,
+        job_configured: bool,
+        job_assigned: bool,
     }
 
     impl FakeLaunchResources {
@@ -1263,11 +1268,37 @@ mod tests {
         }
     }
 
-    #[derive(Debug, Clone, Copy)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum SetupFailure {
         Create,
         Configure,
         Assign,
+    }
+
+    fn simulate_job_setup_failure(
+        stage: SetupFailure,
+        resources: &mut FakeLaunchResources,
+    ) -> std::result::Result<(), SetupFailure> {
+        resources.child_started = true;
+        if stage == SetupFailure::Create {
+            cleanup_failed_post_launch_setup(resources);
+            return Err(stage);
+        }
+
+        resources.job_created = true;
+        if stage == SetupFailure::Configure {
+            cleanup_failed_post_launch_setup(resources);
+            return Err(stage);
+        }
+
+        resources.job_configured = true;
+        if stage == SetupFailure::Assign {
+            cleanup_failed_post_launch_setup(resources);
+            return Err(stage);
+        }
+
+        resources.job_assigned = true;
+        Ok(())
     }
 
     impl ChildTermination for FakeLaunchResources {
@@ -1284,7 +1315,24 @@ mod tests {
             SetupFailure::Assign,
         ] {
             let mut resources = FakeLaunchResources::default();
-            cleanup_failed_post_launch_setup(&mut resources);
+            let error = simulate_job_setup_failure(stage, &mut resources)
+                .expect_err("each configured stage must fail in this seam");
+            assert_eq!(error, stage, "the seam must report the failing stage");
+            assert!(resources.child_started, "child launched before {stage:?}");
+            assert_eq!(
+                resources.job_created,
+                !matches!(stage, SetupFailure::Create),
+                "job creation state must match {stage:?}"
+            );
+            assert_eq!(
+                resources.job_configured,
+                matches!(stage, SetupFailure::Assign),
+                "job configuration state must match {stage:?}"
+            );
+            assert!(
+                !resources.job_assigned,
+                "failed setup must not commit the job"
+            );
             assert!(
                 resources.child_terminated(),
                 "child terminated for {stage:?}"

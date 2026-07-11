@@ -633,6 +633,104 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn tier_rebuild_error_retains_previous_registry_without_claiming_full() {
+        let mut h = harness();
+        let basic = stub("basic", || {
+            vec![reading("basic", "0", MetricKind::CpuUtilization)]
+        });
+        let builder = |_tier: ProviderTier| -> Result<Vec<Arc<dyn SensorProvider>>, String> {
+            Err("test registry failure".to_string())
+        };
+        let (event_tx, event_rx) = broadcast::channel(8);
+        let poller = Poller::with_clock_raw(
+            vec![basic],
+            Duration::from_millis(10),
+            h.tx.clone(),
+            h.clock,
+        );
+        let shutdown = CancellationToken::new();
+        let cancel = shutdown.clone();
+        let run =
+            tokio::spawn(async move { poller.run_with_events(shutdown, event_rx, builder).await });
+
+        event_tx
+            .send(Event::TierChanged(Tier::Full))
+            .expect("event receiver is active");
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(100);
+        let mut saw_batch = false;
+        while tokio::time::Instant::now() < deadline {
+            if let Ok(Ok(batch)) =
+                tokio::time::timeout(Duration::from_millis(30), h.rx.recv()).await
+            {
+                saw_batch = true;
+                assert!(
+                    batch
+                        .iter()
+                        .all(|reading| reading.sensor.category != "full"),
+                    "failed rebuild must retain the previous Basic registry"
+                );
+            }
+        }
+        cancel.cancel();
+        run.await
+            .expect("poller task joins")
+            .expect("poller exits cleanly");
+        assert!(
+            saw_batch,
+            "poller should continue publishing after rebuild failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn tier_rebuild_panic_retains_previous_registry_without_claiming_full() {
+        let mut h = harness();
+        let basic = stub("basic", || {
+            vec![reading("basic", "0", MetricKind::CpuUtilization)]
+        });
+        let builder = |_tier: ProviderTier| -> Result<Vec<Arc<dyn SensorProvider>>, String> {
+            panic!("test registry panic")
+        };
+        let (event_tx, event_rx) = broadcast::channel(8);
+        let poller = Poller::with_clock_raw(
+            vec![basic],
+            Duration::from_millis(10),
+            h.tx.clone(),
+            h.clock,
+        );
+        let shutdown = CancellationToken::new();
+        let cancel = shutdown.clone();
+        let run =
+            tokio::spawn(async move { poller.run_with_events(shutdown, event_rx, builder).await });
+
+        event_tx
+            .send(Event::TierChanged(Tier::Full))
+            .expect("event receiver is active");
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(100);
+        let mut saw_batch = false;
+        while tokio::time::Instant::now() < deadline {
+            if let Ok(Ok(batch)) =
+                tokio::time::timeout(Duration::from_millis(30), h.rx.recv()).await
+            {
+                saw_batch = true;
+                assert!(
+                    batch
+                        .iter()
+                        .all(|reading| reading.sensor.category != "full"),
+                    "panicking rebuild must retain the previous Basic registry"
+                );
+            }
+        }
+        cancel.cancel();
+        run.await
+            .expect("poller task joins")
+            .expect("poller exits cleanly");
+        assert!(
+            saw_batch,
+            "poller should continue publishing after rebuild panic"
+        );
+    }
+
     // ===== Happy Path #1: two providers × 2 readings → vec of 4, single timestamp =====
 
     /// Story 7.2 Happy Path #1. Cited: Story 7.2 TDD contract.

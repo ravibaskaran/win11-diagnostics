@@ -300,16 +300,21 @@ where
 #[must_use]
 pub fn spawn_signal_handler(cancel: CancellationToken) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        match tokio::signal::ctrl_c().await {
-            Ok(()) => {
-                tracing::info!("Ctrl+C received — cancelling shutdown token");
-                cancel.cancel();
-            }
-            Err(e) => {
-                tracing::error!(
-                    error = %e,
-                    "ctrl_c() listener failed — shutdown still works via WM_CLOSE / Event::Shutdown"
-                );
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => match result {
+                Ok(()) => {
+                    tracing::info!("Ctrl+C received — cancelling shutdown token");
+                    cancel.cancel();
+                }
+                Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        "ctrl_c() listener failed — shutdown still works via WM_CLOSE / Event::Shutdown"
+                    );
+                }
+            },
+            () = cancel.cancelled() => {
+                tracing::debug!("shutdown signal handler observed cancellation — exiting");
             }
         }
     })
@@ -320,13 +325,19 @@ pub fn spawn_signal_handler(cancel: CancellationToken) -> tokio::task::JoinHandl
 #[must_use]
 pub fn spawn_signal_handler_with_signal(signal: ShutdownSignal) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        match tokio::signal::ctrl_c().await {
-            Ok(()) => {
-                tracing::info!("Ctrl+C received — requesting shutdown");
-                signal.request();
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "ctrl_c() listener failed");
+        let cancel = signal.cancellation_token();
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => match result {
+                Ok(()) => {
+                    tracing::info!("Ctrl+C received — requesting shutdown");
+                    signal.request();
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "ctrl_c() listener failed");
+                }
+            },
+            () = cancel.cancelled() => {
+                tracing::debug!("shutdown signal handler observed cancellation — exiting");
             }
         }
     })
@@ -701,6 +712,21 @@ mod tests {
         let _ = handle.await;
         // Token was NOT cancelled (we aborted before any signal arrived).
         assert!(!cancel.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn signal_handler_joins_after_shared_shutdown_request() {
+        let cancel = CancellationToken::new();
+        let (events, _rx) = broadcast::channel(4);
+        let signal = ShutdownSignal::new(cancel.clone(), events);
+        let handle = spawn_signal_handler_with_signal(signal.clone());
+
+        signal.request();
+        tokio::time::timeout(Duration::from_millis(200), handle)
+            .await
+            .expect("signal handler must stop after cancellation")
+            .expect("signal handler task must join cleanly");
+        assert!(cancel.is_cancelled());
     }
 
     #[tokio::test]

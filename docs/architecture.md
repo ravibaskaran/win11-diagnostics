@@ -825,8 +825,9 @@ remains explicitly manual.
 - **Runtime and shutdown:** a `TierChanged(Full)` event rebuilds the provider
   registry and poller before the next tick; shutdown cancellation emits one
   `Event::Shutdown`, force-flushes, tears down sidebar-owned LHM, and joins
-  workers idempotently. Poller, event-channel, GUI-close, and shutdown tests
-  cover the transition and join paths.
+  the poller, accountant, event-coalescer, and Ctrl+C signal handler
+  idempotently. Poller, event-channel, GUI-close, and shutdown tests cover the
+  transition and join paths.
 - **Capture exclusion:** `[display] hide_from_capture = false` is the default
   and leaves capture enabled. When explicitly enabled, the GUI obtains the live
   eframe root HWND and calls `SetWindowDisplayAffinity` with
@@ -855,11 +856,11 @@ stories**. Their existing backlog entries remain `pending`.
 | Command | Result |
 |---|---|
 | `cargo fmt --all -- --check` | pass |
-| `cargo test --workspace --all-targets` | 485 passed, 11 ignored, 0 failed |
+| `cargo test --workspace --all-targets` | 491 passed, 11 ignored, 0 failed |
 | `cargo clippy --workspace --all-targets -- -D warnings` | pass |
 | `cargo deny check` | pass; existing duplicate-dependency and unmatched-license warnings remain |
 | `cargo check --workspace --target x86_64-pc-windows-msvc` | pass |
-| `cargo build -p sidebar-app --release --target x86_64-pc-windows-msvc` | not completed; first attempt timed out after 240s during compilation and the retry was stopped before completion |
+| `cargo build -p sidebar-app --release --target x86_64-pc-windows-msvc` | pass after verification remediation; `target/x86_64-pc-windows-msvc/release/sidebar-app.exe` (17,422,848 bytes, SHA-256 `6CC648EEDA4DFC7E10A22757D32ED6133C5E9998F662D447987B175FE13A91DB`, timestamp `2026-07-11T11:02:49+05:30`) |
 
 ---
 

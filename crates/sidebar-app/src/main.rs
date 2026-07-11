@@ -90,7 +90,7 @@ fn main() -> eframe::Result {
     // "there is no reactor running".
     let _runtime_guard = runtime.enter();
     let cancel = CancellationToken::new();
-    let event_channel = EventChannel::new();
+    let mut event_channel = EventChannel::new();
     let shutdown_signal = ShutdownSignal::new(cancel.clone(), event_channel.raw_tx.clone());
     let event_rx_for_gui = event_channel.subscribe();
     let event_rx_for_poller = event_channel.subscribe();
@@ -174,7 +174,7 @@ fn main() -> eframe::Result {
         &accountant_flush_flag,
     );
 
-    let _signal_join = runtime.spawn(spawn_signal_handler_with_signal(shutdown_signal.clone()));
+    let mut signal_join = spawn_signal_handler_with_signal(shutdown_signal.clone());
 
     let state = AppState::new_full(
         tier,
@@ -195,6 +195,8 @@ fn main() -> eframe::Result {
         accountant_flush_flag,
         supervisor.as_mut(),
         &mut background_tasks,
+        &mut event_channel.coalescer,
+        &mut signal_join,
     );
 
     eframe_result.map(|()| {
@@ -400,6 +402,8 @@ fn run_graceful_shutdown(
     accountant_flush_flag: Arc<AtomicBool>,
     supervisor: Option<&mut OhmSupervisor<RealHttpClient>>,
     background_tasks: &mut BackgroundTaskHandles,
+    coalescer: &mut tokio::task::JoinHandle<()>,
+    signal_join: &mut tokio::task::JoinHandle<()>,
 ) {
     tracing::info!("eframe returned — running shutdown orchestrator");
     let mut targets = SidebarShutdownTargets {
@@ -422,6 +426,15 @@ fn run_graceful_shutdown(
     }
     if let Some(accountant) = background_tasks.accountant.take() {
         let _ = accountant.join();
+    }
+    for (name, handle) in [
+        ("event coalescer", coalescer),
+        ("signal handler", signal_join),
+    ] {
+        let result = runtime.block_on(join_poller_with_timeout(handle, Duration::from_secs(1)));
+        if let Err(error) = result {
+            tracing::warn!(?error, task = name, "shutdown task did not join cleanly");
+        }
     }
 }
 

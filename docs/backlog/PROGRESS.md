@@ -67,7 +67,7 @@ The swarm reads this file at task-startup to identify the ready set (stories who
 | 8.8 | merged | 2026-07-10T07Z | #36 | L0:11 | Threshold alert UI (check_threshold→row color Normal/Warning/Critical; hysteresis). |
 | 8.9 | merged | 2026-07-10T07Z | #37 | L0:22 | Metric enable/disable + drag-reorder (native egui DnD, [metrics] enabled+order config). |
 | 8.10 | merged | 2026-07-10T07Z | #37 | L0:11 | First-run wizard (docked edge/monitor/cycle_start_day/theme; G24 poller gate; first_run_complete). Epic 8 COMPLETE — END OF CODING. |
-| INT | merged | 2026-07-10T14Z | #40 | — | **Integration main wiring**: main.rs 14-step launch sequence (config→tier probe→registry→poller→accountant→EventChannel→AppState→eframe→shutdown). Async tier probe on spawn_blocking (fixes silent hang from firewalled-loopback TCP timeout). G24 first-run gate. PR4 workspace regression: 485 passed / 0 failed / 11 ignored; clippy, deny, and Windows target check pass. Release build was attempted but did not complete within the 240s command budget; no launch claim is made here. |
+| INT | merged | 2026-07-10T14Z | #40 | — | **Integration main wiring**: main.rs 14-step launch sequence (config→tier probe→registry→poller→accountant→EventChannel→AppState→eframe→shutdown). Async tier probe on spawn_blocking (fixes silent hang from firewalled-loopback TCP timeout). G24 first-run gate. PR4 plus verification-remediation workspace regression: 491 passed / 0 failed / 11 ignored; clippy, deny, and Windows target check pass. Final remediation release build passes: `target/x86_64-pc-windows-msvc/release/sidebar-app.exe` (17,422,848 bytes; SHA-256 `6CC648EEDA4DFC7E10A22757D32ED6133C5E9998F662D447987B175FE13A91DB`; timestamp `2026-07-11 11:02:49 +05:30`). |
 | 9.1 | pending | — | — | — | — |
 | 9.2 | pending | — | — | — | — |
 | 9.3 | pending | — | — | — | — |
@@ -92,7 +92,8 @@ This addendum records the evidence-backed remediation without moving deferred
 stories into `merged`:
 
 - Runtime tier transitions rebuild the active provider registry/poller; shutdown
-  cancellation emits one `Event::Shutdown` and joins workers idempotently.
+  cancellation emits one `Event::Shutdown` and explicitly joins the poller,
+  accountant, event-coalescer, and Ctrl+C signal handler idempotently.
 - Capture exclusion uses the live eframe HWND and `WDA_EXCLUDEFROMCAPTURE`,
   gated by `[display] hide_from_capture = false` (default OFF). Real Win11
   capture-visibility smoke remains manual.
@@ -105,9 +106,9 @@ stories into `merged`:
 - PR4 integration added two non-duplicate tier-probe regressions for G16
   rejection classification and fallback to a Full port. Workspace checks on
   2026-07-11: `cargo fmt --all -- --check` pass; `cargo test --workspace
-  --all-targets` 485 passed/11 ignored; clippy and `cargo deny check` pass
+  --all-targets` 491 passed/11 ignored; clippy and `cargo deny check` pass
   (with existing warnings); Windows target check pass. The release `.exe`
-  build did not complete within the command budget and is not claimed here.
+  build passes after verification remediation: `target/x86_64-pc-windows-msvc/release/sidebar-app.exe` (17,422,848 bytes; SHA-256 `6CC648EEDA4DFC7E10A22757D32ED6133C5E9998F662D447987B175FE13A91DB`; timestamp `2026-07-11 11:02:49 +05:30`). No runtime launch claim is made without the manual Win11 smoke.
 
 Deferred and still `pending`: **3.2b, 6.5, 6.6, and all 9.x–11.x stories**.
 
