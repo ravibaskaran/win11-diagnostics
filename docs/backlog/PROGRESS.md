@@ -79,13 +79,13 @@ The swarm reads this file at task-startup to identify the ready set (stories who
 | 11.2 | partial | 2026-07-11T00Z | story-11.2 | L1:2 | CI 'regression' job (needs lint+unit+integration+bench) runs cargo-llvm-cov (T-43), builds regression-report.md, uploads regression-report + lcov artifacts per PR. Deliberate-regression injection proof + coverage-delta-vs-main comparison step remain HITL-gated. |
 | 11.3 | merged | 2026-07-11T00Z | story-11.3 | L2:2 | Bootstrap snapshot (story_11_3_harness_bootstrap.rs renders 'sidebar snapshot harness OK' via egui_kittest, breaks 8.1<->11.3 cycle) + L2 CI job (ui-snapshots on windows-latest). insta .snap format + per-panel snapshots land with their GUI stories. |
 | 11.4 | merged | 2026-07-11T00Z | story-11.4 | L0:7 | PR-title parser (progress_parser.rs, 7 unit tests) + track-progress.yml CI job (Python mirror, git-auto-commit-action commit-back). Runs on PR merge; handles reverts via merge-commit message. Schema-change detection + multi-story PR multi-row emission remain HITL-gated. |
-| 12.1 | pending | — | — | — | Clock/date header parity (optional UX) |
-| 12.2 | pending | — | — | — | Per-metric graphs/history parity |
-| 12.3 | pending | — | — | — | Complete hotkey/reposition actions |
-| 12.4 | pending | — | — | — | Customization parity |
-| 12.5 | pending | — | — | — | Battery health + adapter identity/IP |
-| 12.6 | pending | — | — | — | Alert scope/actions |
-| 12.7 | pending | — | — | — | Localization (optional/deferred) |
+| 12.1 | merged | 2026-07-11T00Z | story-12.1 | L0:3 | format_clock(NaiveTime) -> 'HH:MM' (24h zero-padded) + format_clock_date(NaiveDate) -> ISO 8601 + header render via chrono::Local::now(). No network time. |
+| 12.2 | partial | 2026-07-11T00Z | story-12.2 | L0:3 | MetricHistory per-metric rolling-window map (MetricKey + push/get, T-22 clamp 10-600). RollingWindow + sparkline renderer reused. GUI activation (push from poller + per-row render) is follow-up. |
+| 12.3 | partial | 2026-07-11T00Z | story-12.3 | L0:4 | compute_new_offset pure drag-math (clamps 0..=max(0, monitor-sidebar)). RegisterHotKey + set_click_through reused. WM_NCHITTEST/HTCAPTION handler is HITL-gated follow-up. |
+| 12.4 | deferred | 2026-07-11T00Z | story-12.4 | L1:1 | Customization parity audit (25-option IN/DEFERRED/OUT table + NFR-1/NFR-4 guardrail). Layout/metric presets + per-preset NFR measurement post-v1. |
+| 12.5 | deferred | 2026-07-11T00Z | story-12.5 | L0:3 | BatteryHealth + AdapterMetadata DTOs (display-only; LUID accounting identity unchanged). Win32/WinRT battery source + GetAdaptersAddresses IP lookup post-v1. |
+| 12.6 | partial | 2026-07-11T00Z | story-12.6 | L0:5 | AlertAck enum + displayed_state suppressor + ack_should_clear re-arm. check_threshold hysteresis reused. GUI action buttons (ack/snooze/open-settings) wiring is follow-up. |
+| 12.7 | deferred | 2026-07-11T00Z | story-12.7 | L0:3 | Locale enum + v1_default (LocaleStable) + decimal_separator/thousands_separator. v1 locale-stable per OQ-5; per-locale label tables + format_* Locale param post-v1. |
 | 12.8 | partial | 2026-07-11T00Z | story-12.8 | L0:2 | Gap 2 (BandwidthView -> GUI via watch channel + producer in accountant + drain in logic) + Gap 3 (OHM liveness probe seam + one-shot Full->Basic degradation with latch) wired + tested. Gap 1 (status-pill -> launch_elevated) + production supervisor Arc-Mutex/Monitor-thread wiring + UAC smoke remain. |
 
 ## Summary
