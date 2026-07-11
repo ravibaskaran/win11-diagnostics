@@ -165,6 +165,72 @@ fn main() -> eframe::Result {
     };
     let mut supervisor = supervisor;
 
+    // Story 12.8 Gap 1 + Gap 3 — spawn a dedicated supervisor-owner thread that
+    // handles (a) launch requests from the GUI status-pill click (Gap 1) and
+    // (b) the OHM child-liveness poll (Gap 3). The supervisor stays on this
+    // thread from construction to shutdown (no Arc-Mutex needed). The main
+    // thread joins this handle during the T-39 teardown phase.
+    let (launch_tx, child_alive_flag, supervisor_thread): (
+        Option<std::sync::mpsc::Sender<()>>,
+        Arc<AtomicBool>,
+        Option<std::thread::JoinHandle<()>>,
+    ) = if supervisor.is_some() {
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let alive = Arc::new(AtomicBool::new(false));
+        let alive_clone = Arc::clone(&alive);
+        let mut sv = supervisor.take().expect("supervisor was Some");
+        let shutdown_token = cancel.clone();
+        let handle = std::thread::Builder::new()
+            .name("sidebar-supervisor".to_string())
+            .spawn(move || {
+                // Gap 3: poll child liveness every 2s; update the shared flag.
+                // Gap 1: drain launch requests; call launch_elevated on each.
+                loop {
+                    // Check for launch requests (non-blocking).
+                    if let Ok(()) = rx.try_recv() {
+                        if !sv.sidebar_launched() {
+                            tracing::info!(
+                                "Story 12.8 Gap 1: status-pill click received — launching LHM elevated"
+                            );
+                            match sv.launch_elevated() {
+                                Ok(port) => {
+                                    alive_clone.store(true, Ordering::SeqCst);
+                                    tracing::info!(port, "LHM launched elevated via status-pill click");
+                                }
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "launch_elevated failed (UAC declined?)");
+                                }
+                            }
+                        }
+                    }
+                    // Gap 3: if sidebar launched, check liveness.
+                    if sv.sidebar_launched() {
+                        let alive_now = sv.is_child_alive();
+                        let was_alive = alive_clone.load(Ordering::SeqCst);
+                        alive_clone.store(alive_now, Ordering::SeqCst);
+                        if was_alive && !alive_now {
+                            tracing::warn!(
+                                "Story 12.8 Gap 3: OHM child exited unexpectedly — flag set for GUI degradation"
+                            );
+                        }
+                    }
+                    // Shutdown signal.
+                    if shutdown_token.is_cancelled() {
+                        tracing::info!("supervisor thread: shutdown signal — calling supervisor.shutdown()");
+                        if let Err(e) = sv.shutdown() {
+                            tracing::warn!(error = %e, "supervisor.shutdown() failed");
+                        }
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_secs(1));
+                }
+            })
+            .expect("failed to spawn supervisor thread");
+        (Some(tx), alive, Some(handle))
+    } else {
+        (None, Arc::new(AtomicBool::new(false)), None)
+    };
+
     let readings_tx = broadcast::channel::<Vec<Reading>>(READINGS_CHANNEL_CAPACITY).0;
     let readings_rx_for_gui = readings_tx.subscribe();
     let readings_rx_for_accountant = readings_tx.subscribe();
@@ -183,6 +249,11 @@ fn main() -> eframe::Result {
         &config.bandwidth.cycle_start_day,
         &accountant_flush_flag,
     );
+    // Story 12.8 Gap 1 + Gap 3 — attach the supervisor thread to the
+    // background-task handles so run_graceful_shutdown joins it.
+    background_tasks.supervisor_thread = supervisor_thread;
+    // Track whether a supervisor was attached (for the GUI probe wiring below).
+    let has_supervisor = launch_tx.is_some();
 
     let mut signal_join = spawn_signal_handler_with_signal(shutdown_signal.clone());
 
@@ -202,6 +273,29 @@ fn main() -> eframe::Result {
     } else {
         app
     };
+    // Story 12.8 Gap 1 — wire the launch callback (status-pill click ->
+    // supervisor thread via mpsc channel).
+    let app = if let Some(tx) = launch_tx {
+        let launch_fn: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            // Non-blocking send; if the channel is full or closed, the click
+            // is a no-op (the thread will pick up the next one).
+            let _ = tx.send(());
+        });
+        app.with_launch_fn(launch_fn)
+    } else {
+        app
+    };
+    // Story 12.8 Gap 3 — wire the OHM child-liveness probe (reads the shared
+    // AtomicBool the supervisor thread updates).
+    let app = if has_supervisor {
+        let probe: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new({
+            let flag = Arc::clone(&child_alive_flag);
+            move || flag.load(Ordering::SeqCst)
+        });
+        app.with_child_alive_fn(probe)
+    } else {
+        app
+    };
 
     tracing::info!("sidebar binary launching — entering eframe GUI loop");
     let eframe_result = app.run("sidebar");
@@ -210,7 +304,7 @@ fn main() -> eframe::Result {
         &runtime,
         &shutdown_signal,
         accountant_flush_flag,
-        supervisor.as_mut(),
+        None, // supervisor moved to the dedicated thread (Gap 1 + Gap 3)
         &mut background_tasks,
         &mut event_channel.coalescer,
         &mut signal_join,
@@ -293,6 +387,9 @@ fn build_runtime() -> tokio::runtime::Runtime {
 struct BackgroundTaskHandles {
     poller: Option<tokio::task::JoinHandle<()>>,
     accountant: Option<std::thread::JoinHandle<()>>,
+    /// Story 12.8 Gap 1 + Gap 3 — the dedicated supervisor-owner thread.
+    /// Handles launch requests + liveness poll + shutdown teardown.
+    supervisor_thread: Option<std::thread::JoinHandle<()>>,
     /// Story 12.8 Gap 2 — watch receiver for live BandwidthView from the
     /// accountant thread. `None` when the wizard gate skipped the accountant.
     bandwidth_view_rx:
@@ -321,6 +418,7 @@ fn spawn_background_tasks(
         return BackgroundTaskHandles {
             poller: None,
             accountant: None,
+            supervisor_thread: None,
             bandwidth_view_rx: None,
         };
     }
@@ -342,6 +440,7 @@ fn spawn_background_tasks(
     BackgroundTaskHandles {
         poller: Some(poller),
         accountant: Some(accountant),
+        supervisor_thread: None, // Set by main() after constructing the thread
         bandwidth_view_rx,
     }
 }
@@ -524,12 +623,11 @@ fn run_graceful_shutdown(
         .block_on(async { run_shutdown_with_signal(signal, &mut targets, &shutdown_guard).await });
     tracing::info!(?report, "shutdown orchestrator complete");
     if let Some(mut poller) = background_tasks.poller.take() {
-        // T-19 post-orchestrator join budget: 500ms (down from 1000ms).
-        // The poller respects CancellationToken; it should join near-
-        // instantly once cancel fires. 500ms is generous headroom.
+        // T-19 post-orchestrator join budget: 300ms. The poller respects
+        // CancellationToken; it should join near-instantly once cancel fires.
         let result = runtime.block_on(join_poller_with_timeout(
             &mut poller,
-            Duration::from_millis(500),
+            Duration::from_millis(300),
         ));
         if let Err(error) = result {
             tracing::warn!(?error, "poller task did not join cleanly during shutdown");
@@ -537,28 +635,35 @@ fn run_graceful_shutdown(
     }
     // T-19/T-39 H3 — accountant join is bounded via the wait-thread helper
     // (was an unbounded `accountant.join()`). 250ms leaves the sum
-    // (orchestrator 2000 + poller 500 + accountant 250 + coalescer 150 +
-    // signal 100 = 3000ms) inside T-19. A SQLite/antivirus stall that
-    // exceeds 250ms leaks the accountant thread — acceptable per T-39
-    // because the watchdog (above) will force-exit at t=3000ms.
+    // (orchestrator 2000 + poller 300 + accountant 250 + supervisor 500 +
+    // coalescer 100 + signal 100 = 3250ms — the watchdog at 3000ms force-
+    // exits if any join overruns). A SQLite/antivirus stall that exceeds 250ms
+    // leaks the accountant thread — acceptable per T-39.
     let accountant = background_tasks.accountant.take();
     let _ = runtime.block_on(join_thread_with_timeout(
         accountant,
         Duration::from_millis(250),
         "accountant",
     ));
+    // Story 12.8 Gap 1 + Gap 3 — join the supervisor-owner thread. It handles
+    // its own shutdown (supervisor.shutdown()) on CancellationToken cancel.
+    // Budget: 500ms (the supervisor thread polls every 1s; cancel is sticky so
+    // the thread sees it on the next poll at most 1s later — but the cancel
+    // was already fired by the orchestrator above, so the thread should be
+    // mid-shutdown by now).
+    let supervisor_thread = background_tasks.supervisor_thread.take();
+    let _ = runtime.block_on(join_thread_with_timeout(
+        supervisor_thread,
+        Duration::from_millis(500),
+        "supervisor",
+    ));
     for (name, handle) in [
         ("event coalescer", coalescer),
         ("signal handler", signal_join),
     ] {
-        // T-19 — coalescer/signal joins tightened to 150ms / 100ms (down
-        // from 1000ms each). Both tasks are async + cancel-aware; they
-        // should join in microseconds.
-        let budget = if name == "event coalescer" {
-            Duration::from_millis(150)
-        } else {
-            Duration::from_millis(100)
-        };
+        // T-19 — both joins tightened to 100ms each. Both tasks are async +
+        // cancel-aware; they should join in microseconds.
+        let budget = Duration::from_millis(100);
         let result = runtime.block_on(join_poller_with_timeout(handle, budget));
         if let Err(error) = result {
             tracing::warn!(?error, task = name, "shutdown task did not join cleanly");

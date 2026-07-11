@@ -348,6 +348,10 @@ pub struct SidebarApp {
     /// once on the first `false`, then sets this to `None` (one-shot).
     /// `None` when no supervisor is attached (Basic mode or test path).
     child_alive_fn: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+    /// Story 12.8 Gap 1 — launch callback invoked when the user clicks the
+    /// Basic status pill (requesting Full-mode LHM elevation). `None` in
+    /// tests + when no supervisor is attached.
+    launch_fn: Option<Arc<dyn Fn() + Send + Sync>>,
     /// Story 12.8 Gap 3 — latches `true` after the first Full→Basic
     /// degradation fires so we don't repeatedly broadcast.
     child_exit_degraded: bool,
@@ -372,6 +376,7 @@ impl SidebarApp {
             event_tx: None,
             bandwidth_view_rx: None,
             child_alive_fn: None,
+            launch_fn: None,
             child_exit_degraded: false,
             #[cfg(windows)]
             platform: None,
@@ -398,6 +403,7 @@ impl SidebarApp {
             event_tx: None,
             bandwidth_view_rx: None,
             child_alive_fn: None,
+            launch_fn: None,
             child_exit_degraded: false,
             #[cfg(windows)]
             platform: None,
@@ -429,6 +435,15 @@ impl SidebarApp {
     pub fn with_child_alive_fn(mut self, probe: Arc<dyn Fn() -> bool + Send + Sync>) -> Self {
         self.child_alive_fn = Some(probe);
         self.child_exit_degraded = false;
+        self
+    }
+
+    /// Story 12.8 Gap 1 — attach the launch callback invoked when the user
+    /// clicks the Basic status pill. The closure sends a launch request to
+    /// the supervisor-owning thread (main.rs wires the channel + thread).
+    #[must_use]
+    pub fn with_launch_fn(mut self, launch: Arc<dyn Fn() + Send + Sync>) -> Self {
+        self.launch_fn = Some(launch);
         self
     }
 
@@ -918,6 +933,7 @@ impl eframe::App for SidebarApp {
         // because the closure can't borrow self while self.config is mutably
         // borrowed.
         let on_change_noop: &dyn Fn() = &|| {};
+        let on_launch: &dyn Fn() = self.launch_fn.as_ref().map_or(&|| {}, |f| f.as_ref());
         render_sidebar(
             ui,
             &snapshot,
@@ -925,6 +941,7 @@ impl eframe::App for SidebarApp {
             &mut self.config,
             &self.view,
             on_change_noop,
+            on_launch,
         );
 
         // After the render: mirror the (possibly-mutated) config + view into
@@ -1055,6 +1072,7 @@ pub fn render_sidebar(
     config: &mut Config,
     view: &SidebarView,
     on_change: &dyn Fn(),
+    on_launch: &dyn Fn(),
 ) {
     // Story 8.6: apply theme + accent to the egui context for this frame.
     // Done unconditionally each frame — `set_theme` is idempotent when the
@@ -1066,7 +1084,7 @@ pub fn render_sidebar(
     // settings panel (Story 8.5 HITL guardrail G11 — no-retroactive-resplit
     // surfaced as a tooltip inside the settings panel).
     ui.horizontal(|header| {
-        status_pill::render(header, tier, &|| {});
+        status_pill::render(header, tier, on_launch);
         // Story 12.1 — clock/date header. Locale-stable 24h HH:MM, rendered
         // between the status pill and the gear. The wall-clock is read per-
         // frame via chrono::Local (no network time source per Story 12.1).
@@ -1791,6 +1809,7 @@ mod tests {
                 &mut config,
                 &view,
                 &|| {},
+                &|| {},
             );
         });
         harness.run();
@@ -1822,6 +1841,7 @@ mod tests {
                 ProviderTier::Basic,
                 &mut config,
                 &view,
+                &|| {},
                 &|| {},
             );
         });
@@ -1857,6 +1877,7 @@ mod tests {
                 &mut config,
                 &view,
                 &|| {},
+                &|| {},
             );
             *ctx_holder.borrow_mut() = Some(ui.ctx().clone());
         });
@@ -1886,6 +1907,7 @@ mod tests {
                 ProviderTier::Basic,
                 &mut config,
                 &view,
+                &|| {},
                 &|| {},
             );
         });
@@ -1919,6 +1941,7 @@ mod tests {
                 &mut config,
                 &view,
                 &|| {},
+                &|| {},
             );
         });
         harness.run();
@@ -1951,6 +1974,7 @@ mod tests {
                 ProviderTier::Basic,
                 &mut config,
                 &view,
+                &|| {},
                 &|| {},
             );
         });
@@ -2061,6 +2085,45 @@ mod tests {
         assert!(
             !monitor_id_is_real_fallback("MONITOR\\LEN88AE\\0001", "MONITOR\\LEN88AE\\0001"),
             "matching device-id is not a fallback"
+        );
+    }
+
+    // =================================================================
+    // Story 12.8 Gap 1 — status-pill launch callback flows through
+    // render_sidebar (was hard-coded &|| {} no-op).
+    // =================================================================
+
+    #[test]
+    fn gap1_status_pill_click_invokes_launch_callback() {
+        use egui_kittest::kittest::Queryable;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter_clone = Arc::clone(&counter);
+        let on_launch = move || {
+            counter_clone.fetch_add(1, Ordering::SeqCst);
+        };
+        let readings = vec![reading(MetricKind::CpuUtilization, 42.0, Unit::Percent)];
+        let mut config = Config::default();
+        let view = SidebarView::default();
+        let mut harness = Harness::new_ui(|ui| {
+            render_sidebar(
+                ui,
+                &readings,
+                ProviderTier::Basic,
+                &mut config,
+                &view,
+                &|| {},
+                &on_launch,
+            );
+        });
+        harness.run();
+        // The status pill renders "BASIC" (uppercase) at Basic tier. Click it.
+        harness.get_by_label("BASIC").click();
+        harness.run();
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            1,
+            "clicking the Basic status pill MUST invoke the launch callback exactly once"
         );
     }
 }
