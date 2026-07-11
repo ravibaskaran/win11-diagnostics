@@ -73,6 +73,11 @@ use sidebar_platform::window::ViewportPrefs;
 use sidebar_sensor::descriptor::ProviderTier;
 use tokio::sync::broadcast;
 
+#[cfg(windows)]
+use sidebar_platform::{hotkey, monitors, theme_bridge};
+#[cfg(windows)]
+use windows::Win32::Foundation::HWND;
+
 use crate::shutdown::ShutdownSignal;
 
 /// Placeholder text shown when no readings have arrived yet (Boundary #1).
@@ -329,6 +334,11 @@ pub struct SidebarApp {
     /// without re-resolving %APPDATA% every frame). Empty when no on-disk
     /// path is in play (the wizard path or the Story 8.1 test path).
     config_path: std::path::PathBuf,
+    /// Event producer used by the native platform bridge. Tests and
+    /// headless callers leave this unset.
+    event_tx: Option<broadcast::Sender<Event>>,
+    #[cfg(windows)]
+    platform: Option<PlatformRuntime>,
 }
 
 impl SidebarApp {
@@ -345,6 +355,9 @@ impl SidebarApp {
             view,
             wizard_active: false,
             config_path: std::path::PathBuf::new(),
+            event_tx: None,
+            #[cfg(windows)]
+            platform: None,
         }
     }
 
@@ -365,7 +378,17 @@ impl SidebarApp {
             view,
             wizard_active,
             config_path,
+            event_tx: None,
+            #[cfg(windows)]
+            platform: None,
         }
+    }
+
+    /// Attach the EventChannel producer used by the native platform bridge.
+    #[must_use]
+    pub fn with_event_sender(mut self, sender: broadcast::Sender<Event>) -> Self {
+        self.event_tx = Some(sender);
+        self
     }
 
     /// Launch the native eframe window with the sidebar viewport prefs.
@@ -384,17 +407,18 @@ impl SidebarApp {
         let config_path = self.config_path;
         let wizard_active = self.wizard_active;
         let display_config = self.config.display.clone();
+        let event_tx = self.event_tx.clone();
         eframe::run_native(
             app_name,
             options,
             Box::new(move |cc| {
                 #[cfg(windows)]
                 configure_capture_exclusion(cc, &display_config);
-                Ok(Box::new(SidebarApp::with_config_path(
-                    state,
-                    config_path,
-                    wizard_active,
-                )))
+                let mut app = SidebarApp::with_config_path(state, config_path, wizard_active);
+                app.event_tx.clone_from(&event_tx);
+                #[cfg(windows)]
+                configure_platform(cc, &mut app);
+                Ok(Box::new(app))
             }),
         )
     }
@@ -433,6 +457,147 @@ impl SidebarApp {
     }
 }
 
+#[cfg(windows)]
+const CLICK_THROUGH_HOTKEY_ID: i32 = 0x5349;
+
+#[cfg(windows)]
+struct PlatformRuntime {
+    hwnd: HWND,
+    hotkey_id: Option<i32>,
+    click_through: bool,
+    monitor_id: Option<String>,
+}
+
+#[cfg(windows)]
+impl PlatformRuntime {
+    fn new(hwnd: HWND) -> Self {
+        Self {
+            hwnd,
+            hotkey_id: None,
+            click_through: false,
+            monitor_id: None,
+        }
+    }
+
+    fn poll(&mut self, config: &mut Config, ctx: &egui::Context) -> Vec<Event> {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            PeekMessageW, MSG, PM_REMOVE, WM_DISPLAYCHANGE, WM_HOTKEY, WM_SETTINGCHANGE,
+        };
+
+        let mut events = Vec::new();
+        loop {
+            let mut message = MSG::default();
+            // SAFETY: `self.hwnd` is the live eframe HWND retained from the
+            // CreationContext; the message is a stack-owned output buffer.
+            let present = unsafe {
+                PeekMessageW(
+                    &raw mut message,
+                    Some(self.hwnd),
+                    WM_HOTKEY,
+                    WM_HOTKEY,
+                    PM_REMOVE,
+                )
+            };
+            if !present.as_bool() {
+                break;
+            }
+            if hotkey::hotkey_id_from_message(message.message, message.wParam.0) == self.hotkey_id {
+                let enabled = !self.click_through;
+                if let Err(error) = hotkey::set_click_through(self.hwnd, enabled) {
+                    tracing::warn!(?error, "click-through toggle unavailable");
+                } else {
+                    self.click_through = enabled;
+                    events.push(Event::HotkeyPressed("click_through".into()));
+                }
+            }
+        }
+
+        loop {
+            let mut message = MSG::default();
+            // SAFETY: see the hotkey message pump above; this filter consumes
+            // only the broadcast WM_SETTINGCHANGE notification.
+            let present = unsafe {
+                PeekMessageW(
+                    &raw mut message,
+                    None,
+                    WM_SETTINGCHANGE,
+                    WM_SETTINGCHANGE,
+                    PM_REMOVE,
+                )
+            };
+            if !present.as_bool() {
+                break;
+            }
+            if let Some(event) =
+                theme_bridge::theme_event_from_message(message.message, message.lParam)
+            {
+                events.push(event);
+            }
+        }
+
+        loop {
+            let mut message = MSG::default();
+            // SAFETY: the message is stack-owned and only WM_DISPLAYCHANGE is
+            // removed, leaving unrelated eframe messages untouched. Windows
+            // broadcasts this notification with a null HWND.
+            let present = unsafe {
+                PeekMessageW(
+                    &raw mut message,
+                    None,
+                    WM_DISPLAYCHANGE,
+                    WM_DISPLAYCHANGE,
+                    PM_REMOVE,
+                )
+            };
+            if !present.as_bool() {
+                break;
+            }
+            self.refresh_monitor(config, ctx, &mut events);
+        }
+        events
+    }
+
+    fn refresh_monitor(
+        &mut self,
+        config: &mut Config,
+        ctx: &egui::Context,
+        events: &mut Vec<Event>,
+    ) {
+        let Ok(monitors) = monitors::enumerate() else {
+            tracing::warn!("monitor enumeration failed; retaining current dock target");
+            return;
+        };
+        let Some(target) = monitors::resolve_target(&monitors, &config.dock.monitor_id) else {
+            return;
+        };
+        let changed = self.monitor_id.as_deref() != Some(target.id.as_str());
+        if changed {
+            if !config.dock.monitor_id.eq_ignore_ascii_case(&target.id) {
+                tracing::warn!(
+                    configured_id = %config.dock.monitor_id,
+                    fallback_id = %target.id,
+                    "configured monitor unavailable; re-docking to fallback"
+                );
+                config.dock.monitor_id.clone_from(&target.id);
+            }
+            self.monitor_id = Some(target.id.clone());
+            send_dock_position(ctx, target, &config.dock.edge, config.dock.offset_px);
+            events.push(Event::MonitorChanged(target.id.clone()));
+        }
+    }
+
+    fn unregister(self) {
+        if let Some(id) = self.hotkey_id {
+            if let Err(error) = hotkey::unregister(self.hwnd, id) {
+                tracing::warn!(?error, id, "global hotkey unregister failed");
+            }
+        }
+        if self.click_through {
+            let _ = hotkey::set_click_through(self.hwnd, false);
+        }
+    }
+}
+
 fn configure_capture_exclusion_for_hwnd<F>(
     hwnd: windows::Win32::Foundation::HWND,
     set_affinity: F,
@@ -466,13 +631,8 @@ where
 }
 
 #[cfg(windows)]
-fn configure_capture_exclusion(
-    cc: &eframe::CreationContext<'_>,
-    display: &sidebar_domain::config::DisplayConfig,
-) {
+fn creation_context_hwnd(cc: &eframe::CreationContext<'_>) -> Option<HWND> {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    use sidebar_platform::dwm::set_capture_cloak;
-    use windows::Win32::Foundation::HWND;
 
     let raw_handle = match cc.window_handle() {
         Ok(handle) => handle.as_raw(),
@@ -481,22 +641,103 @@ fn configure_capture_exclusion(
                 ?error,
                 "capture exclusion skipped: eframe root HWND unavailable"
             );
-            return;
+            return None;
         }
     };
     let RawWindowHandle::Win32(win32) = raw_handle else {
         tracing::warn!("capture exclusion skipped: eframe root handle is not Win32");
+        return None;
+    };
+    Some(HWND(win32.hwnd.get() as *mut std::ffi::c_void))
+}
+
+#[cfg(windows)]
+fn configure_capture_exclusion(
+    cc: &eframe::CreationContext<'_>,
+    display: &sidebar_domain::config::DisplayConfig,
+) {
+    use sidebar_platform::dwm::set_capture_cloak;
+
+    let Some(hwnd) = creation_context_hwnd(cc) else {
         return;
     };
-    let hwnd = HWND(win32.hwnd.get() as *mut std::ffi::c_void);
 
     // SAFETY: eframe supplied the live root viewport handle through its
     // CreationContext; the Win32 raw handle is valid for this app lifetime.
     configure_capture_exclusion_for_display(display, hwnd, |hwnd| set_capture_cloak(hwnd, true));
 }
 
+#[cfg(windows)]
+fn configure_platform(cc: &eframe::CreationContext<'_>, app: &mut SidebarApp) {
+    let Some(hwnd) = creation_context_hwnd(cc) else {
+        return;
+    };
+    let mut platform = PlatformRuntime::new(hwnd);
+    match hotkey::HotkeyCombo::parse(&app.config.hotkeys.click_through) {
+        Ok(combo) => match hotkey::register(hwnd, CLICK_THROUGH_HOTKEY_ID, combo) {
+            Ok(()) => platform.hotkey_id = Some(CLICK_THROUGH_HOTKEY_ID),
+            Err(error) => tracing::warn!(?error, "click-through hotkey disabled"),
+        },
+        Err(error) => tracing::warn!(?error, "invalid click-through hotkey; disabled"),
+    }
+    if let Ok(displays) = monitors::enumerate() {
+        if let Some(target) = monitors::resolve_target(&displays, &app.config.dock.monitor_id) {
+            if !app.config.dock.monitor_id.eq_ignore_ascii_case(&target.id) {
+                tracing::warn!(
+                    configured_id = %app.config.dock.monitor_id,
+                    fallback_id = %target.id,
+                    "configured monitor unavailable; re-docking to fallback"
+                );
+                app.config.dock.monitor_id.clone_from(&target.id);
+                app.persist_config();
+            }
+            platform.monitor_id = Some(target.id.clone());
+            send_dock_position(
+                &cc.egui_ctx,
+                target,
+                &app.config.dock.edge,
+                app.config.dock.offset_px,
+            );
+        }
+    } else {
+        tracing::warn!("monitor enumeration failed; using eframe default position");
+    }
+    app.platform = Some(platform);
+}
+
+#[cfg(windows)]
+#[allow(clippy::cast_precision_loss)]
+fn send_dock_position(
+    ctx: &egui::Context,
+    monitor: &monitors::MonitorInfo,
+    edge: &str,
+    offset: i32,
+) {
+    const WIDTH: i32 = 280;
+    const HEIGHT: i32 = 720;
+    let edge = edge.trim().to_ascii_lowercase();
+    let (x, y) = match edge.as_str() {
+        "left" | "top" => (monitor.x + offset, monitor.y + offset),
+        "bottom" => (
+            monitor.x + offset,
+            monitor.y + monitor.height - HEIGHT - offset,
+        ),
+        _ => (
+            monitor.x + monitor.width - WIDTH - offset,
+            monitor.y + offset,
+        ),
+    };
+    ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::Pos2::new(
+        x as f32, y as f32,
+    )));
+}
+
 impl eframe::App for SidebarApp {
     fn on_exit(&mut self) {
+        #[cfg(windows)]
+        if let Some(platform) = self.platform.take() {
+            platform.unregister();
+        }
         self.state.request_shutdown();
     }
 
@@ -511,14 +752,22 @@ impl eframe::App for SidebarApp {
     /// channel + apply tier changes here.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let mut repaint = false;
+        #[cfg(windows)]
+        if let Some(platform) = self.platform.as_mut() {
+            for event in platform.poll(&mut self.config, ctx) {
+                if let Some(sender) = self.event_tx.as_ref() {
+                    let _ = sender.send(event);
+                }
+                repaint = true;
+            }
+        }
         if let Some(readings) = self.state.drain_broadcast() {
             self.state.replace_readings(readings);
             repaint = true;
         }
         // Apply any pending events from the EventChannel. Tier changes flip
-        // AppState.tier (which the next ui() reads). Other events are
-        // currently no-ops at the GUI layer (logged at trace); they'll be
-        // wired in their respective stories.
+        // AppState.tier (which the next ui() reads). Platform events trigger
+        // repaint; monitor fallback persistence is handled here as well.
         for event in self.state.drain_events() {
             match event {
                 Event::TierChanged(tier) => {
@@ -533,8 +782,18 @@ impl eframe::App for SidebarApp {
                     tracing::info!("GUI: Shutdown event received — sending exit to eframe");
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
-                _ => {
-                    tracing::trace!(?event, "GUI: unhandled event (logged)");
+                Event::ThemeChanged(_) => {
+                    // `render_sidebar` reapplies ThemePreference::System from
+                    // the local config; the bridge event only needs to wake
+                    // the frame so egui observes the new OS palette.
+                    repaint = true;
+                }
+                Event::HotkeyPressed(_) => {
+                    repaint = true;
+                }
+                Event::MonitorChanged(_) => {
+                    self.persist_config();
+                    repaint = true;
                 }
             }
         }
