@@ -248,6 +248,12 @@ fn classify_basic_port<C: HttpClient>(
         Err(OhmError::HttpFailed(_) | OhmError::Timeout) => Some(BasicReason::Free),
         // Non-JSON body or JSON parse failure — a foreign service answered.
         Err(OhmError::NotJson(_) | OhmError::Parse(_)) => Some(BasicReason::NonLhmBody),
+        // G16 rejection is a policy signal, not evidence that a foreign
+        // service occupies the port. Keep the hint inconclusive.
+        Err(OhmError::RejectedUrl(reason)) => {
+            tracing::warn!(%reason, port, "launch probe URL rejected by G16 policy");
+            None
+        }
     }
 }
 
@@ -444,6 +450,56 @@ mod tests {
         let result = run_launch_probe(&sv, 17_127, None, None);
         assert_eq!(result.tier, ProviderTier::Basic, "T-10 timeout → Basic");
         assert!(result.resolved_port.is_none());
+    }
+
+    // ==========================================================
+    // Boundary — G16 rejection remains Basic without a false occupied-port hint
+    // ==========================================================
+
+    /// A rejected URL is a policy signal, not evidence that a foreign service
+    /// occupies the port. The launch probe must remain Basic and use its
+    /// inconclusive/install guidance rather than claiming port exhaustion.
+    #[test]
+    fn probe_treats_g16_rejection_as_inconclusive_basic() {
+        let mut mock = MockFakeClient::new();
+        mock.expect_get().returning(|_| {
+            Err(OhmError::RejectedUrl(
+                "test-only non-loopback target".to_string(),
+            ))
+        });
+        let (sv, _dir) = supervisor(mock);
+
+        let result = run_launch_probe(&sv, 17_127, None, None);
+        assert_eq!(result.tier, ProviderTier::Basic);
+        assert!(result.resolved_port.is_none());
+        let hint = result.hint.expect("inconclusive Basic must carry a hint");
+        assert!(
+            hint.contains("not detected") && !hint.contains("port unavailable"),
+            "G16 rejection must not claim port exhaustion: {hint}"
+        );
+    }
+
+    #[test]
+    fn probe_continues_after_g16_rejection_to_full_fallback() {
+        let mut mock = MockFakeClient::new();
+        mock.expect_get().returning(|url| {
+            if url.contains(":17127") {
+                Err(OhmError::RejectedUrl(
+                    "test-only non-loopback target".to_string(),
+                ))
+            } else {
+                Ok(LHM_BODY.to_string())
+            }
+        });
+        let (sv, _dir) = supervisor(mock);
+
+        let result = run_launch_probe(&sv, 17_127, None, None);
+        assert_eq!(result.tier, ProviderTier::Full);
+        assert_eq!(result.resolved_port, Some(17_128));
+        assert!(
+            result.hint.is_none(),
+            "fallback Full resolution has no hint"
+        );
     }
 
     // ==========================================================

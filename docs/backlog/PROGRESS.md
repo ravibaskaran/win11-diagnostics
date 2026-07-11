@@ -39,17 +39,17 @@ The swarm reads this file at task-startup to identify the ready set (stories who
 | 3.3 | merged | 2026-07-09T11Z | #17 | L0:9 | battery adapter (percent/state/power-rate). starship-battery 0.11 (bumped from 0.10 to clear quick-xml RUSTSEC). |
 | 3.4 | merged | 2026-07-09T13Z | #20 | L0:7 | PDH disk adapter (per-drive R/W bytes/sec). First adapter with unsafe FFI — 7 unsafe blocks + unsafe impl Send, all SAFETY-documented (G2). |
 | 3.5 | merged | 2026-07-09T14Z | #24 | L0:8 | net adapter (per-NIC RX/TX raw counters via GetIfTable2). Tier::Both. unsafe FFI (G2). Delta downstream per §5.2/G9. |
-| 3.6 | merged | 2026-07-09T14Z | #25 | L0:15 | OHM HTTP adapter (LHM /data.json bridge). T-10 500ms timeout. ureq default-features=false (drops CDLA-Permissive webpki-roots). serde(default) forward-compat. |
+| 3.6 | merged | 2026-07-09T14Z | #25 | L0:15 | OHM HTTP adapter (LHM /data.json bridge). T-10 500ms timeout. ureq default-features=false (drops CDLA-Permissive webpki-roots). G16 literal loopback validation + redirect suppression; serde(default) forward-compat. |
 | 4.1 | merged | 2026-07-09T10Z | #18 | L0:6 | SQLite schema init + PRAGMAs (WAL/user_version/foreign_keys). current_cycle + bandwidth_history tables. |
 | 4.2 | merged | 2026-07-09T11Z | #21 | L0:7 | bandwidth repo (save/load/archive/prune + T-12 busy-retry). UPSERT + txn-wrapped archive. |
 | 4.3 | merged | 2026-07-09T11Z | #22 | L0:4 | migration (v0→v1 via user_version registry). Epic 4 COMPLETE. |
 | 5.1 | merged | 2026-07-09T12Z | #23 | L0:6 | MonthlyAccumulator (in-memory, T-23 wraparound). F7 proptest. Pure domain. |
 | 5.2 | merged | 2026-07-09T14Z | #26 | L0:21 | BandwidthAccountant tokio task (subscribe + accumulate + flush + rollover). Clock trait (F3), T-15 debounce, G15 flush-error safety. Epic 5 COMPLETE. |
 | 5.3 | merged | 2026-07-10T05Z | #27 | L0:6 | BandwidthView DTO + builder (days_until_reset via Clock). Pure domain. Epic 5 COMPLETE. |
-| 6.1 | merged | 2026-07-10T06Z | #29 | L0:24 | Transparent/borderless/topmost viewport + DWM peek-exclude + capture-cloak. NOTE: capture-cloak uses DWMWA_CLOAK (DWMWA_CLOAKED_BY_CAPTURABLE_CONTENT absent in windows 0.62) — needs SetWindowDisplayAffinity follow-up. unsafe FFI (G2). |
+| 6.1 | merged | 2026-07-10T06Z | #29 | L0:24 | Transparent/borderless/topmost viewport + DWM peek-exclude + live-HWND `WDA_EXCLUDEFROMCAPTURE`; `[display] hide_from_capture` defaults OFF. Real Win11 capture smoke remains manual. unsafe FFI (G2). |
 | 6.2 | merged | 2026-07-10T06Z | #29 | L0:24 | AppBar dock registration (SHAppBarMessage ABM_NEW/SETPOS/REMOVE). unsafe FFI. |
 | 6.3 | merged | 2026-07-10T06Z | #29 | L0:24 | Per-Monitor DPI Awareness v2 (SetProcessDpiAwarenessContext). unsafe FFI. |
-| 6.4 | merged | 2026-07-10T06Z | #30 | L0:23 | OhmSupervisor (probe + elevated launch via ShellExecuteExW + Job Object G10 + LHM config patch). Dep-free config write (no XML parser). TierChangeCallback seam for 7.4. unsafe FFI. Epic 6 COMPLETE. |
+| 6.4 | merged | 2026-07-10T06Z | #30 | L0:23 | OhmSupervisor (probe + elevated launch via ShellExecuteExW + Job Object G10 + LHM config patch). Post-launch setup failures terminate/reap/close owned handles; real UAC/Job Object smoke remains manual. Dep-free config write (no XML parser). TierChangeCallback seam for 7.4. unsafe FFI. |
 | 6.5 | pending | — | — | — | — |
 | 6.6 | pending | — | — | — | — |
 | 7.1 | merged | 2026-07-10T05Z | #28 | L0:8 | Provider registry (tier-filtered via classify_for_v1). All 6 adapters wired. |
@@ -67,7 +67,7 @@ The swarm reads this file at task-startup to identify the ready set (stories who
 | 8.8 | merged | 2026-07-10T07Z | #36 | L0:11 | Threshold alert UI (check_threshold→row color Normal/Warning/Critical; hysteresis). |
 | 8.9 | merged | 2026-07-10T07Z | #37 | L0:22 | Metric enable/disable + drag-reorder (native egui DnD, [metrics] enabled+order config). |
 | 8.10 | merged | 2026-07-10T07Z | #37 | L0:11 | First-run wizard (docked edge/monitor/cycle_start_day/theme; G24 poller gate; first_run_complete). Epic 8 COMPLETE — END OF CODING. |
-| INT | merged | 2026-07-10T14Z | #40 | — | **Integration main wiring**: main.rs 14-step launch sequence (config→tier probe→registry→poller→accountant→EventChannel→AppState→eframe→shutdown). Async tier probe on spawn_blocking (fixes silent hang from firewalled-loopback TCP timeout). First-run wizard gate (G24). G25 green: 465 tests / 0 fail / 12 ignored, clippy clean, deny all ok. Release .exe (17MB) launches <1s, renders live CPU/GPU/RAM readings + BASIC pill, runs 30s+ no crash. **FUNCTIONAL APP.** |
+| INT | merged | 2026-07-10T14Z | #40 | — | **Integration main wiring**: main.rs 14-step launch sequence (config→tier probe→registry→poller→accountant→EventChannel→AppState→eframe→shutdown). Async tier probe on spawn_blocking (fixes silent hang from firewalled-loopback TCP timeout). G24 first-run gate. PR4 workspace regression: 485 passed / 0 failed / 11 ignored; clippy, deny, and Windows target check pass. Release build was attempted but did not complete within the 240s command budget; no launch claim is made here. |
 | 9.1 | pending | — | — | — | — |
 | 9.2 | pending | — | — | — | — |
 | 9.3 | pending | — | — | — | — |
@@ -82,9 +82,34 @@ The swarm reads this file at task-startup to identify the ready set (stories who
 - Total stories: 59
 - Merged: 44 / 59 (74.6%) — Stories 0.1-0.7, 1.1-1.6, 2.1-2.3, 3.1-3.6, 4.1-4.3, 5.1-5.3, 6.1-6.4, 7.1-7.5, 8.1-8.10 + INT (Epics 0+1+2+3+4+5+6+7+8 COMPLETE — END OF CODING + main.rs integration wiring)
 - Ready for pickup: {3.2b, 6.5, 6.6, 9.1-9.3, 10.1, 10.2, 11.1-11.4} — post-coding (release/QA/CI stories)
-- Workspace tests on main: 465 passing, 0 failing, 12 ignored (hardware/UAC smokes)
+- Workspace tests on main: 485 passing, 0 failing, 11 ignored (hardware/UAC smokes)
 - Blocked on HITL: 0
 - Long-term blocked: 0
+
+## Epic 0–8 gap-closure evidence (`fix-epic8-gaps`, PR1–PR4)
+
+This addendum records the evidence-backed remediation without moving deferred
+stories into `merged`:
+
+- Runtime tier transitions rebuild the active provider registry/poller; shutdown
+  cancellation emits one `Event::Shutdown` and joins workers idempotently.
+- Capture exclusion uses the live eframe HWND and `WDA_EXCLUDEFROMCAPTURE`,
+  gated by `[display] hide_from_capture = false` (default OFF). Real Win11
+  capture-visibility smoke remains manual.
+- Bandwidth grouping filters `MetricKind` before LUID parsing and preserves
+  exact `u64` counters above `2^53`.
+- LHM Job Object setup failures terminate/reap/close owned handles before the
+  launch error returns; real UAC/process-reap smoke remains manual.
+- G16 is explicitly loopback-only (`127.0.0.0/8` or `[::1]`); hostnames,
+  remote targets, and redirect escapes are rejected before transport.
+- PR4 integration added two non-duplicate tier-probe regressions for G16
+  rejection classification and fallback to a Full port. Workspace checks on
+  2026-07-11: `cargo fmt --all -- --check` pass; `cargo test --workspace
+  --all-targets` 485 passed/11 ignored; clippy and `cargo deny check` pass
+  (with existing warnings); Windows target check pass. The release `.exe`
+  build did not complete within the command budget and is not claimed here.
+
+Deferred and still `pending`: **3.2b, 6.5, 6.6, and all 9.x–11.x stories**.
 
 ## Critical path remaining
 47 stories on the critical path (longest dependency chain). See `regression-harness.md` §4.

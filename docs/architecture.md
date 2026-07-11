@@ -813,6 +813,56 @@ The dev environment is intentionally **relocatable** — most tooling lives unde
 
 ---
 
+## 13. Epic 0–8 gap-closure evidence (2026-07-11)
+
+The `fix-epic8-gaps` remediation is implemented through the PR4 integration
+slice. The following statements are limited to behavior covered by the current
+workspace tests and checks; Win11/UAC/capture behavior that requires a desktop
+remains explicitly manual.
+
+### Implemented contracts
+
+- **Runtime and shutdown:** a `TierChanged(Full)` event rebuilds the provider
+  registry and poller before the next tick; shutdown cancellation emits one
+  `Event::Shutdown`, force-flushes, tears down sidebar-owned LHM, and joins
+  workers idempotently. Poller, event-channel, GUI-close, and shutdown tests
+  cover the transition and join paths.
+- **Capture exclusion:** `[display] hide_from_capture = false` is the default
+  and leaves capture enabled. When explicitly enabled, the GUI obtains the live
+  eframe root HWND and calls `SetWindowDisplayAffinity` with
+  `WDA_EXCLUDEFROMCAPTURE`; missing/invalid HWNDs and API errors are logged as
+  a non-success. The real Win11 visual capture smoke is still manual.
+- **Bandwidth precision:** network readings are filtered by `MetricKind` before
+  LUID grouping, and `ReadingValue::Counter(u64)` preserves values above
+  `2^53` through serialization and accumulation.
+- **LHM ownership:** every launched child is owned by an RAII guard until Job
+  Object setup succeeds; setup failure terminates, reaps, and closes handles.
+  Real UAC/Job Object process-reap smoke remains manual.
+- **G16 exception:** production HTTP accepts only literal `http://127.0.0.0/8`
+  or `http://[::1]` authorities, rejects hostnames/remote targets before
+  transport, and disables automatic redirects so a remote `Location` cannot
+  escape the loopback boundary. Rejection and redirect-regression tests pass.
+
+### Deferred scope (not implemented by this change)
+
+The following remain pending and must not be described as completed by this
+remediation: **3.2b acquisition/benchmark decision, 6.5 LHM acquisition,
+6.6 capture-cloak visual validation, and all 9.x, 10.x, and 11.x release/CI
+stories**. Their existing backlog entries remain `pending`.
+
+### Validation recorded for this slice
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all -- --check` | pass |
+| `cargo test --workspace --all-targets` | 485 passed, 11 ignored, 0 failed |
+| `cargo clippy --workspace --all-targets -- -D warnings` | pass |
+| `cargo deny check` | pass; existing duplicate-dependency and unmatched-license warnings remain |
+| `cargo check --workspace --target x86_64-pc-windows-msvc` | pass |
+| `cargo build -p sidebar-app --release --target x86_64-pc-windows-msvc` | not completed; first attempt timed out after 240s during compilation and the retry was stopped before completion |
+
+---
+
 ## Citations (retrieved 2026-07-07; LHM HTTP revised 2026-07-08)
 
 1. **egui** — https://docs.rs/egui — v0.35.0 latest; `ViewportBuilder::with_transparent` confirmed; `eframe::App` trait.
