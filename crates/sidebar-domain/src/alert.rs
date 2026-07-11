@@ -80,6 +80,65 @@ pub fn check_threshold(
     AlertState::Normal
 }
 
+// ===========================================================================
+// Story 12.6 — per-metric alert acknowledgement + snooze.
+// ===========================================================================
+
+/// Per-metric alert acknowledgement state. Story 12.6.
+///
+/// - `None` — no ack; the displayed state is the raw `check_threshold` result.
+/// - `Acknowledged` — user dismissed the alert; the color is suppressed until
+///   the value recovers below `warn - hysteresis` (re-arm).
+/// - `Snoozed(until)` — user snoozed; the color is suppressed until `until`
+///   (epoch seconds), then re-evaluates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AlertAck {
+    /// User acknowledged the alert; suppress until recovery (re-arm).
+    Acknowledged,
+    /// User snoozed until `until` (epoch seconds).
+    Snoozed(i64),
+}
+
+/// Compute the displayed alert state after applying ack/snooze suppression.
+///
+/// `raw_state` is the `check_threshold` result. `ack` is the per-metric ack
+/// (None if never acked). `now_epoch` is the wall-clock in seconds (so tests
+/// can inject a fixed time). The returned `AlertState` is what the GUI
+/// renders:
+/// - If snoozed and `now < until` → `Normal` (suppressed).
+/// - If acknowledged → `Normal` (suppressed; the ack clears via
+///   `ack_should_clear` when the metric recovers).
+/// - No ack → `raw_state` passthrough.
+///
+/// Cited: Story 12.6 DoD, alert.rs hysteresis contract.
+#[must_use]
+pub fn displayed_state(raw_state: AlertState, ack: Option<AlertAck>, now_epoch: i64) -> AlertState {
+    let Some(ack) = ack else {
+        return raw_state;
+    };
+    let suppressed = match ack {
+        AlertAck::Snoozed(until) => now_epoch < until,
+        AlertAck::Acknowledged => true, // suppress until ack_should_clear flips.
+    };
+    if suppressed {
+        AlertState::Normal
+    } else {
+        raw_state
+    }
+}
+
+/// Decide whether an ack should clear (re-arm) given the current raw state.
+///
+/// Returns `true` when the ack is stale (snooze expired, or acknowledged +
+/// metric recovered) and should be dropped so the next breach re-alerts.
+#[must_use]
+pub fn ack_should_clear(raw_state: AlertState, ack: AlertAck, now_epoch: i64) -> bool {
+    match ack {
+        AlertAck::Snoozed(until) => now_epoch >= until,
+        AlertAck::Acknowledged => raw_state == AlertState::Normal,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,5 +215,67 @@ mod tests {
 
         let s3 = check_threshold(94.0, 90.0, 5.0, 100.0, AlertState::Critical);
         assert_eq!(s3, AlertState::Warning);
+    }
+
+    // ----- Story 12.6: alert ack/snooze -----
+
+    #[test]
+    fn snooze_suppresses_critical_until_expiry() {
+        // Snoozed until epoch 1000; now is 500 → suppressed to Normal.
+        let displayed = displayed_state(AlertState::Critical, Some(AlertAck::Snoozed(1000)), 500);
+        assert_eq!(displayed, AlertState::Normal, "snooze suppresses");
+        // After expiry (now=1500 > 1000) → raw state returns.
+        let displayed = displayed_state(AlertState::Critical, Some(AlertAck::Snoozed(1000)), 1500);
+        assert_eq!(displayed, AlertState::Critical, "snooze expiry re-alerts");
+    }
+
+    #[test]
+    fn ack_suppresses_until_recovery() {
+        // Acknowledged while Warning → suppressed.
+        let displayed = displayed_state(AlertState::Warning, Some(AlertAck::Acknowledged), 0);
+        assert_eq!(displayed, AlertState::Normal, "ack suppresses Warning");
+        // Acknowledged while Critical → suppressed.
+        let displayed = displayed_state(AlertState::Critical, Some(AlertAck::Acknowledged), 0);
+        assert_eq!(displayed, AlertState::Normal, "ack suppresses Critical");
+    }
+
+    #[test]
+    fn ack_clears_when_metric_recovers() {
+        // Acked + still Warning → should NOT clear (stays suppressed).
+        assert!(
+            !ack_should_clear(AlertState::Warning, AlertAck::Acknowledged, 0),
+            "ack stays while metric is still in alert"
+        );
+        // Acked + recovered to Normal → clears (re-arm).
+        assert!(
+            ack_should_clear(AlertState::Normal, AlertAck::Acknowledged, 0),
+            "ack clears on recovery (re-arm)"
+        );
+    }
+
+    #[test]
+    fn snooze_clears_on_expiry() {
+        // Before expiry → does not clear.
+        assert!(
+            !ack_should_clear(AlertState::Warning, AlertAck::Snoozed(1000), 500),
+            "snooze does not clear before expiry"
+        );
+        // After expiry → clears.
+        assert!(
+            ack_should_clear(AlertState::Warning, AlertAck::Snoozed(1000), 1500),
+            "snooze clears on expiry"
+        );
+    }
+
+    #[test]
+    fn no_ack_passes_raw_state_through() {
+        assert_eq!(
+            displayed_state(AlertState::Critical, None, 0),
+            AlertState::Critical
+        );
+        assert_eq!(
+            displayed_state(AlertState::Normal, None, 0),
+            AlertState::Normal
+        );
     }
 }
