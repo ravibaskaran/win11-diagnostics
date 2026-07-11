@@ -21,6 +21,8 @@
 
 use std::time::Instant;
 
+use serde::{Deserialize, Serialize};
+
 // ===========================================================================
 // MetricKind — 35 variants per architecture.md §5.1.
 // Adding/removing a variant is a contract change; the exhaustive-match
@@ -264,6 +266,37 @@ impl BatteryState {
 // Reading — a single sensor reading.
 // ===========================================================================
 
+/// Numeric payload preserving exact cumulative counters while retaining the
+/// existing floating-point display path for gauges.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum ReadingValue {
+    /// A continuously valued measurement (temperature, utilization, etc.).
+    Gauge(f64),
+    /// An exact monotonically increasing counter (network bytes/packets).
+    Counter(u64),
+}
+
+impl ReadingValue {
+    /// Convert the value to the display-facing floating-point projection.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)]
+    pub fn display_value(self) -> f64 {
+        match self {
+            Self::Gauge(value) => value,
+            Self::Counter(value) => value as f64,
+        }
+    }
+
+    /// Return the exact counter, if this payload is counter-typed.
+    #[must_use]
+    pub fn counter_value(self) -> Option<u64> {
+        match self {
+            Self::Gauge(_) => None,
+            Self::Counter(value) => Some(value),
+        }
+    }
+}
+
 /// A single sensor reading at a point in time.
 ///
 /// `value` MUST be finite per T-20. Adapters MUST omit a reading rather
@@ -277,6 +310,9 @@ pub struct Reading {
     pub kind: MetricKind,
     /// The numeric value. MUST be finite (T-20).
     pub value: f64,
+    /// Exact typed payload. `value` remains the display projection for
+    /// compatibility with existing gauge formatters and UI callsites.
+    pub reading_value: ReadingValue,
     /// The unit of `value`.
     pub unit: Unit,
     /// When the reading was taken.
@@ -288,13 +324,52 @@ impl Reading {
     /// are responsible for ensuring it's finite per T-20.
     #[must_use]
     pub fn new(sensor: SensorId, kind: MetricKind, value: f64, unit: Unit) -> Self {
+        Self::gauge(sensor, kind, value, unit)
+    }
+
+    /// Construct a gauge-valued reading.
+    #[must_use]
+    pub fn gauge(sensor: SensorId, kind: MetricKind, value: f64, unit: Unit) -> Self {
         Self {
             sensor,
             kind,
             value,
+            reading_value: ReadingValue::Gauge(value),
             unit,
             timestamp: Instant::now(),
         }
+    }
+
+    /// Construct an exact counter-valued reading.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)]
+    pub fn counter(sensor: SensorId, kind: MetricKind, value: u64, unit: Unit) -> Self {
+        Self {
+            sensor,
+            kind,
+            value: value as f64,
+            reading_value: ReadingValue::Counter(value),
+            unit,
+            timestamp: Instant::now(),
+        }
+    }
+
+    /// Borrow the exact typed payload.
+    #[must_use]
+    pub fn exact_value(&self) -> &ReadingValue {
+        &self.reading_value
+    }
+
+    /// Return the display-facing floating-point projection.
+    #[must_use]
+    pub fn display_value(&self) -> f64 {
+        self.value
+    }
+
+    /// Return the exact counter, if this reading is counter-typed.
+    #[must_use]
+    pub fn counter_value(&self) -> Option<u64> {
+        self.reading_value.counter_value()
     }
 }
 
@@ -354,6 +429,35 @@ mod tests {
         assert_eq!(r.kind, MetricKind::CpuTemperature);
         assert_eq!(r.unit, Unit::Celsius);
         assert!((r.value - 62.0).abs() < f64::EPSILON);
+        assert!(matches!(r.exact_value(), ReadingValue::Gauge(62.0)));
+    }
+
+    #[test]
+    fn counter_round_trips_exactly_above_f64_precision_limit() {
+        let counter = (1_u64 << 53) + 123;
+        let reading = Reading::counter(
+            SensorId::new("net", "7"),
+            MetricKind::NetRxBytes,
+            counter,
+            Unit::Bytes,
+        );
+        let encoded = toml::to_string(reading.exact_value()).expect("counter serializes");
+        let restored: ReadingValue = toml::from_str(&encoded).expect("counter deserializes");
+        assert_eq!(restored, ReadingValue::Counter(counter));
+        assert_eq!(reading.counter_value(), Some(counter));
+    }
+
+    #[test]
+    fn gauge_constructor_keeps_display_value_behavior() {
+        let reading = Reading::gauge(
+            SensorId::new("cpu", "package"),
+            MetricKind::CpuUtilization,
+            42.5,
+            Unit::Percent,
+        );
+        assert!((reading.value - 42.5).abs() < f64::EPSILON);
+        assert!((reading.display_value() - 42.5).abs() < f64::EPSILON);
+        assert!(reading.counter_value().is_none());
     }
 
     // ----- Happy Path #3: exhaustive match over MetricKind (compile-time) -----

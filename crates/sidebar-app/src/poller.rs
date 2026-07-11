@@ -524,15 +524,14 @@ mod tests {
     }
 
     fn reading(category: &'static str, instance: &str, kind: MetricKind) -> Reading {
-        Reading {
-            sensor: SensorId::new(category, instance.to_string()),
+        // Timestamp will be overwritten by the poller; tests assert the
+        // override, not this value.
+        Reading::gauge(
+            SensorId::new(category, instance.to_string()),
             kind,
-            value: 42.0,
-            unit: Unit::Percent,
-            // timestamp will be overwritten by the poller; tests assert the
-            // override, not this value.
-            timestamp: Instant::now(),
-        }
+            42.0,
+            Unit::Percent,
+        )
     }
 
     /// A test clock that returns a fixed instant settable from the test.

@@ -350,35 +350,31 @@ pub fn luid_from_instance(instance: &str) -> Option<u64> {
 /// as a u64 LUID, are ignored (Boundary #2: non-network + malformed readings
 /// filtered out).
 ///
-/// The Reading's `value: f64` is the raw cumulative byte counter (per the
+/// Network readings carry exact `ReadingValue::Counter` payloads (per the
 /// Story 3.5 cumulative-counter contract — adapters emit raw `InOctets`/
-/// `OutOctets`, the accountant computes deltas). We cast it back to `u64`
-/// for the accumulator. Non-finite values (NaN/Inf, forbidden by T-20 but
-/// defended against here) are dropped.
+/// `OutOctets`, the accountant computes deltas). Gauge payloads are ignored.
 ///
 /// Public so the filter logic can be unit-tested in isolation (it's pure).
 #[must_use]
 pub fn group_network_readings(readings: &[Reading]) -> HashMap<u64, (u64, u64)> {
     let mut by_luid: HashMap<u64, (u64, u64)> = HashMap::new();
     for r in readings {
+        let direction = match r.kind {
+            MetricKind::NetRxBytes => 0,
+            MetricKind::NetTxBytes => 1,
+            _ => continue,
+        };
+        let Some(value) = r.counter_value() else {
+            continue;
+        };
         // Parse the LUID from the sensor instance. Ignore garbage.
         let Some(luid) = luid_from_instance(&r.sensor.instance) else {
             continue;
         };
-        // Defensive: T-20 says values are finite, but we guard.
-        if !r.value.is_finite() || r.value < 0.0 {
-            continue;
-        }
-        // f64 → u64 cast: byte counters fit in 52 bits of mantissa precision
-        // for any realistic NIC (petabytes); the precision-loss lint is
-        // acknowledged and allowed here.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let value = r.value as u64;
         let entry = by_luid.entry(luid).or_insert((0, 0));
-        match r.kind {
-            MetricKind::NetRxBytes => entry.0 = value,
-            MetricKind::NetTxBytes => entry.1 = value,
-            _ => {} // non-network reading for a LUID-shaped instance → ignore
+        match direction {
+            0 => entry.0 = value,
+            _ => entry.1 = value,
         }
     }
     by_luid
@@ -489,16 +485,16 @@ mod tests {
     fn net_readings(luid: u64, rx: u64, tx: u64) -> Vec<Reading> {
         let instance = luid.to_string();
         vec![
-            Reading::new(
+            Reading::counter(
                 SensorId::new("net", instance.clone()),
                 MetricKind::NetRxBytes,
-                rx as f64,
+                rx,
                 Unit::Bytes,
             ),
-            Reading::new(
+            Reading::counter(
                 SensorId::new("net", instance),
                 MetricKind::NetTxBytes,
-                tx as f64,
+                tx,
                 Unit::Bytes,
             ),
         ]
@@ -618,6 +614,38 @@ mod tests {
         assert_eq!(grouped.len(), 2, "only the 2 LUIDs, noise filtered");
         assert_eq!(grouped.get(&7), Some(&(100, 50)));
         assert_eq!(grouped.get(&8), Some(&(200, 60)));
+    }
+
+    #[test]
+    fn numeric_non_network_sensor_id_does_not_create_pseudo_nic() {
+        let mut readings = net_readings(7, 100, 50);
+        readings.push(Reading::gauge(
+            SensorId::new("cpu", "999"),
+            MetricKind::CpuTemperature,
+            42.0,
+            Unit::Celsius,
+        ));
+
+        let grouped = group_network_readings(&readings);
+        assert_eq!(
+            grouped.len(),
+            1,
+            "non-network numeric sensor must be ignored"
+        );
+        assert!(!grouped.contains_key(&999));
+    }
+
+    #[test]
+    fn exact_counter_above_f64_precision_limit_reaches_group() {
+        let counter = (1_u64 << 53) + 123;
+        let readings = vec![Reading::counter(
+            SensorId::new("net", "7"),
+            MetricKind::NetRxBytes,
+            counter,
+            Unit::Bytes,
+        )];
+        let grouped = group_network_readings(&readings);
+        assert_eq!(grouped.get(&7), Some(&(counter, 0)));
     }
 
     // ---------------------------------------------------------------------

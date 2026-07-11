@@ -49,7 +49,6 @@ mod tests {
     use super::*;
     use sidebar_domain::reading::{MetricKind, SensorId, Unit};
     use std::sync::Arc;
-    use std::time::Instant;
 
     fn test_descriptor() -> SensorDescriptor {
         SensorDescriptor::new(
@@ -61,13 +60,12 @@ mod tests {
     }
 
     fn test_reading() -> Reading {
-        Reading {
-            sensor: SensorId::new("cpu", "0"),
-            kind: MetricKind::CpuUtilization,
-            value: 42.0,
-            unit: Unit::Percent,
-            timestamp: Instant::now(),
-        }
+        Reading::gauge(
+            SensorId::new("cpu", "0"),
+            MetricKind::CpuUtilization,
+            42.0,
+            Unit::Percent,
+        )
     }
 
     #[test]
@@ -76,13 +74,12 @@ mod tests {
         let canned = [test_reading()];
         let expected_value = canned[0].value;
         mock.expect_read_all().returning(move || {
-            vec![Reading {
-                sensor: SensorId::new("cpu", "0"),
-                kind: MetricKind::CpuUtilization,
-                value: expected_value,
-                unit: Unit::Percent,
-                timestamp: Instant::now(),
-            }]
+            vec![Reading::gauge(
+                SensorId::new("cpu", "0"),
+                MetricKind::CpuUtilization,
+                expected_value,
+                Unit::Percent,
+            )]
         });
         mock.expect_descriptor().return_const(test_descriptor());
 
