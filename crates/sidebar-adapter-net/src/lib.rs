@@ -123,55 +123,31 @@ impl<B: NetBackend + Send> SensorProvider for NetAdapterGeneric<B> {
 /// zero-traffic NIC is still reported (the cumulative counter is 0). The
 /// downstream accountant treats wraparound as a reset (T-23, handled there).
 ///
-/// # Finite-value policy (T-20)
-///
-/// Any reading whose `value` is `NaN` or `±Inf` is OMITTED. Cumulative byte
-/// counters are `u64` and cannot be NaN, but the cast to `f64` is applied
-/// consistently with other adapters for defense-in-depth. (Counters above
-/// 2^53 lose integer precision in the f64; the downstream accountant reads
-/// them as `u64` directly from the snapshot — see AD-12 — so this is only a
-/// display-channel concern.)
+/// Counters are emitted through `Reading::counter`, preserving exact `u64`
+/// arithmetic for the accountant while retaining a display-facing projection.
 fn readings_from_snapshot(s: &backend::NetSnapshot) -> Vec<Reading> {
     let mut out = Vec::with_capacity(s.nics.len() * 2);
     for nic in &s.nics {
-        // LUID-as-decimal-string is the stable NIC identifier (AD-12). The
-        // u64 LUID renders exactly within f64's 2^53 exact-integer range
-        // (real LUIDs are 48-bit), so the cast is loss-free.
-        #[allow(clippy::cast_precision_loss)]
-        let rx_f = nic.rx_bytes as f64;
-        #[allow(clippy::cast_precision_loss)]
-        let tx_f = nic.tx_bytes as f64;
-        // Apply the T-20 finite filter (counters are u64 → never NaN, but
-        // defense-in-depth: matches the other adapters' policy).
-        if let Some(rx) = finite(rx_f) {
-            out.push(Reading::new(
-                SensorId::new("nic", nic.luid.to_string()),
-                MetricKind::NetRxBytes,
-                rx,
-                Unit::Bytes,
-            ));
-        }
-        if let Some(tx) = finite(tx_f) {
-            out.push(Reading::new(
-                SensorId::new("nic", nic.luid.to_string()),
-                MetricKind::NetTxBytes,
-                tx,
-                Unit::Bytes,
-            ));
-        }
+        let sensor = SensorId::new("nic", nic.luid.to_string());
+        out.push(Reading::counter(
+            sensor.clone(),
+            MetricKind::NetRxBytes,
+            nic.rx_bytes,
+            Unit::Bytes,
+        ));
+        out.push(Reading::counter(
+            sensor,
+            MetricKind::NetTxBytes,
+            nic.tx_bytes,
+            Unit::Bytes,
+        ));
     }
     out
 }
 
-/// Returns `Some(v)` only when `v` is finite; `None` otherwise. T-20: adapters
-/// MUST omit non-finite readings rather than emit `NaN`/`±Inf`.
-#[inline]
+#[cfg(test)]
 fn finite(v: f64) -> Option<f64> {
-    if v.is_finite() {
-        Some(v)
-    } else {
-        None
-    }
+    v.is_finite().then_some(v)
 }
 
 // Re-export key types for downstream consumers.
@@ -320,6 +296,25 @@ mod tests {
             (tx.value - 2_000_000_000.0).abs() < f64::EPSILON,
             "raw cumulative value preserved"
         );
+    }
+
+    #[test]
+    fn adapter_emits_exact_counter_above_f64_precision_limit() {
+        let counter = (1_u64 << 53) + 123;
+        let snap = NetSnapshot {
+            nics: vec![NicSnapshot {
+                luid: 7,
+                rx_bytes: counter,
+                tx_bytes: counter,
+            }],
+        };
+        let readings = readings_from_snapshot(&snap);
+        assert!(readings.iter().all(|reading| {
+            matches!(
+                reading.exact_value(),
+                sidebar_domain::reading::ReadingValue::Counter(value) if *value == counter
+            )
+        }));
     }
 
     // ----- Adapter wiring via mock backend (F4) -----

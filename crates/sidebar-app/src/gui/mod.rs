@@ -1005,13 +1005,7 @@ mod tests {
     use tokio::sync::broadcast;
 
     fn reading(kind: MetricKind, value: f64, unit: Unit) -> Reading {
-        Reading {
-            sensor: SensorId::new("cpu", "package"),
-            kind,
-            value,
-            unit,
-            timestamp: Instant::now(),
-        }
+        Reading::gauge(SensorId::new("cpu", "package"), kind, value, unit)
     }
 
     /// Walk the kittest access tree and collect every node's text. egui puts

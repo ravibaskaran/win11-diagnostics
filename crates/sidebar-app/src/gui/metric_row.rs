@@ -250,13 +250,12 @@ pub(crate) fn is_known_combination(kind: MetricKind, unit: Unit) -> bool {
     // re-dispatch via format_reading_with_config against a sentinel reading;
     // the dispatch above is the single source of truth, so we don't risk
     // drift between two match tables.
-    let sentinel = Reading {
-        sensor: sidebar_domain::reading::SensorId::new("probe", "test"),
+    let sentinel = Reading::gauge(
+        sidebar_domain::reading::SensorId::new("probe", "test"),
         kind,
-        value: 1.0,
+        1.0,
         unit,
-        timestamp: std::time::Instant::now(),
-    };
+    );
     let display = DisplayConfig {
         temp_unit: TempUnit::Celsius,
         raw_values: false,
@@ -360,16 +359,9 @@ mod tests {
     use sidebar_domain::config::DisplayConfig;
     use sidebar_domain::format::TempUnit;
     use sidebar_domain::reading::{MetricKind, SensorId, Unit};
-    use std::time::Instant;
 
     fn reading(kind: MetricKind, value: f64, unit: Unit) -> Reading {
-        Reading {
-            sensor: SensorId::new("cpu", "package"),
-            kind,
-            value,
-            unit,
-            timestamp: Instant::now(),
-        }
+        Reading::gauge(SensorId::new("cpu", "package"), kind, value, unit)
     }
 
     /// Default display config: human-readable, Celsius, decimal GB.

@@ -116,19 +116,17 @@ mod tests {
     use super::*;
     use sidebar_domain::config::ThresholdConfig;
     use sidebar_domain::reading::{MetricKind, Reading, SensorId, Unit};
-    use std::time::Instant;
 
     const ACCENT: Color32 = Color32::from_rgb(0x4C, 0xAF, 0x50);
     const DEFAULT: Color32 = Color32::from_rgb(0xC0, 0xC0, 0xC0);
 
     fn cpu_temp(value: f64) -> Reading {
-        Reading {
-            sensor: SensorId::new("cpu", "package"),
-            kind: MetricKind::CpuTemperature,
+        Reading::gauge(
+            SensorId::new("cpu", "package"),
+            MetricKind::CpuTemperature,
             value,
-            unit: Unit::Celsius,
-            timestamp: Instant::now(),
-        }
+            Unit::Celsius,
+        )
     }
 
     fn thresholds(warn: f64, crit: f64) -> ThresholdConfig {
@@ -258,13 +256,12 @@ mod tests {
     #[test]
     fn non_temperature_kind_is_normal() {
         // CpuUtilization has no threshold mapping in v1.
-        let r = Reading {
-            sensor: SensorId::new("cpu", "package"),
-            kind: MetricKind::CpuUtilization,
-            value: 99.0,
-            unit: Unit::Percent,
-            timestamp: Instant::now(),
-        };
+        let r = Reading::gauge(
+            SensorId::new("cpu", "package"),
+            MetricKind::CpuUtilization,
+            99.0,
+            Unit::Percent,
+        );
         let t = thresholds(80.0, 90.0);
         let (color, state) = color_for(&r, Some(&t), AlertState::Normal, ACCENT, DEFAULT);
         assert_eq!(state, AlertState::Normal);
@@ -279,13 +276,12 @@ mod tests {
         // Set GPU thresholds higher than CPU so we can distinguish.
         t.gpu_temp_warn = 95.0;
         t.gpu_temp_critical = 100.0;
-        let r = Reading {
-            sensor: SensorId::new("gpu", "nvidia"),
-            kind: MetricKind::GpuTemperature,
-            value: 92.0,
-            unit: Unit::Celsius,
-            timestamp: Instant::now(),
-        };
+        let r = Reading::gauge(
+            SensorId::new("gpu", "nvidia"),
+            MetricKind::GpuTemperature,
+            92.0,
+            Unit::Celsius,
+        );
         let (_, state) = color_for(&r, Some(&t), AlertState::Normal, ACCENT, DEFAULT);
         assert_eq!(
             state,
