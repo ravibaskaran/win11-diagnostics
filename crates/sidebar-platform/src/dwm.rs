@@ -1,39 +1,13 @@
-//! `DwmSetWindowAttribute` wrappers — DWM peek exclusion + capture cloak (Story 6.1).
+//! DWM peek exclusion + capture-affinity wrappers (Story 6.1).
 //!
 //! ## Why these wrappers
 //!
-//! The sidebar viewport must stay visible during Aero Peek (Win+Tab, hover-
-//! show-desktop) and the user can opt the window out of screen capture
-//! (`[display] hide_from_capture = false`, default OFF — most users want it
-//! captured). Both are set via `DwmSetWindowAttribute` on the viewport HWND.
-//!
-//! ## API discrepancy — DWMWA_CLOAKED_BY_CAPTURABLE_CONTENT does NOT exist
-//!
-//! The Story 6.1 contract (and the architecture backlog) name
-//! `DWMWA_CLOAKED_BY_CAPTURABLE_CONTENT` as the capture-cloak attribute. The
-//! `windows = 0.62.2` crate's `Win32_Graphics_Dwm` feature exposes only two
-//! cloak-related attributes:
-//!   - `DWMWA_CLOAK` (value 13) — settable: hides the window from the user
-//!     while DWM still composes it.
-//!   - `DWMWA_CLOAKED` (value 14) — gettable: query the *reason* a window is
-//!     cloaked (App / Shell / Inherited).
-//!
-//! The MS Win32 header `dwmapi.h` (DWMWINDOWATTRIBUTE enum) does NOT define
-//! `DWMWA_CLOAKED_BY_CAPTURABLE_CONTENT` either. The capture-exclusion
-//! attribute that ships in the public SDK is the `WDA_EXCLUDEFROMCAPTURE`
-//! flag passed to `SetWindowDisplayAffinity` — that lives in
-//! `Win32_Graphics_Dwm`/`Win32_UI_WindowsAndMessaging` and is the *correct*
-//! API for "streamer privacy" capture exclusion.
-//!
-//! Resolution: this module exposes both:
-//!   1. [`exclude_from_peek`] — `DWMWA_EXCLUDED_FROM_PEEK` (matches the
-//!      story contract verbatim).
-//!   2. [`set_capture_cloak`] — for now implemented via `DWMWA_CLOAK` (the
-//!      only settable cloak attribute). The function is `pub` so Epic 6.x
-//!      config plumbing can call it without churn; the underlying attribute
-//!      can be switched to `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)`
-//!      in a follow-up without touching callers. **HITL note (G19)**: this
-//!      discrepancy is called out in the PR body.
+//! The sidebar viewport must stay visible during Aero Peek (Win+Tab,
+//! hover-show-desktop). Peek exclusion uses `DwmSetWindowAttribute`; capture
+//! exclusion uses `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` on the
+//! viewport HWND. `set_capture_cloak` retains its caller-facing name for
+//! compatibility even though its implementation is capture affinity, not DWM
+//! cloaking.
 //!
 //! ## SAFETY discipline (G2 / F11)
 //!
@@ -45,7 +19,8 @@ use std::mem::size_of;
 
 use windows::core::BOOL;
 use windows::Win32::Foundation::HWND;
-use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CLOAK, DWMWA_EXCLUDED_FROM_PEEK};
+use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_EXCLUDED_FROM_PEEK};
+use windows::Win32::UI::WindowsAndMessaging::WDA_EXCLUDEFROMCAPTURE;
 
 use sidebar_domain::error::{Error, Result};
 
@@ -65,28 +40,9 @@ pub fn exclude_from_peek(hwnd: HWND) -> Result<()> {
     set_bool_attribute(hwnd, DWMWA_EXCLUDED_FROM_PEEK, true)
 }
 
-/// Toggle DWMWA_CLOAK on the sidebar viewport. When `enabled = true`, DWM
-/// hides the window from the user while still compositing it — this is the
-/// closest public-API equivalent to the "capture cloak" streamer-privacy
-/// feature described in Story 6.1. See module docs for the discrepancy note.
-///
-/// # TODO(6.1-followup): use SetWindowDisplayAffinity for true capture exclusion
-///
-/// `DWMWA_CLOAK` hides the window from the USER (DWM stops composing it to
-/// the desktop), which is NOT the same as hiding it from screen capture
-/// (OBS/Game Bar/Snipping Tool). Story 6.1 specified
-/// `DWMWA_CLOAKED_BY_CAPTURABLE_CONTENT`, which does NOT exist as a settable
-/// attribute in the `windows = 0.62.2` bindings (nor in upstream `dwmapi.h`
-/// at the Win11 24H2 SDK). The correct API for streamer-privacy capture
-/// exclusion is [`SetWindowDisplayAffinity`] with `WDA_EXCLUDEFROMCAPTURE`
-/// (Win10 2004+, `windows::Win32::Graphics::Gdi::SetWindowDisplayAffinity`).
-/// That call lives outside DWM and needs its own `[features]` gate
-/// (`Win32_Graphics_Gdi`). When a story lands the real capture-cloak UX,
-/// replace this body with `SetWindowDisplayAffinity(hwnd, if enabled {
-/// WDA_EXCLUDEFROMCAPTURE } else { WDA_NONE })` and retire `DWMWA_CLOAK`
-/// here. Until then, callers setting `hide_from_capture = true` in config
-/// get DWM-level cloaking (window vanishes) rather than capture exclusion —
-/// documented behavior, not a silent bug.
+/// Toggle capture exclusion on the sidebar viewport. When `enabled = true`,
+/// `WDA_EXCLUDEFROMCAPTURE` hides the window contents from supported capture
+/// APIs while leaving the window visible; `false` restores `WDA_NONE`.
 ///
 /// # Default
 /// OFF — most users want the sidebar captured in OBS / Snipping Tool.
@@ -98,14 +54,23 @@ pub fn exclude_from_peek(hwnd: HWND) -> Result<()> {
 /// `Err`, and the Epic-6 wiring layer decides whether to log-and-continue.
 ///
 /// # Cited
-/// Story 6.1 TDD contract (4): `dwm::set_capture_cloak(hwnd, true)` calls
-/// `DwmSetWindowAttribute` with the capture-cloak attribute. NFR-7.
+/// Story 6.1 TDD contract (4): `dwm::set_capture_cloak(hwnd, true)` applies
+/// `WDA_EXCLUDEFROMCAPTURE`. NFR-7.
 pub fn set_capture_cloak(hwnd: HWND, enabled: bool) -> Result<()> {
-    set_bool_attribute(hwnd, DWMWA_CLOAK, enabled)
+    let affinity = if enabled {
+        WDA_EXCLUDEFROMCAPTURE
+    } else {
+        windows::Win32::UI::WindowsAndMessaging::WDA_NONE
+    };
+    // SAFETY: `hwnd` is the caller's live top-level window handle and
+    // `affinity` is a documented WINDOW_DISPLAY_AFFINITY value. The call is
+    // synchronous and does not retain any borrowed memory.
+    unsafe { windows::Win32::UI::WindowsAndMessaging::SetWindowDisplayAffinity(hwnd, affinity) }
+        .map_err(|e| Error::Platform(format!("SetWindowDisplayAffinity failed: {e}")))
 }
 
-/// Shared helper: set a DWM attribute whose value is a single `BOOL`. Both
-/// `DWMWA_EXCLUDED_FROM_PEEK` and `DWMWA_CLOAK` take `BOOL*` per the MS
+/// Shared helper: set a DWM attribute whose value is a single `BOOL`.
+/// `DWMWA_EXCLUDED_FROM_PEEK` takes `BOOL*` per the MS
 /// `DwmSetWindowAttribute` contract — passing the wrong size silently
 /// no-ops the call, so we pin `cbAttribute = size_of::<BOOL>()` (= 4).
 ///
@@ -198,7 +163,7 @@ mod tests {
         assert_eq!(
             size_of::<BOOL>(),
             4,
-            "BOOL attribute size must be 4 bytes (DWMWA_EXCLUDED_FROM_PEEK / DWMWA_CLOAK contract)"
+            "BOOL attribute size must be 4 bytes (DWMWA_EXCLUDED_FROM_PEEK contract)"
         );
     }
 
@@ -209,12 +174,11 @@ mod tests {
         assert_eq!(DWMWA_EXCLUDED_FROM_PEEK.0, 12);
     }
 
-    /// The cloak-attribute constant must equal the documented DWM value (13).
-    /// See module docs for why we use DWMWA_CLOAK instead of the
-    /// (non-existent) DWMWA_CLOAKED_BY_CAPTURABLE_CONTENT.
+    /// The capture-affinity constant must equal the documented Win32 value
+    /// (`WDA_EXCLUDEFROMCAPTURE = 17`).
     #[test]
-    fn dwmwa_cloak_value_is_thirteen() {
-        assert_eq!(DWMWA_CLOAK.0, 13);
+    fn capture_affinity_value_is_exclude_from_capture() {
+        assert_eq!(WDA_EXCLUDEFROMCAPTURE.0, 17);
     }
 
     /// Null HWND should produce `Err(Platform)` once implemented — DWM rejects

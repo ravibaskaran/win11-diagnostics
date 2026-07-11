@@ -74,10 +74,15 @@ use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use sidebar_domain::event::{Event, Tier};
 use sidebar_domain::reading::Reading;
+use sidebar_sensor::descriptor::ProviderTier;
 use sidebar_sensor::provider::SensorProvider;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
+
+type RegistryBuilder =
+    Arc<dyn Fn(ProviderTier) -> Result<Vec<Arc<dyn SensorProvider>>, String> + Send + Sync>;
 
 /// Minimum poll interval (T-3). A configured interval below 1s is clamped
 /// up to this value — sub-second polling would saturate the blocking pool
@@ -214,6 +219,33 @@ impl Poller {
     /// Returns [`PollerError::BroadcastClosed`] if the broadcast closes
     /// (no receivers) before the shutdown token fires.
     pub async fn run(self, shutdown: CancellationToken) -> Result<(), PollerError> {
+        self.run_inner(shutdown, None, None).await
+    }
+
+    /// Run the poller while accepting coalesced runtime events. A
+    /// `TierChanged` event rebuilds the owned provider registry before the
+    /// next tick, so there is exactly one active registry and no overlapping
+    /// poller tasks. `Event::Shutdown` exits immediately; cancellation still
+    /// remains the primary shutdown signal.
+    pub async fn run_with_events<B>(
+        self,
+        shutdown: CancellationToken,
+        events: broadcast::Receiver<Event>,
+        builder: B,
+    ) -> Result<(), PollerError>
+    where
+        B: Fn(ProviderTier) -> Result<Vec<Arc<dyn SensorProvider>>, String> + Send + Sync + 'static,
+    {
+        self.run_inner(shutdown, Some(events), Some(Arc::new(builder)))
+            .await
+    }
+
+    async fn run_inner(
+        mut self,
+        shutdown: CancellationToken,
+        mut events: Option<broadcast::Receiver<Event>>,
+        builder: Option<RegistryBuilder>,
+    ) -> Result<(), PollerError> {
         // MissedTickBehavior::Delay (boundary #2): if a tick's fan-out takes
         // longer than `interval`, the NEXT tick fires one `interval` after
         // the slow tick COMPLETES (not immediately). This is the documented
@@ -247,6 +279,57 @@ impl Poller {
                             "Poller: broadcast closed (no receivers) — exiting"
                         );
                         return Err(PollerError::BroadcastClosed);
+                    }
+                }
+                event = recv_event(&mut events) => {
+                    match event {
+                        Some(Ok(Event::TierChanged(tier))) => {
+                            let Some(builder) = builder.as_ref() else {
+                                continue;
+                            };
+                            let active_tier = match tier {
+                                Tier::Full => ProviderTier::Full,
+                                Tier::Basic => ProviderTier::Basic,
+                            };
+                            let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                                builder(active_tier)
+                            }));
+                            match result {
+                                Ok(Ok(next)) => {
+                                    let previous = std::mem::replace(&mut self.providers, next);
+                                    tracing::info!(
+                                        old_provider_count = previous.len(),
+                                        provider_count = self.providers.len(),
+                                        active_tier = ?active_tier,
+                                        "Poller: provider registry rebuilt after tier change"
+                                    );
+                                }
+                                Ok(Err(error)) => {
+                                    tracing::error!(
+                                        ?active_tier,
+                                        %error,
+                                        "Poller: provider registry rebuild failed; retaining previous registry"
+                                    );
+                                }
+                                Err(_) => {
+                                    tracing::error!(
+                                        ?active_tier,
+                                        "Poller: provider registry rebuild panicked; retaining previous registry"
+                                    );
+                                }
+                            }
+                        }
+                        Some(Ok(Event::Shutdown)) => {
+                            tracing::info!("Poller: Shutdown event — exiting");
+                            return Ok(());
+                        }
+                        Some(Ok(_)) => {}
+                        Some(Err(broadcast::error::RecvError::Lagged(n))) => {
+                            tracing::warn!(skipped = n, "Poller: event channel lagged");
+                        }
+                        Some(Err(broadcast::error::RecvError::Closed)) | None => {
+                            events = None;
+                        }
                     }
                 }
             }
@@ -343,6 +426,15 @@ impl Poller {
     }
 }
 
+async fn recv_event(
+    events: &mut Option<broadcast::Receiver<Event>>,
+) -> Option<Result<Event, broadcast::error::RecvError>> {
+    match events.as_mut() {
+        Some(receiver) => Some(receiver.recv().await),
+        None => std::future::pending().await,
+    }
+}
+
 /// Clamp a requested poll interval to at least [`MIN_POLL_INTERVAL`] (T-3).
 fn clamp_interval(requested: Duration) -> Duration {
     if requested < MIN_POLL_INTERVAL {
@@ -376,9 +468,13 @@ mod tests {
     //!     (panic-catch)
 
     use super::*;
+    use sidebar_domain::event::{Event, Tier};
     use sidebar_domain::reading::{MetricKind, SensorId, Unit};
     use sidebar_sensor::descriptor::{CostClass, ProviderTier, SensorDescriptor};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    };
     use tokio::time::Duration;
 
     // ----- Fixtures (F4 mock providers, F10 panic provider) -----
@@ -477,6 +573,65 @@ mod tests {
             rx,
             clock: Arc::new(FakeClock::new(Instant::now())),
         }
+    }
+
+    #[tokio::test]
+    async fn tier_change_rebuilds_registry_once_and_publishes_full_provider() {
+        let mut h = harness();
+        let basic = stub("basic", || {
+            vec![reading("basic", "0", MetricKind::CpuUtilization)]
+        });
+        let full = stub("full", || {
+            vec![reading("full", "0", MetricKind::CpuTemperature)]
+        });
+        let rebuilds = Arc::new(AtomicUsize::new(0));
+        let rebuilds_for_builder = Arc::clone(&rebuilds);
+        let full_for_builder = Arc::clone(&full);
+        let builder = move |tier: ProviderTier| -> Result<Vec<Arc<dyn SensorProvider>>, String> {
+            rebuilds_for_builder.fetch_add(1, Ordering::SeqCst);
+            match tier {
+                ProviderTier::Full => Ok(vec![Arc::clone(&full_for_builder)]),
+                _ => Err("test builder only accepts Full".to_string()),
+            }
+        };
+
+        let (event_tx, event_rx) = broadcast::channel(8);
+        let poller = Poller::with_clock_raw(
+            vec![basic],
+            Duration::from_millis(10),
+            h.tx.clone(),
+            h.clock,
+        );
+        let shutdown = CancellationToken::new();
+        let cancel = shutdown.clone();
+        let run =
+            tokio::spawn(async move { poller.run_with_events(shutdown, event_rx, builder).await });
+
+        event_tx
+            .send(Event::TierChanged(Tier::Full))
+            .expect("event receiver is active");
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(250);
+        let mut saw_full = false;
+        while tokio::time::Instant::now() < deadline {
+            if let Ok(Ok(batch)) =
+                tokio::time::timeout(Duration::from_millis(30), h.rx.recv()).await
+            {
+                saw_full |= batch.iter().any(|r| r.sensor.category == "full");
+                if saw_full {
+                    break;
+                }
+            }
+        }
+        cancel.cancel();
+        run.await
+            .expect("poller task joins")
+            .expect("poller exits cleanly");
+
+        assert_eq!(rebuilds.load(Ordering::SeqCst), 1);
+        assert!(
+            saw_full,
+            "the next successful poll must use the rebuilt Full registry"
+        );
     }
 
     // ===== Happy Path #1: two providers × 2 readings → vec of 4, single timestamp =====
