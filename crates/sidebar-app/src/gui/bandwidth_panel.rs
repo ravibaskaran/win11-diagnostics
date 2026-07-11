@@ -186,6 +186,7 @@ mod tests {
             temp_unit: sidebar_domain::format::TempUnit::Celsius,
             raw_values: false,
             decimal_base: true,
+            hide_from_capture: false,
         }
     }
 
