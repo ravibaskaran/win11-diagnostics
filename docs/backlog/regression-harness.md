@@ -13,7 +13,7 @@ Every test in the workspace declares exactly one layer via a `#[TestCase]`-style
 | Layer | Folder / suffix | What it tests | Runner | Budget (T-40) |
 |---|---|---|---|---|
 | **L0 — Unit** | `crates/*/src/**.rs` inline `#[cfg(test)]` | Pure functions, type-level proofs, mock-based trait behavior. NO OS calls. | `cargo test --lib` per crate | 60 s total |
-| **L1 — Integration** | `crates/*/tests/*.rs` + `#[cfg(target_os="windows")]` | Real OS calls (WMI, GetIfEntry2, NVML, PDH, AppBar) on Windows CI. Hardware-dep tests `#[ignore]`. | `cargo test --test '*'` on `windows-latest` | 60 s total (excl. ignored) |
+| **L1 — Integration** | `crates/*/tests/*.rs` + `#[cfg(target_os="windows")]` | Real OS calls (LHM loopback HTTP, GetIfTable2, NVML, PDH, AppBar, capture affinity) on Windows CI. Hardware/UAC-dep tests `#[ignore]`. | `cargo test --test '*'` on `windows-latest` | 60 s total (excl. ignored) |
 | **L2 — UI snapshot** | `crates/sidebar-app/tests/snapshots/*.rs` + `insta` files | egui_kittest-rendered panels vs committed snapshots. | `cargo test --test ui_snapshots` | 30 s total |
 | **L3 — Bench (NFR)** | `benches/poll_cost.rs` + `benches/nfr_cold_start.rs` + `benches/nfr_rss.rs` | CPU%, cold-start, RSS thresholds. | `cargo bench --bench '*'` on Windows CI | 600 s total |
 | **L4 — Smoke (manual)** | `verify/smoke-checklist.md` | Transparency, dock edges, multi-monitor, UAC flow. NOT in CI. | Human + scriptable subset | Human-time |
