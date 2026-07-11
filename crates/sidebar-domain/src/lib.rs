@@ -18,6 +18,7 @@ pub mod error;
 pub mod event;
 pub mod format;
 pub mod graph;
+pub mod locale;
 pub mod reading;
 pub mod reposition;
 pub mod smooth;
