@@ -75,7 +75,7 @@ The swarm reads this file at task-startup to identify the ready set (stories who
 | 9.3 | pending | — | — | — | — |
 | 10.1 | partial | 2026-07-11T00Z | story-10.1 | L0:22 L1:4 | poll_cost Criterion bench (real 60s T-31 idle calibration, fail-closed) + parse_threshold parser (subtractive T-1/T-2 gate, 22 unit tests) + nfr_cold_start (T-7, non-ignored) + nfr_rss (T-4/T-5, #[ignore] 30s smoke) + nfr_sqlite_rss (T-6, NEW) + runtime_no_egress (G16, #[ignore] smoke). Production reference-hardware T-31 sign-off + full #[ignore] smoke CI run remain HITL-gated. |
 | 10.2 | pending | — | — | — | — |
-| 11.1 | pending | — | — | — | — |
+| 11.1 | merged | 2026-07-11T00Z | story-11.1 | L1:4 | regression-harness.md L0-L4 layer model + 8-pt DoD; regression_harness.rs 4 structural tests (CI job declarations, layer markers, Windows-only gating, CRLF-tolerant reader); verify/layer-smoke.ps1 L4 runner; CI has distinct lint/deny/audit/L0/L1/L3/lhm-hash jobs. L2 CI job + regression-report generator + cargo-llvm-cov gate are 11.2/11.3. |
 | 11.2 | pending | — | — | — | — |
 | 11.3 | pending | — | — | — | — |
 | 11.4 | pending | — | — | — | — |
