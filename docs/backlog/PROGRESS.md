@@ -86,7 +86,7 @@ The swarm reads this file at task-startup to identify the ready set (stories who
 | 12.5 | pending | — | — | — | Battery health + adapter identity/IP |
 | 12.6 | pending | — | — | — | Alert scope/actions |
 | 12.7 | pending | — | — | — | Localization (optional/deferred) |
-| 12.8 | pending | — | — | — | Epic 0–8 integration closure (status pill, BandwidthView, OHM monitor) |
+| 12.8 | partial | 2026-07-11T00Z | story-12.8 | L0:2 | Gap 2 (BandwidthView -> GUI via watch channel + producer in accountant + drain in logic) + Gap 3 (OHM liveness probe seam + one-shot Full->Basic degradation with latch) wired + tested. Gap 1 (status-pill -> launch_elevated) + production supervisor Arc-Mutex/Monitor-thread wiring + UAC smoke remain. |
 
 ## Summary
 - Total stories: 68 (60 current delivery rows, including INT, + 8 Epic 12 parity/closure stories)
