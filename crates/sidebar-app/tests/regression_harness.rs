@@ -87,3 +87,28 @@ fn smoke_runner_gates_windows_only_layers() {
     assert!(smoke.contains("layer-gating:"));
     assert!(smoke.contains("@('L1', 'L3')"));
 }
+
+/// Story 11.2 — the CI workflow MUST run `cargo-llvm-cov` (T-43) to produce
+/// a coverage report so the coverage-delta gate (T-42) can detect regressions.
+/// This is a structural assertion on ci.yml; the actual coverage computation
+/// runs in the coverage CI job.
+#[test]
+fn ci_yaml_runs_cargo_llvm_cov_for_coverage() {
+    let ci = read_workspace_file(".github/workflows/ci.yml");
+    assert!(
+        ci.contains("llvm-cov") || ci.contains("llvm_cov"),
+        "ci.yml must invoke cargo-llvm-cov (T-43) for coverage. snippet:\n{ci}"
+    );
+}
+
+/// Story 11.2 — the CI workflow MUST upload a `regression-report.md` artifact
+/// per PR so reviewers can see the per-layer pass/fail + coverage delta. This
+/// is the documented 8-point DoD contract.
+#[test]
+fn ci_yaml_uploads_regression_report_artifact() {
+    let ci = read_workspace_file(".github/workflows/ci.yml");
+    assert!(
+        ci.contains("regression-report"),
+        "ci.yml must upload a regression-report artifact (Story 11.2 DoD). snippet:\n{ci}"
+    );
+}

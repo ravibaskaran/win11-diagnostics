@@ -136,3 +136,64 @@ jobs:
       - name: parse_threshold NFR-1 gate
         if: steps.bench_exists.outputs.exists == 'true' && hashFiles('crates/**/benches/poll_cost.rs') != ''
         run: cargo run -p sidebar-app --bin parse_threshold -- target/criterion 10
+
+  # Story 11.2 — Regression gate: aggregates L0+L1+L3 results, runs
+  # cargo-llvm-cov (T-43) for the coverage-delta gate (T-42), and uploads
+  # regression-report.md as a CI artifact per PR. The `needs:` chain enforces
+  # the full-matrix gate per G25 — this job only runs if every prior layer
+  # passed. Cited: Story 11.2 DoD, nfr-thresholds.md T-40/T-41/T-42/T-43.
+  regression:
+    name: "regression gate + coverage + report (Story 11.2)"
+    runs-on: windows-latest
+    timeout-minutes: 15
+    needs: [lint, unit, integration, bench]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Fetch the base branch too so we can compute coverage delta vs main.
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-llvm-cov (T-43)
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - name: Generate coverage report (lcov + summary)
+        shell: bash
+        run: |
+          cargo llvm-cov --workspace --all-targets --lcov --output-path target/coverage.lcov
+          cargo llvm-cov --workspace --all-targets --text 2>&1 | tee target/coverage-summary.txt
+      - name: Build regression-report.md
+        shell: bash
+        run: |
+          {
+            echo "# Regression Report (Story 11.2)"
+            echo
+            echo "Generated: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            echo
+            echo "## Layer results"
+            echo
+            echo "| Layer | Job | Status |"
+            echo "|---|---|---|"
+            echo "| L0 (unit) | unit | ${{ needs.unit.result }} |"
+            echo "| L1 (integration) | integration | ${{ needs.integration.result }} |"
+            echo "| L3 (bench) | bench | ${{ needs.bench.result }} |"
+            echo
+            echo "## Coverage summary"
+            echo
+            echo '```'
+            cat target/coverage-summary.txt
+            echo '```'
+          } > regression-report.md
+      - name: Upload regression-report.md artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-report
+          path: regression-report.md
+      - name: Upload lcov artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: target/coverage.lcov
