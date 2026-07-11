@@ -16,6 +16,7 @@ pub mod progress_parser;
 pub mod provider_registry;
 pub mod shutdown;
 pub mod tier_probe;
+pub mod updater;
 
 /// Story 0.1 smoke marker (kept for the workspace-shape test contract).
 #[must_use]
