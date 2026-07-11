@@ -1,8 +1,8 @@
 //! SQLite schema initialization for the bandwidth state store.
 //!
-//! Story 4.1 — `init()` creates the two tables (`current_cycle`,
-//! `bandwidth_history`) defined in architecture.md AD-11, sets the
-//! `user_version = 1` / `journal_mode = WAL` / `foreign_keys = ON` PRAGMAs,
+//! Story 4.1 — `init()` creates the state tables (`current_cycle`,
+//! `bandwidth_history`, and singleton `current_cycle_metadata`), sets the
+//! `user_version = 2` / `journal_mode = WAL` / `foreign_keys = ON` PRAGMAs,
 //! and is idempotent (safe to call repeatedly).
 //!
 //! Cited:
@@ -17,8 +17,9 @@ use sidebar_domain::error::{Error, Result};
 
 /// Initialize the bandwidth-state schema on `conn`.
 ///
-/// Creates `current_cycle` + `bandwidth_history` (per AD-11) and sets the
-/// `user_version = 1`, `journal_mode = WAL`, `foreign_keys = ON` PRAGMAs.
+/// Creates `current_cycle`, `bandwidth_history`, and the singleton
+/// `current_cycle_metadata` rule record, then sets the
+/// `user_version = 2`, `journal_mode = WAL`, `foreign_keys = ON` PRAGMAs.
 /// Idempotent — uses `CREATE TABLE IF NOT EXISTS` and re-asserts PRAGMAs.
 /// WAL autocheckpoint is left at the SQLite default (1000 pages) per T-17.
 ///
@@ -38,7 +39,7 @@ use sidebar_domain::error::{Error, Result};
 /// None — this function never panics.
 pub fn init(conn: &Connection) -> Result<()> {
     // foreign_keys is per-connection; set it first so any subsequent
-    // CREATE benefits. (No FK constraints in v1, but the PRAGMA is part
+    // CREATE benefits. (No FK constraints in v2, but the PRAGMA is part
     // of the AD-11 contract and defends Stories 4.2/4.3 additions.)
     conn.pragma_update(None, "foreign_keys", "ON")
         .map_err(|e| Error::Sqlite(e.to_string()))?;
@@ -68,7 +69,12 @@ pub fn init(conn: &Connection) -> Result<()> {
             archived_at    TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_history_luid_cycle
-            ON bandwidth_history(adapter_luid, cycle_start);",
+            ON bandwidth_history(adapter_luid, cycle_start);
+        CREATE TABLE IF NOT EXISTS current_cycle_metadata (
+            id             INTEGER PRIMARY KEY CHECK (id = 1),
+            cycle_start    TEXT NOT NULL,
+            cycle_start_rule TEXT NOT NULL
+        );",
     )
     .map_err(|e| Error::Sqlite(e.to_string()))?;
 
@@ -85,10 +91,10 @@ pub fn init(conn: &Connection) -> Result<()> {
         )));
     }
 
-    // user_version = 1. Schema-version stamp for future migrations
+    // user_version = 2. Schema-version stamp for future migrations
     // (AD-11: "trivial schema migration via user_version PRAGMA").
-    // Setting it again on an already-v1 DB is a no-op → F6 idempotent.
-    conn.pragma_update(None, "user_version", 1)
+    // Setting it again on an already-v2 DB is a no-op → F6 idempotent.
+    conn.pragma_update(None, "user_version", 2)
         .map_err(|e| Error::Sqlite(e.to_string()))?;
 
     // wal_autocheckpoint is intentionally NOT overridden — T-17 mandates
@@ -124,19 +130,19 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // Happy Path #1 — user_version is set to 1 (RED: stub leaves it 0).
+    // Happy Path #1 — user_version is set to 2 (RED: stub leaves it 0).
     // -----------------------------------------------------------------
     /// Cited: Story 4.1 TDD contract Happy Path #1, AD-11, fixture F1.
     #[test]
-    fn init_sets_user_version_to_1() {
+    fn init_sets_user_version_to_2() {
         let (conn, _dir) = open_temp();
         init(&conn).expect("init must succeed on a fresh DB");
         let user_version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("PRAGMA user_version must query");
         assert_eq!(
-            user_version, 1,
-            "user_version MUST be 1 after init (AD-11); got {user_version}"
+            user_version, 2,
+            "user_version MUST be 2 after init; got {user_version}"
         );
     }
 
@@ -172,7 +178,7 @@ mod tests {
         let user_version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("PRAGMA user_version must query after second init");
-        assert_eq!(user_version, 1, "user_version still 1 after second init");
+        assert_eq!(user_version, 2, "user_version still 2 after second init");
     }
 
     // -----------------------------------------------------------------

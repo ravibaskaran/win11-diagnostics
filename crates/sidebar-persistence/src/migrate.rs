@@ -4,12 +4,13 @@
 //! sequence of registered migrations (each in its own transaction) to bring
 //! the schema up to the latest known version. The registry is an explicit,
 //! ordered slice of `fn(&Connection) -> Result<()>` indexed by *target*
-//! version — i.e. `MIGRATIONS[0]` is the v0→v1 step.
+//! version — i.e. `MIGRATIONS[0]` is the v0→v1 step and `MIGRATIONS[1]`
+//! is the v1→v2 step.
 //!
 //! ## Relationship to [`crate::schema::init`]
 //!
-//! Story 4.1's [`crate::schema::init()`] creates the v1 tables and *also*
-//! stamps `user_version = 1`. The v0→v1 migration step therefore runs the
+//! Story 4.1's [`crate::schema::init()`] creates the v2 tables and *also*
+//! stamps `user_version = 2`. The v0→v1 migration step therefore runs the
 //! *same* DDL — it does not call `schema::init()` directly, because:
 //!   1. `schema::init()` sets `journal_mode = WAL` via a separate statement
 //!      that cannot run inside a migration transaction (PRAGMA
@@ -22,15 +23,16 @@
 //!
 //! The v0→v1 migration thus re-issues the verbatim AD-11 DDL (`CREATE TABLE
 //! IF NOT EXISTS current_cycle / bandwidth_history`, the
-//! `idx_history_luid_cycle` index) plus `PRAGMA user_version = 1`. A fresh
-//! DB that has already been through `schema::init()` reports
-//! `user_version = 1`, so [`migrate`] is a no-op on it (fixture F6).
+//! `idx_history_luid_cycle` index) plus `PRAGMA user_version = 1`. The
+//! v1→v2 migration adds the current-cycle rule metadata table. A fresh DB
+//! that has already been through `schema::init()` reports `user_version = 2`,
+//! so [`migrate`] is a no-op on it (fixture F6).
 //!
 //! ## Future versions
 //!
-//! When v2 lands (e.g. an `ALTER TABLE` on `bandwidth_history`), push the
-//! new step onto `MIGRATIONS` and bump `LATEST_USER_VERSION`. Existing v1
-//! DBs will run exactly one migration; v0 DBs will run two. The
+//! When v3 lands (e.g. an `ALTER TABLE` on `bandwidth_history`), push the
+//! new step onto `MIGRATIONS` and bump `LATEST_USER_VERSION`. Existing v2
+//! DBs will run exactly one migration; v0 DBs will run three. The
 //! registry pattern keeps each migration hermetic and individually
 //! testable.
 //!
@@ -57,7 +59,7 @@ use sidebar_domain::error::{Error, Result};
 /// "from the future" relative to this binary and is rejected (see
 /// Boundary #1) — the operator must upgrade the binary before touching
 /// such a DB.
-const LATEST_USER_VERSION: u32 = 1;
+const LATEST_USER_VERSION: u32 = 2;
 
 /// The ordered migration registry.
 ///
@@ -78,7 +80,7 @@ fn migrations() -> &'static [fn(&Connection) -> Result<()>] {
     // idempotent against a DB that already has the tables (e.g. one
     // previously initialized via `schema::init()` on an older build that
     // pre-dated `migrate()`).
-    &[migrate_v0_to_v1]
+    &[migrate_v0_to_v1, migrate_v1_to_v2]
 }
 
 /// Migrate the schema on `conn` up to [`LATEST_USER_VERSION`].
@@ -144,8 +146,8 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     //    without committing. The PRAGMA user_version = N at the end of each
     //    step advances the stamp atomically with the DDL.
     let registry = migrations();
-    // `current` is bounded above by `LATEST_USER_VERSION` (u32, currently 1)
-    // and `registry.len()` is tiny (1 entry per schema version), so the
+    // `current` is bounded above by `LATEST_USER_VERSION` (u32, currently 2)
+    // and `registry.len()` is tiny (one entry per schema version), so the
     // skip count and target version never overflow u32 in practice. The
     // `try_from` calls below defend against a pathological registry size
     // and keep clippy's cast lints quiet without `allow` attributes.
@@ -232,6 +234,24 @@ fn migrate_v0_to_v1(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// v1 → v2: add current-cycle rule metadata and stamp `user_version = 2`.
+///
+/// This migration is intentionally additive so it works for both databases
+/// produced by the original v1 build (which lack the metadata table) and
+/// databases initialized by an intermediate build that already created it.
+fn migrate_v1_to_v2(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS current_cycle_metadata (
+            id               INTEGER PRIMARY KEY CHECK (id = 1),
+            cycle_start      TEXT NOT NULL,
+            cycle_start_rule TEXT NOT NULL
+        );
+        PRAGMA user_version = 2;",
+    )
+    .map_err(|e| Error::Sqlite(e.to_string()))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     //! Story 4.3 TDD contract tests.
@@ -269,29 +289,30 @@ mod tests {
 
     // -----------------------------------------------------------------
     // Happy Path #1 — empty DB (user_version = 0) → migrate →
-    // user_version = 1, and the AD-11 tables exist. RED: stub leaves
+    // user_version = 2, and all current schema tables exist.
     // user_version at 0.
     // -----------------------------------------------------------------
     /// Cited: Story 4.3 TDD contract Happy Path #1, AD-11, fixture F1.
     #[test]
-    fn migrate_v0_db_to_v1() {
+    fn migrate_v0_db_to_v2() {
         let (conn, _dir) = open_temp();
         migrate(&conn).expect("migrate on a fresh v0 DB must succeed");
         assert_eq!(
             user_version(&conn),
-            1,
-            "user_version MUST be 1 after migrate (AD-11)"
+            2,
+            "user_version MUST be 2 after migrate"
         );
-        // AD-11 tables must exist and be queryable.
+        // All schema tables must exist and be queryable.
         let n_tables: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master \
-                 WHERE type = 'table' AND name IN ('current_cycle', 'bandwidth_history')",
+                 WHERE type = 'table' AND name IN \
+                 ('current_cycle', 'bandwidth_history', 'current_cycle_metadata')",
                 [],
                 |row| row.get(0),
             )
             .expect("sqlite_master query must succeed");
-        assert_eq!(n_tables, 2, "both AD-11 tables MUST exist after migrate");
+        assert_eq!(n_tables, 3, "all schema tables MUST exist after migrate");
         // The index from AD-11 must exist too.
         let has_index: i64 = conn
             .query_row(
@@ -305,26 +326,61 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // Happy Path #2 — already-v1 DB → migrate → no-op (F6 idempotency).
-    // RED: stub is trivially idempotent, so this passes in RED too; but
-    // it is load-bearing once the registry grows past v1 (the LATEST
-    // check would then re-enter the loop).
+    // Happy Path #2 — existing v1 DB → migrate → v2, including the
+    // metadata table added by the new migration.
     // -----------------------------------------------------------------
     /// Cited: Story 4.3 TDD contract Happy Path #2, fixture F6.
     #[test]
-    fn migrate_on_v1_db_is_no_op() {
+    fn migrate_existing_v1_db_to_v2() {
         let (conn, _dir) = open_temp();
-        // First migrate: v0 → v1.
-        migrate(&conn).expect("first migrate must succeed");
-        let after_first = user_version(&conn);
-        assert_eq!(after_first, 1, "first migrate must land at v1");
-        // Second migrate: must be a no-op (F6).
-        migrate(&conn).expect("second migrate MUST succeed (F6 idempotency)");
+        // Simulate a legacy v1 database created before cycle-rule metadata
+        // was introduced: tables exist, metadata does not, and the version
+        // stamp is 1.
+        conn.execute_batch(
+            "CREATE TABLE current_cycle (
+                adapter_luid INTEGER PRIMARY KEY,
+                adapter_name TEXT NOT NULL,
+                cycle_start TEXT NOT NULL,
+                rx_bytes INTEGER NOT NULL DEFAULT 0,
+                tx_bytes INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE bandwidth_history (
+                rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+                adapter_luid INTEGER NOT NULL,
+                adapter_name TEXT NOT NULL,
+                cycle_start TEXT NOT NULL,
+                cycle_end TEXT NOT NULL,
+                rx_bytes INTEGER NOT NULL,
+                tx_bytes INTEGER NOT NULL,
+                archived_at TEXT NOT NULL
+            );
+            CREATE INDEX idx_history_luid_cycle
+                ON bandwidth_history(adapter_luid, cycle_start);
+            PRAGMA user_version = 1;",
+        )
+        .expect("legacy v1 schema setup must succeed");
+        assert_eq!(user_version(&conn), 1, "test setup must land at v1");
+
+        migrate(&conn).expect("migrate from legacy v1 to v2 MUST succeed");
         let after_second = user_version(&conn);
         assert_eq!(
-            after_second, 1,
-            "user_version MUST remain 1 after a redundant migrate"
+            after_second, 2,
+            "user_version MUST advance to 2 after migrating a legacy v1 DB"
         );
+        let metadata_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master \
+                 WHERE type = 'table' AND name = 'current_cycle_metadata'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("metadata table lookup must succeed");
+        assert_eq!(metadata_exists, 1, "v1→v2 must create metadata table");
+
+        // The now-v2 database is idempotent on subsequent calls.
+        migrate(&conn).expect("migrate on v2 MUST be a no-op");
+        assert_eq!(user_version(&conn), 2, "user_version must remain 2");
     }
 
     // -----------------------------------------------------------------

@@ -8,6 +8,8 @@
 //!   existing).
 //! - [`load_current_cycle`] — return all `current_cycle` rows (R11: on startup
 //!   the accountant reads existing state via this fn).
+//! - [`save_current_cycle_metadata`] / [`load_current_cycle_metadata`] — retain
+//!   the active billing-rule key so Day(28) and month-end remain distinct.
 //! - [`archive_cycle`] — move `current_cycle` rows into `bandwidth_history`
 //!   (one transaction), then reset `current_cycle`.
 //! - [`prune_history`] — keep only the `keep` most-recent history rows per LUID
@@ -47,7 +49,7 @@
 use std::thread;
 use std::time::Duration;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use sidebar_domain::error::{Error, Result};
 
 /// Number of retry attempts when SQLite returns `SQLITE_BUSY` (T-12).
@@ -80,6 +82,56 @@ pub struct CurrentCycleRow {
     pub tx_bytes: i64,
     /// ISO timestamp of the last flush that touched this row.
     pub updated_at: String,
+}
+
+/// Persisted billing-rule metadata for the active current cycle. This is
+/// separate from adapter rows so a cycle with no adapters can still carry its
+/// rule, and so fixed Day(28) remains distinguishable from month-end across a
+/// restart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CurrentCycleMetadata {
+    /// ISO date of the cycle represented by the metadata.
+    pub cycle_start: String,
+    /// Stable rule key (`day:N` or `last_day_of_month`).
+    pub cycle_start_rule: String,
+}
+
+/// Save the active billing rule metadata (one singleton row).
+pub fn save_current_cycle_metadata(
+    conn: &Connection,
+    cycle_start: &str,
+    cycle_start_rule: &str,
+) -> Result<()> {
+    with_busy_retry(conn, |c| {
+        c.execute(
+            "INSERT INTO current_cycle_metadata (id, cycle_start, cycle_start_rule)
+             VALUES (1, ?1, ?2)
+             ON CONFLICT(id) DO UPDATE SET
+                cycle_start = excluded.cycle_start,
+                cycle_start_rule = excluded.cycle_start_rule",
+            rusqlite::params![cycle_start, cycle_start_rule],
+        )
+    })
+    .map(|_| ())
+}
+
+/// Load the active billing rule metadata, if present.
+pub fn load_current_cycle_metadata(conn: &Connection) -> Result<Option<CurrentCycleMetadata>> {
+    with_busy_retry(conn, |c| {
+        c.query_row(
+            "SELECT cycle_start, cycle_start_rule
+             FROM current_cycle_metadata
+             WHERE id = 1",
+            [],
+            |row| {
+                Ok(CurrentCycleMetadata {
+                    cycle_start: row.get(0)?,
+                    cycle_start_rule: row.get(1)?,
+                })
+            },
+        )
+        .optional()
+    })
 }
 
 /// Save accumulator state for one adapter into `current_cycle`.
@@ -365,7 +417,8 @@ mod tests {
     //!   - fixture F1 (TempDir), F6 (idempotency of schema::init)
 
     use super::{
-        archive_cycle, load_current_cycle, prune_history, save_accumulator, CurrentCycleRow,
+        archive_cycle, load_current_cycle, load_current_cycle_metadata, prune_history,
+        save_accumulator, save_current_cycle_metadata, CurrentCycleRow,
     };
     use rusqlite::Connection;
     use tempfile::TempDir;
@@ -659,6 +712,20 @@ mod tests {
             row.rx_bytes,
             row.tx_bytes,
             row.updated_at,
+        );
+    }
+
+    #[test]
+    fn current_cycle_metadata_round_trips_rule_key() {
+        let (conn, _dir) = open_temp();
+        save_current_cycle_metadata(&conn, "2024-02-28", "day:28")
+            .expect("metadata save must succeed");
+        assert_eq!(
+            load_current_cycle_metadata(&conn).expect("metadata load"),
+            Some(super::CurrentCycleMetadata {
+                cycle_start: "2024-02-28".to_string(),
+                cycle_start_rule: "day:28".to_string(),
+            })
         );
     }
 }
