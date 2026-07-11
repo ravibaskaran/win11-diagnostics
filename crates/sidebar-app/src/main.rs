@@ -196,6 +196,12 @@ fn main() -> eframe::Result {
     state.set_shutdown_signal(shutdown_signal.clone());
     let app = SidebarApp::with_config_path(state, config_path, wizard_active)
         .with_event_sender(event_channel.raw_tx.clone());
+    // Story 12.8 Gap 2 — wire the accountant's BandwidthView receiver.
+    let app = if let Some(rx) = background_tasks.bandwidth_view_rx.take() {
+        app.with_bandwidth_view_rx(rx)
+    } else {
+        app
+    };
 
     tracing::info!("sidebar binary launching — entering eframe GUI loop");
     let eframe_result = app.run("sidebar");
@@ -287,6 +293,10 @@ fn build_runtime() -> tokio::runtime::Runtime {
 struct BackgroundTaskHandles {
     poller: Option<tokio::task::JoinHandle<()>>,
     accountant: Option<std::thread::JoinHandle<()>>,
+    /// Story 12.8 Gap 2 — watch receiver for live BandwidthView from the
+    /// accountant thread. `None` when the wizard gate skipped the accountant.
+    bandwidth_view_rx:
+        Option<tokio::sync::watch::Receiver<Option<sidebar_bandwidth::view::BandwidthView>>>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -311,6 +321,7 @@ fn spawn_background_tasks(
         return BackgroundTaskHandles {
             poller: None,
             accountant: None,
+            bandwidth_view_rx: None,
         };
     }
     let poller = spawn_poller(
@@ -321,7 +332,7 @@ fn spawn_background_tasks(
         readings_tx,
         event_rx_for_poller,
     );
-    let accountant = spawn_accountant(
+    let (accountant, bandwidth_view_rx) = spawn_accountant(
         readings_rx_for_accountant,
         cancel.clone(),
         config_dir,
@@ -331,6 +342,7 @@ fn spawn_background_tasks(
     BackgroundTaskHandles {
         poller: Some(poller),
         accountant: Some(accountant),
+        bandwidth_view_rx,
     }
 }
 
@@ -382,15 +394,30 @@ fn spawn_accountant(
     config_dir: &Path,
     cycle_start_day: &sidebar_domain::config::CycleStartDaySerde,
     flush_flag: Arc<AtomicBool>,
-) -> std::thread::JoinHandle<()> {
+) -> (
+    std::thread::JoinHandle<()>,
+    Option<tokio::sync::watch::Receiver<Option<sidebar_bandwidth::view::BandwidthView>>>,
+) {
     let db_path = config_dir.join("bandwidth.db");
     let cycle_day = sidebar_domain::billing::CycleStartDay::from(cycle_start_day);
-    std::thread::Builder::new()
+    // Story 12.8 Gap 2 — create the watch pair here so the receiver can be
+    // returned to the GUI thread. The sender moves into the accountant.
+    let (view_tx, view_rx) =
+        tokio::sync::watch::channel::<Option<sidebar_bandwidth::view::BandwidthView>>(None);
+    let accountant_handle = std::thread::Builder::new()
         .name("sidebar-accountant".to_string())
         .spawn(move || {
-            run_accountant_on_thread(readings_rx, cancel, &db_path, cycle_day, flush_flag);
+            run_accountant_on_thread(
+                readings_rx,
+                cancel,
+                &db_path,
+                cycle_day,
+                flush_flag,
+                view_tx,
+            );
         })
-        .expect("failed to spawn accountant thread")
+        .expect("failed to spawn accountant thread");
+    (accountant_handle, Some(view_rx))
 }
 
 /// Open the SQLite connection + run the accountant on a current-thread
@@ -402,6 +429,7 @@ fn run_accountant_on_thread(
     db_path: &Path,
     cycle_day: sidebar_domain::billing::CycleStartDay,
     flush_flag: Arc<AtomicBool>,
+    view_tx: tokio::sync::watch::Sender<Option<sidebar_bandwidth::view::BandwidthView>>,
 ) {
     let conn = match rusqlite::Connection::open(db_path) {
         Ok(c) => c,
@@ -429,7 +457,8 @@ fn run_accountant_on_thread(
         conn,
         Box::new(SystemClock::new()),
         accountant_config,
-    );
+    )
+    .with_view_sender(view_tx);
     let local_rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

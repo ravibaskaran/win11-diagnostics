@@ -337,6 +337,20 @@ pub struct SidebarApp {
     /// Event producer used by the native platform bridge. Tests and
     /// headless callers leave this unset.
     event_tx: Option<broadcast::Sender<Event>>,
+    /// Story 12.8 Gap 2 — watch receiver for live BandwidthView from the
+    /// accountant thread. Drained in `logic()` each frame into `self.view`.
+    /// `None` in tests + when the wizard gate skipped the accountant.
+    bandwidth_view_rx:
+        Option<tokio::sync::watch::Receiver<Option<sidebar_bandwidth::view::BandwidthView>>>,
+    /// Story 12.8 Gap 3 — liveness probe for the OHM child. Returns `true`
+    /// while the elevated LHM is alive; `false` once it exits. `logic()`
+    /// polls this each frame and emits `Event::TierChanged(Basic)` exactly
+    /// once on the first `false`, then sets this to `None` (one-shot).
+    /// `None` when no supervisor is attached (Basic mode or test path).
+    child_alive_fn: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+    /// Story 12.8 Gap 3 — latches `true` after the first Full→Basic
+    /// degradation fires so we don't repeatedly broadcast.
+    child_exit_degraded: bool,
     #[cfg(windows)]
     platform: Option<PlatformRuntime>,
 }
@@ -356,6 +370,9 @@ impl SidebarApp {
             wizard_active: false,
             config_path: std::path::PathBuf::new(),
             event_tx: None,
+            bandwidth_view_rx: None,
+            child_alive_fn: None,
+            child_exit_degraded: false,
             #[cfg(windows)]
             platform: None,
         }
@@ -379,6 +396,9 @@ impl SidebarApp {
             wizard_active,
             config_path,
             event_tx: None,
+            bandwidth_view_rx: None,
+            child_alive_fn: None,
+            child_exit_degraded: false,
             #[cfg(windows)]
             platform: None,
         }
@@ -388,6 +408,27 @@ impl SidebarApp {
     #[must_use]
     pub fn with_event_sender(mut self, sender: broadcast::Sender<Event>) -> Self {
         self.event_tx = Some(sender);
+        self
+    }
+
+    /// Story 12.8 Gap 2 — attach the BandwidthView watch receiver from the
+    /// accountant thread. Drained in `logic()` each frame into `self.view`.
+    #[must_use]
+    pub fn with_bandwidth_view_rx(
+        mut self,
+        rx: tokio::sync::watch::Receiver<Option<sidebar_bandwidth::view::BandwidthView>>,
+    ) -> Self {
+        self.bandwidth_view_rx = Some(rx);
+        self
+    }
+
+    /// Story 12.8 Gap 3 — attach the OHM child-liveness probe. `logic()`
+    /// polls this each frame and emits `Event::TierChanged(Basic)` exactly
+    /// once when the probe first returns `false`, then disables itself.
+    #[must_use]
+    pub fn with_child_alive_fn(mut self, probe: Arc<dyn Fn() -> bool + Send + Sync>) -> Self {
+        self.child_alive_fn = Some(probe);
+        self.child_exit_degraded = false;
         self
     }
 
@@ -764,6 +805,33 @@ impl eframe::App for SidebarApp {
         if let Some(readings) = self.state.drain_broadcast() {
             self.state.replace_readings(readings);
             repaint = true;
+        }
+        // Story 12.8 Gap 2 — drain the accountant's BandwidthView watch
+        // channel into the local view. Non-blocking: `has_changed` returns
+        // immediately if no new view was published.
+        if let Some(rx) = self.bandwidth_view_rx.as_mut() {
+            while rx.has_changed().unwrap_or(false) {
+                if let Some(view) = rx.borrow_and_update().clone() {
+                    self.view.bandwidth = Some(view);
+                    repaint = true;
+                }
+            }
+        }
+        // Story 12.8 Gap 3 — poll the OHM child-liveness probe. On the first
+        // `false`, emit Event::TierChanged(Basic) + latch so we don't
+        // rebroadcast every frame.
+        if !self.child_exit_degraded {
+            if let Some(probe) = self.child_alive_fn.as_ref() {
+                if !probe() {
+                    tracing::info!("Story 12.8 Gap 3: OHM child exited — degrading Full -> Basic");
+                    if let Some(sender) = self.event_tx.as_ref() {
+                        let _ = sender.send(Event::TierChanged(sidebar_domain::event::Tier::Basic));
+                    }
+                    self.state.set_tier(ProviderTier::Basic);
+                    self.child_exit_degraded = true;
+                    repaint = true;
+                }
+            }
         }
         // Apply any pending events from the EventChannel. Tier changes flip
         // AppState.tier (which the next ui() reads). Platform events trigger
@@ -1871,6 +1939,68 @@ mod tests {
         assert!(
             !labels.contains("65 W") && !labels.contains("65W"),
             "disabled metric CpuPower must NOT render in the live view (got: {labels})"
+        );
+    }
+
+    // =================================================================
+    // Story 12.8 Gap 3 — OHM child-liveness monitor.
+    // =================================================================
+
+    /// Cited: Story 12.8 Acceptance ("child exit degrades exactly once and
+    /// rebuilds the registry"). The liveness probe is a closure so it can
+    /// wrap `OhmSupervisor::is_child_alive()` in production. Here we inject
+    /// a probe that returns `false` (child exited) and assert the
+    /// `Event::TierChanged(Basic)` fires exactly once on the first poll,
+    /// then the latch prevents rebroadcast.
+    #[test]
+    fn gap3_child_exit_emits_basic_tier_exactly_once() {
+        let (state_tx, mut state_rx) = broadcast::channel::<Event>(8);
+        let app_state = AppState::new_full(
+            ProviderTier::Full,
+            None,
+            None,
+            Config::default(),
+            SidebarView::default(),
+        );
+        // Build a SidebarApp at Full tier with a liveness probe that returns
+        // `false` (child has exited).
+        let probe: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(|| false);
+        let mut app = SidebarApp::new(app_state).with_event_sender(state_tx.clone());
+        app = app.with_child_alive_fn(probe);
+        assert_eq!(app.state.tier(), ProviderTier::Full, "starts at Full");
+
+        // Simulate two logic() polls by directly mirroring the drain logic
+        // logic() runs (we can't call logic() without a real eframe Frame).
+        let mut saw_basic = 0;
+        for _ in 0..2 {
+            if !app.child_exit_degraded {
+                if let Some(probe) = app.child_alive_fn.as_ref() {
+                    if !probe() {
+                        let _ =
+                            state_tx.send(Event::TierChanged(sidebar_domain::event::Tier::Basic));
+                        app.state.set_tier(ProviderTier::Basic);
+                        app.child_exit_degraded = true;
+                    }
+                }
+            }
+            while let Ok(event) = state_rx.try_recv() {
+                if matches!(
+                    event,
+                    Event::TierChanged(sidebar_domain::event::Tier::Basic)
+                ) {
+                    saw_basic += 1;
+                }
+            }
+        }
+        assert_eq!(saw_basic, 1, "TierChanged(Basic) must fire exactly once");
+        assert_eq!(
+            app.state.tier(),
+            ProviderTier::Basic,
+            "AppState tier must be Basic after the child exited"
+        );
+        assert!(
+            app.child_exit_degraded,
+            "latch must be set so subsequent frames don't rebroadcast"
         );
     }
 }

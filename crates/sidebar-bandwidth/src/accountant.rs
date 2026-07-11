@@ -63,6 +63,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::accumulator::{AccEntry, MonthlyAccumulator};
 use crate::clock::Clock;
+use crate::view::{build_view, BandwidthView, HistoryRow};
 
 /// Configuration for the accountant — injected at construction time so tests
 /// can drive the debounce interval + billing cycle independently of real
@@ -115,6 +116,10 @@ pub struct BandwidthAccountant {
     accumulator: MonthlyAccumulator,
     cycle_start: NaiveDate,
     active_cycle_start_day: CycleStartDay,
+    /// Story 12.8 Gap 2 — optional watch channel for publishing BandwidthView
+    /// snapshots to the GUI after each flush. `None` in tests/older callers
+    /// that don't need the live view.
+    view_tx: Option<tokio::sync::watch::Sender<Option<BandwidthView>>>,
 }
 
 impl BandwidthAccountant {
@@ -244,7 +249,23 @@ impl BandwidthAccountant {
             accumulator,
             cycle_start,
             active_cycle_start_day,
+            view_tx: None,
         }
+    }
+
+    /// Story 12.8 Gap 2 — attach a watch sender for publishing BandwidthView
+    /// snapshots to the GUI. After each flush (debounce tick, shutdown, or
+    /// broadcast close), the accountant calls `build_view` with the current
+    /// accumulator + cycle_end, and sends `Some(view)` on the channel. The
+    /// caller creates the `(sender, receiver)` pair via `tokio::sync::watch`
+    /// and passes the sender here; the receiver is wired into the GUI.
+    #[must_use]
+    pub fn with_view_sender(
+        mut self,
+        sender: tokio::sync::watch::Sender<Option<BandwidthView>>,
+    ) -> Self {
+        self.view_tx = Some(sender);
+        self
     }
 
     /// Run the accountant task until the shutdown token fires OR the
@@ -276,12 +297,14 @@ impl BandwidthAccountant {
                 () = shutdown.cancelled() => {
                     tracing::info!("BandwidthAccountant: shutdown signal — final flush");
                     self.flush();
+                    self.publish_view();
                     return Ok(());
                 }
                 // Debounce timer fired (T-15): flush + check rollover.
                 _ = debounce.tick() => {
                     self.check_rollover();
                     self.flush();
+                    self.publish_view();
                 }
                 // Broadcast message: filter + accumulate.
                 recv = self.rx.recv() => {
@@ -307,12 +330,47 @@ impl BandwidthAccountant {
                                 "BandwidthAccountant: broadcast closed (poller exit) — final flush"
                             );
                             self.flush();
+                            self.publish_view();
                             return Ok(());
                         }
                     }
                 }
             }
         }
+    }
+
+    /// Story 12.8 Gap 2 — publish a BandwidthView snapshot on the watch
+    /// channel (if attached). Called after each flush so the GUI sees the
+    /// freshest totals. G15: errors (dropped receiver) are logged + swallowed
+    /// — the accountant continues regardless.
+    ///
+    /// History rows are omitted in this first cut (no `load_history` exists
+    /// in persistence yet); the GUI shows current-cycle totals only. A
+    /// follow-up Story 12.x can extend persistence with a history loader and
+    /// pass real history here.
+    fn publish_view(&self) {
+        let Some(tx) = &self.view_tx else {
+            return; // No GUI consumer attached.
+        };
+        // Compute cycle_end from the active rule + current cycle_start.
+        let cycle_end = cycle_end(
+            self.active_cycle_start_day,
+            self.cycle_start.year(),
+            self.cycle_start.month(),
+        );
+        let Some(cycle_end_date) = cycle_end else {
+            tracing::warn!("publish_view: cycle_end() returned None; skipping");
+            return;
+        };
+        let history: Vec<HistoryRow> = Vec::new(); // TODO Story 12.x: load persisted history.
+        let view = build_view(
+            &self.accumulator,
+            &history,
+            cycle_end_date,
+            self.clock.as_ref(),
+        );
+        // send errors only when ALL receivers were dropped; harmless.
+        let _ = tx.send(Some(view));
     }
 
     /// Filter a tick's readings into the accumulator. Pure apart from the
@@ -760,6 +818,47 @@ mod tests {
         assert_eq!(row.adapter_luid, 100_i64, "LUID 100 round-trips (T-26)");
         assert_eq!(row.rx_bytes, 500_i64, "rx_bytes = delta 1500-1000 = 500");
         assert_eq!(row.tx_bytes, 200_i64, "tx_bytes = delta 700-500 = 200");
+    }
+
+    // ---------------------------------------------------------------------
+    // Story 12.8 Gap 2 — BandwidthView published on watch channel.
+    //
+    // RED: the accountant's with_view_tx builder must publish a
+    // BandwidthView after each flush so the GUI can render live totals.
+    // Without the wiring, the watch receiver stays `None` forever.
+    // ---------------------------------------------------------------------
+    /// Cited: Story 12.8 Acceptance ("live bandwidth panel updates from
+    /// persisted/accounted state"), architecture.md section 6 flow H.
+    #[tokio::test]
+    async fn accountant_publishes_bandwidth_view_on_watch_channel() {
+        let h = harness(t0_dt(), 50);
+        // Attach the view channel (Story 12.8 Gap 2 producer).
+        let (view_tx, view_rx) = tokio::sync::watch::channel(None);
+        let accountant = h.accountant.with_view_sender(view_tx);
+        h.tx.send(net_readings(100, 1000, 500))
+            .expect("send tick 1 (baseline)");
+        h.tx.send(net_readings(100, 1500, 700))
+            .expect("send tick 2 (delta 500/200)");
+        drop(h.tx);
+
+        let result = tokio::time::timeout(Duration::from_secs(2), accountant.run(h.shutdown))
+            .await
+            .expect("accountant exits within 2s");
+        assert!(result.is_ok());
+
+        // The watch receiver MUST have observed a BandwidthView with the
+        // accumulated totals (Story 12.8 acceptance).
+        let borrowed = view_rx.borrow();
+        let view = borrowed
+            .as_ref()
+            .expect("watch channel must have received a BandwidthView");
+        assert!(
+            view.current
+                .iter()
+                .any(|nic| nic.luid == 100 && nic.rx_bytes == 500 && nic.tx_bytes == 200),
+            "BandwidthView.current must contain luid 100 with rx=500 tx=200; got {:?}",
+            view.current
+        );
     }
 
     // ---------------------------------------------------------------------
