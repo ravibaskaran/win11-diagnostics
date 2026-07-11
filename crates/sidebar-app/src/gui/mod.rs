@@ -1048,6 +1048,11 @@ pub fn render_sidebar(
     // surfaced as a tooltip inside the settings panel).
     ui.horizontal(|header| {
         status_pill::render(header, tier, &|| {});
+        // Story 12.1 — clock/date header. Locale-stable 24h HH:MM, rendered
+        // between the status pill and the gear. The wall-clock is read per-
+        // frame via chrono::Local (no network time source per Story 12.1).
+        let now = chrono::Local::now();
+        header.label(sidebar_domain::format::format_clock(now.time()));
         header.with_layout(egui::Layout::right_to_left(egui::Align::Center), |right| {
             let mut open = view.settings_open;
             let gear = right.checkbox(&mut open, "⚙");

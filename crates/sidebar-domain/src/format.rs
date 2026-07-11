@@ -242,6 +242,31 @@ pub fn format_battery(pct: u8, state: BatteryState) -> String {
 }
 
 // ===========================================================================
+// format_clock — Story 12.1 clock/date header (locale-stable local time).
+// ===========================================================================
+
+/// Format a local time as `HH:MM` (24-hour, zero-padded). Story 12.1.
+///
+/// Locale-stable per OQ-5: the clock display always uses 24-hour `HH:MM`
+/// regardless of the host's locale setting. The caller passes the wall-clock
+/// `NaiveTime` (typically `chrono::Local::now().time()`) so the function
+/// remains pure and testable without timezone mocking.
+///
+/// Cited: Story 12.1 DoD, PRD §3 (clock/date header), OQ-5 (locale-stable).
+#[must_use]
+pub fn format_clock(time: chrono::NaiveTime) -> String {
+    format!("{}", time.format("%H:%M"))
+}
+
+/// Format a local date as `YYYY-MM-DD`. Story 12.1.
+///
+/// Locale-stable ISO 8601 date format. The caller passes `chrono::NaiveDate`.
+#[must_use]
+pub fn format_clock_date(date: chrono::NaiveDate) -> String {
+    format!("{}", date.format("%Y-%m-%d"))
+}
+
+// ===========================================================================
 // Internal: scaled-number formatter (3 sig figs + SI prefix).
 // ===========================================================================
 
@@ -613,5 +638,28 @@ mod tests {
                 "T-30: format_hz({hz}) = {s:?}; mantissa {abs:?} has {sig_figs} sig figs (>3)"
             );
         }
+    }
+
+    // ----- Story 12.1: clock/date header -----
+
+    #[test]
+    fn format_clock_renders_24h_zero_padded() {
+        use chrono::NaiveTime;
+        let t = NaiveTime::from_hms_opt(14, 5, 0).unwrap();
+        assert_eq!(format_clock(t), "14:05");
+    }
+
+    #[test]
+    fn format_clock_midnight() {
+        use chrono::NaiveTime;
+        let t = NaiveTime::from_hms_opt(0, 0, 0).unwrap();
+        assert_eq!(format_clock(t), "00:00");
+    }
+
+    #[test]
+    fn format_clock_date_iso_8601() {
+        use chrono::NaiveDate;
+        let d = NaiveDate::from_ymd_opt(2026, 7, 11).unwrap();
+        assert_eq!(format_clock_date(d), "2026-07-11");
     }
 }
