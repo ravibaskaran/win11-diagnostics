@@ -18,6 +18,7 @@ pub mod event;
 pub mod format;
 pub mod graph;
 pub mod reading;
+pub mod reposition;
 pub mod smooth;
 pub mod snapshot;
 
