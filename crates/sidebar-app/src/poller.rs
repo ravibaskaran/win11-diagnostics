@@ -76,7 +76,7 @@ use std::time::{Duration, Instant};
 
 use sidebar_domain::event::{Event, Tier};
 use sidebar_domain::reading::Reading;
-use sidebar_sensor::descriptor::ProviderTier;
+use sidebar_sensor::descriptor::{ProviderTier, SensorDescriptor};
 use sidebar_sensor::provider::SensorProvider;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
@@ -84,24 +84,45 @@ use tokio_util::sync::CancellationToken;
 type RegistryBuilder =
     Arc<dyn Fn(ProviderTier) -> Result<Vec<Arc<dyn SensorProvider>>, String> + Send + Sync>;
 
+/// A spawned blocking-task handle for a provider's `read_all`. Factored out
+/// so the per-tick `Vec<(&str, Duration, ProviderHandle)>` stays readable.
+type ProviderHandle = tokio::task::JoinHandle<(
+    &'static str,
+    Result<Vec<Reading>, Box<dyn std::any::Any + Send>>,
+)>;
+
 /// Minimum poll interval (T-3). A configured interval below 1s is clamped
 /// up to this value — sub-second polling would saturate the blocking pool
 /// and blow the T-2 CPU budget.
 pub const MIN_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
-/// Per-provider call timeout (T-13). Every provider's `read_all` is
-/// awaited inside `tokio::time::timeout(PROVIDER_TIMEOUT, ...)`. A hung
-/// syscall (NVML driver stall, PDH deadlock, ureq socket hang) is aborted
-/// at this boundary; the provider contributes zero readings for the tick
-/// and a `warn!` is logged. The poller continues with the survivors.
+/// Per-provider call timeout for Full-tier providers (T-13). NVML/OHM
+/// syscalls that exceed this are aborted; the provider contributes zero
+/// readings for the tick.
 ///
-/// T-13 was originally documented as an NVML-only contract
-/// (`crates/sidebar-adapter-nvml/src/lib.rs:27-33`,
-/// `crates/sidebar-adapter-nvml/src/backend.rs:44-54` push the wrapper onto
-/// the poller), but a generic wrapper is correct for ALL blocking
-/// providers (sysinfo, PDH, OHM, net) — every adapter is a synchronous
-/// syscall susceptible to driver/network stalls. See H1 in the audit.
+/// T-13 was originally documented as NVML-only; Full-tier providers
+/// (NVML, OHM-LHM) carry the original 100ms contract.
 pub const PROVIDER_TIMEOUT: Duration = Duration::from_millis(100);
+
+/// Per-provider call timeout for Basic-tier providers (sysinfo, battery,
+/// PDH, net). These legitimately cost >100ms on the first cold poll
+/// (sysinfo cold-loads process/CPU/disk tables on first call; PDH opens
+/// counter handles). 500ms gives headroom for the cold path while still
+/// bounding a true hang. Subsequent polls are fast (well under 100ms).
+pub const PROVIDER_TIMEOUT_BASIC: Duration = Duration::from_millis(500);
+
+/// Pick the per-provider timeout based on the descriptor's declared tier.
+/// Basic/Both providers get the generous 500ms budget (cold-start cost);
+/// Full-tier providers (NVML, OHM) get the strict 100ms T-13 budget.
+///
+/// Cited: T-13 (NVML call timeout), Story 7.2 + H1 audit fix.
+#[must_use]
+pub fn provider_timeout(descriptor: &SensorDescriptor) -> Duration {
+    match descriptor.requires_tier {
+        ProviderTier::Full => PROVIDER_TIMEOUT,
+        ProviderTier::Basic | ProviderTier::Both => PROVIDER_TIMEOUT_BASIC,
+    }
+}
 
 /// Injectable monotonic clock. Returns `Instant` (the timestamp type on
 /// `Reading`). Production uses [`SystemInstantClock`]; tests inject a
@@ -363,10 +384,13 @@ impl Poller {
         // Spawn each provider's `read_all` on the blocking pool. The handles
         // are awaited in order; the spawn itself off-loads the blocking
         // syscall so the order of awaiting doesn't change wall-clock cost.
-        let mut handles = Vec::with_capacity(self.providers.len());
+        // Each handle carries its own per-provider timeout (tier-aware T-13).
+        let mut handles: Vec<(&'static str, Duration, ProviderHandle)> =
+            Vec::with_capacity(self.providers.len());
         for provider in &self.providers {
             let provider = Arc::clone(provider);
             let provider_name = provider.descriptor().name;
+            let timeout = provider_timeout(provider.descriptor());
             let handle = tokio::task::spawn_blocking(move || {
                 // SAFETY (G15, HITL — G11): `catch_unwind` requires the
                 // closure be `UnwindSafe`. `Arc<dyn SensorProvider>` is not
@@ -399,18 +423,23 @@ impl Poller {
                 let result = std::panic::catch_unwind(AssertUnwindSafe(|| provider.read_all()));
                 (provider.descriptor().name, result)
             });
-            // Keep the descriptor outside the blocking closure so timeout
-            // diagnostics still identify a provider whose synchronous call
-            // never returned.
-            handles.push((provider_name, handle));
+            // Keep the descriptor + per-provider timeout outside the blocking
+            // closure so timeout diagnostics still identify a provider whose
+            // synchronous call never returned, and the tier-aware deadline is
+            // applied per handle (not a single shared deadline).
+            handles.push((provider_name, timeout, handle));
         }
 
-        // Await all handles, concatenate survivors, stamp. T-13: all handles
-        // share one deadline. A timeout aborts only the async waiter; a
-        // started synchronous syscall may continue on Tokio's blocking pool.
+        // Await all handles, concatenate survivors, stamp. T-13 tier-aware:
+        // each handle gets its own deadline based on the provider's tier, but
+        // ALL deadlines are anchored to a single tick-start instant so serial
+        // awaits don't compound (4 hung Full-tier providers still abort at
+        // ~100ms total, not 400ms). Basic/Both providers get 500ms (cold-start
+        // headroom); Full providers get 100ms (strict T-13).
         let mut out: Vec<Reading> = Vec::new();
-        let deadline = tokio::time::Instant::now() + PROVIDER_TIMEOUT;
-        for (provider_name, mut handle) in handles {
+        let tick_start = tokio::time::Instant::now();
+        for (provider_name, timeout, mut handle) in handles {
+            let deadline = tick_start + timeout;
             match tokio::time::timeout_at(deadline, &mut handle).await {
                 // Within budget — inspect the inner result.
                 Ok(Ok((_name, Ok(readings)))) => {
@@ -442,11 +471,10 @@ impl Poller {
                     // limitation is intentionally documented rather than
                     // falsely claiming the blocking thread was reclaimed.
                     handle.abort();
-                    // `as_millis()` returns u128; PROVIDER_TIMEOUT is 100ms so
-                    // the cast to u64 is safe. Allow matches the shutdown.rs
-                    // pattern for the same u128→u64 budget cast.
+                    // `as_millis()` returns u128; the tier-aware timeout is
+                    // 100ms or 500ms so the cast to u64 is safe.
                     #[allow(clippy::cast_possible_truncation)]
-                    let timeout_ms = PROVIDER_TIMEOUT.as_millis() as u64;
+                    let timeout_ms = timeout.as_millis() as u64;
                     tracing::warn!(
                         provider = provider_name,
                         timeout_ms,
@@ -561,6 +589,18 @@ mod tests {
     ) -> Arc<dyn SensorProvider> {
         Arc::new(StubProvider {
             descriptor: leaked_descriptor(name),
+            read_fn: Arc::new(Mutex::new(Box::new(read_fn))),
+        })
+    }
+
+    /// Stub with a Full-tier descriptor (100ms T-13 budget). Use this for
+    /// tests that assert timeout behavior — Basic-tier stubs get 500ms.
+    fn stub_full(
+        name: &'static str,
+        read_fn: impl Fn() -> Vec<Reading> + Send + Sync + 'static,
+    ) -> Arc<dyn SensorProvider> {
+        Arc::new(StubProvider {
+            descriptor: leaked_descriptor_with_tier(name, ProviderTier::Full),
             read_fn: Arc::new(Mutex::new(Box::new(read_fn))),
         })
     }
@@ -918,9 +958,10 @@ mod tests {
     #[tokio::test]
     async fn hung_provider_is_timed_out_at_t13_budget() {
         let mut h = harness();
-        // Slow provider: sleeps 200ms inside read_all (simulates a hung
-        // NVML/PDH syscall). T-13 budget is 100ms.
-        let slow = stub("slow", || {
+        // Slow Full-tier provider: sleeps 200ms inside read_all (simulates a
+        // hung NVML syscall). T-13 Full-tier budget is 100ms. Use stub_full
+        // so the tier-aware timeout applies the strict 100ms budget.
+        let slow = stub_full("slow", || {
             std::thread::sleep(Duration::from_millis(200));
             vec![reading("slow", "0", MetricKind::CpuUtilization)]
         });
@@ -976,10 +1017,11 @@ mod tests {
     async fn multiple_hung_providers_share_one_tick_deadline() {
         let mut h = harness();
         let slow_names = ["slow0", "slow1", "slow2", "slow3"];
+        // Full-tier stubs so the tier-aware 100ms T-13 budget applies.
         let mut providers: Vec<Arc<dyn SensorProvider>> = slow_names
             .into_iter()
             .map(|name| {
-                stub(name, || {
+                stub_full(name, || {
                     std::thread::sleep(Duration::from_millis(250));
                     vec![reading(name, "0", MetricKind::CpuUtilization)]
                 })
@@ -1027,7 +1069,8 @@ mod tests {
         let h = harness();
         let completed = Arc::new(AtomicBool::new(false));
         let marker = Arc::clone(&completed);
-        let slow = stub("slow", move || {
+        // Full-tier stub so the 100ms T-13 budget applies (Basic gets 500ms).
+        let slow = stub_full("slow", move || {
             std::thread::sleep(Duration::from_millis(160));
             marker.store(true, Ordering::SeqCst);
             vec![reading("slow", "0", MetricKind::CpuUtilization)]
@@ -1164,5 +1207,92 @@ mod tests {
         //     runtime's worker threads (T-18).
         //   - catch_unwind prevents a panicking adapter from spinning.
         // No runtime assertion here — see Story 10.1 for the bench.
+    }
+
+    // ----- Tier-aware T-13 timeout (sysinfo cold-start fix) -----
+
+    /// A leaked descriptor with an explicit tier (for tier-aware timeout tests).
+    fn leaked_descriptor_with_tier(
+        name: &'static str,
+        tier: ProviderTier,
+    ) -> &'static SensorDescriptor {
+        Box::leak(Box::new(SensorDescriptor::new(
+            name,
+            CostClass::Lightweight,
+            &[MetricKind::CpuUtilization],
+            tier,
+        )))
+    }
+
+    /// Story T-13 tier-aware: a Basic-tier provider that sleeps 200ms (realistic
+    /// cold-start cost for sysinfo) MUST succeed — the Basic budget is 500ms.
+    /// The same sleep with a Full-tier descriptor MUST time out at 100ms.
+    #[tokio::test]
+    async fn tier_aware_timeout_basic_succeeds_full_times_out() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Instant;
+
+        // Basic-tier provider sleeping 200ms — should succeed under 500ms budget.
+        let basic_calls = Arc::new(AtomicUsize::new(0));
+        let basic_calls_clone = Arc::clone(&basic_calls);
+        let basic_provider = Arc::new(StubProvider {
+            descriptor: leaked_descriptor_with_tier("basic-slow", ProviderTier::Basic),
+            read_fn: Arc::new(Mutex::new(Box::new(move || {
+                basic_calls_clone.fetch_add(1, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(200));
+                vec![reading("basic-slow", "0", MetricKind::CpuUtilization)]
+            }))),
+        });
+        let (basic_tx, _basic_rx) = broadcast::channel::<Vec<Reading>>(8);
+        let basic_clock = Arc::new(FakeClock::new(Instant::now()));
+        let basic_poller = Poller::with_clock_raw(
+            vec![basic_provider],
+            Duration::from_mins(1),
+            basic_tx,
+            basic_clock,
+        );
+        let basic_start = Instant::now();
+        let basic_readings = basic_poller.tick().await;
+        let basic_elapsed = basic_start.elapsed();
+        assert!(
+            basic_readings
+                .iter()
+                .any(|r| r.sensor.category == "basic-slow"),
+            "Basic-tier 200ms provider MUST succeed (budget 500ms); got {:?} in {basic_elapsed:?}",
+            basic_readings.len()
+        );
+
+        // Full-tier provider sleeping 200ms — should time out at 100ms.
+        let full_provider = Arc::new(StubProvider {
+            descriptor: leaked_descriptor_with_tier("full-slow", ProviderTier::Full),
+            read_fn: Arc::new(Mutex::new(Box::new(move || {
+                std::thread::sleep(Duration::from_millis(200));
+                vec![reading("full-slow", "0", MetricKind::CpuUtilization)]
+            }))),
+        });
+        let (full_tx, _full_rx) = broadcast::channel::<Vec<Reading>>(8);
+        let full_clock = Arc::new(FakeClock::new(Instant::now()));
+        let full_poller = Poller::with_clock_raw(
+            vec![full_provider],
+            Duration::from_mins(1),
+            full_tx,
+            full_clock,
+        );
+        let full_start = Instant::now();
+        let full_readings = full_poller.tick().await;
+        let full_elapsed = full_start.elapsed();
+        assert!(
+            !full_readings
+                .iter()
+                .any(|r| r.sensor.category == "full-slow"),
+            "Full-tier 200ms provider MUST time out (budget 100ms); got readings in {full_elapsed:?}"
+        );
+        assert!(
+            full_elapsed < Duration::from_millis(200),
+            "Full-tier tick MUST abort around 100ms, not wait full 200ms; got {full_elapsed:?}"
+        );
+        // Suppress unused-warning for the basic_calls counter (it's for
+        // future introspection; the readings assertion is the load-bearing one).
+        let _ = basic_calls.load(Ordering::SeqCst);
     }
 }
