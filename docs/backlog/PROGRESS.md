@@ -78,7 +78,7 @@ The swarm reads this file at task-startup to identify the ready set (stories who
 | 11.1 | merged | 2026-07-11T00Z | story-11.1 | L1:4 | regression-harness.md L0-L4 layer model + 8-pt DoD; regression_harness.rs 4 structural tests (CI job declarations, layer markers, Windows-only gating, CRLF-tolerant reader); verify/layer-smoke.ps1 L4 runner; CI has distinct lint/deny/audit/L0/L1/L3/lhm-hash jobs. L2 CI job + regression-report generator + cargo-llvm-cov gate are 11.2/11.3. |
 | 11.2 | partial | 2026-07-11T00Z | story-11.2 | L1:2 | CI 'regression' job (needs lint+unit+integration+bench) runs cargo-llvm-cov (T-43), builds regression-report.md, uploads regression-report + lcov artifacts per PR. Deliberate-regression injection proof + coverage-delta-vs-main comparison step remain HITL-gated. |
 | 11.3 | merged | 2026-07-11T00Z | story-11.3 | L2:2 | Bootstrap snapshot (story_11_3_harness_bootstrap.rs renders 'sidebar snapshot harness OK' via egui_kittest, breaks 8.1<->11.3 cycle) + L2 CI job (ui-snapshots on windows-latest). insta .snap format + per-panel snapshots land with their GUI stories. |
-| 11.4 | pending | — | — | — | — |
+| 11.4 | merged | 2026-07-11T00Z | story-11.4 | L0:7 | PR-title parser (progress_parser.rs, 7 unit tests) + track-progress.yml CI job (Python mirror, git-auto-commit-action commit-back). Runs on PR merge; handles reverts via merge-commit message. Schema-change detection + multi-story PR multi-row emission remain HITL-gated. |
 | 12.1 | pending | — | — | — | Clock/date header parity (optional UX) |
 | 12.2 | pending | — | — | — | Per-metric graphs/history parity |
 | 12.3 | pending | — | — | — | Complete hotkey/reposition actions |
