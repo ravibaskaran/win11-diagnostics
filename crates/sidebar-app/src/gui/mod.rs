@@ -1103,6 +1103,52 @@ mod tests {
         assert!(called.get(), "enabled config must apply capture exclusion");
     }
 
+    #[test]
+    fn invalid_hwnd_skips_capture_exclusion_without_calling_api() {
+        use std::cell::Cell;
+        use windows::Win32::Foundation::HWND;
+
+        let called = Cell::new(false);
+        let result = configure_capture_exclusion_for_hwnd(HWND(std::ptr::null_mut()), |_| {
+            called.set(true);
+            Ok(())
+        });
+
+        assert!(
+            !result,
+            "invalid HWND must not report capture exclusion success"
+        );
+        assert!(
+            !called.get(),
+            "invalid HWND must not call the Win32 API seam"
+        );
+    }
+
+    #[test]
+    fn capture_api_failure_is_observable_without_false_success() {
+        use std::cell::Cell;
+        use windows::Win32::Foundation::HWND;
+
+        let called = Cell::new(false);
+        let display = sidebar_domain::config::DisplayConfig {
+            hide_from_capture: true,
+            ..Default::default()
+        };
+        let result = configure_capture_exclusion_for_display(
+            &display,
+            HWND(std::ptr::dangling_mut::<std::ffi::c_void>()),
+            |_| {
+                called.set(true);
+                Err(sidebar_domain::error::Error::Platform(
+                    "capture API unavailable".to_string(),
+                ))
+            },
+        );
+
+        assert!(called.get(), "enabled capture must invoke the API seam");
+        assert!(!result, "capture API failure must not report success");
+    }
+
     // ===== Happy Path #1: AppState with one CPU reading → "42%" + "CPU" =====
 
     #[test]
@@ -1219,6 +1265,38 @@ mod tests {
         let recovered = state.snapshot();
         assert_eq!(recovered.len(), 1);
         assert!((recovered[0].value - 42.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn repeated_poison_recovery_preserves_last_good_snapshot() {
+        let state = AppState::new(ProviderTier::Basic, None);
+        state.replace_readings(vec![reading(
+            MetricKind::CpuUtilization,
+            42.0,
+            Unit::Percent,
+        )]);
+        let _ = state.snapshot();
+
+        for attempt in 0..3 {
+            let state_for_poison = Arc::clone(&state);
+            let poisoned = std::thread::spawn(move || {
+                let mut guard = state_for_poison
+                    .readings
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                guard[0].value = 100.0 + f64::from(attempt);
+                panic!("intentional repeated poison for G15 contract");
+            })
+            .join();
+            assert!(poisoned.is_err(), "attempt {attempt} must poison the lock");
+
+            let recovered = state.snapshot();
+            assert_eq!(recovered.len(), 1);
+            assert!(
+                (recovered[0].value - 42.0).abs() < f64::EPSILON,
+                "attempt {attempt} must preserve the last-good snapshot"
+            );
+        }
     }
 
     // ===== Boundary #3: 1000 readings → truncation marker =====
