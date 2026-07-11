@@ -61,6 +61,12 @@ toml = { workspace = true }             # MIT/Apache-2.0 — parse Cargo.toml in
 mockall = { workspace = true }          # MIT/Apache-2.0 — MockHttpClient for tier_probe tests (Story 7.3)
 which = "7"                             # MIT — locate pwsh.exe in dev_env_scripts test
 egui_kittest = { workspace = true }     # MIT — headless egui test harness (F8, Story 8.1)
+criterion = { workspace = true }        # MIT/Apache-2.0 — NFR-1 criterion benches (Story 10.1)
+sysinfo = { workspace = true }           # MIT — real T-31 idle CPU calibration for benches
+
+[[bench]]
+name = "layer_smoke"
+harness = false
 
 [lints]
 workspace = true

@@ -54,7 +54,7 @@ Cross-references: PRD §6 (NFR statements), architecture.md §7 (testing strateg
 - **Cited by:** Story 10.1.
 
 ### T-8 — Cold-start, Full mode (NFR-3)
-- **Value:** `≤ 6000 ms` (includes OHM subprocess launch + first WMI round-trip).
+- **Value:** `≤ 6000 ms` (includes LHM subprocess launch + first HTTP `/data.json` round-trip).
 - **Note:** OHM's own startup dominates; we do not control it.
 
 ### T-9 — GUI frame budget
@@ -227,7 +227,7 @@ Cross-references: PRD §6 (NFR statements), architecture.md §7 (testing strateg
 ### T-45 — LHM HTTP port + fallback chain (added 2026-07-08 with AD-2 revision)
 - **Default port:** `17127`. Chosen because it is (a) above the IANA registered-and-reserved ranges (0–1023, plus Windows dynamic-excluded ranges), (b) below the ephemeral range Windows uses by default (49152–65535), (c) free on this dev machine (verified 2026-07-08 via `Get-NetTCPConnection` + `netsh interface ipv4 show excludedportrange`), (d) not a well-known application port.
 - **Fallback chain:** On launch, `OhmSupervisor` probes 17127; if occupied by a non-LHM service (HTTP response doesn't match LHM JSON signature) OR if the bind fails, it tries 17128, 17129, ... 17137 (10 candidates) and picks the first free one.
-- **Persistence:** The chosen port is written into `resources/LibreHardwareMonitor.config` (`ListenerPort` key) BEFORE launching LHM, so LHM binds the same port sidebar probed. The chosen port is also written into `config.toml` `[ohm] http_port` so subsequent launches prefer it.
+- **Persistence:** The chosen port is written into `resources/LibreHardwareMonitor.exe.config` BEFORE launching LHM (`runWebServerMenuItem=true`, lowercase `listenerPort=<port>`). The current launch path does not rewrite `config.toml`; the configured `[ohm] http_port` remains the initial probe preference.
 - **Out of fallback chain:** If all 10 candidates are occupied → Full mode is unavailable for this session; status pill shows "LHM port unavailable", tier = Basic, logged at `warn!`.
 - **Cited by:** AD-2 (revised), AD-7 (revised), Story 6.4, Story 7.3, Story 3.6 (consumes the resolved port), Story 1.5 (`[ohm] http_port` config).
 

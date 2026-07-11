@@ -1,16 +1,19 @@
 //! NFR-1 threshold parser for criterion bench output.
 //!
 //! Story 0.2 — parses criterion estimate JSON files and reports any group
-//! whose mean CPU% exceeds T-1 (0.5%). Cited:
+//! whose mean CPU% exceeds T-1 (0.5%) or T-2 (2.0% aggregate). Cited:
 //!   - Story 0.2 TDD contract (parse_threshold unit-tested)
 //!   - nfr-thresholds.md T-1 (0.5% CPU budget per provider)
+//!   - nfr-thresholds.md T-2 (2.0% CPU budget for the aggregate)
 //!   - architecture.md §7.3 (perf gate)
 //!
 //! ## Criterion JSON shape (estimate.json)
 //!
 //! ```json
 //! {
-//!   "mean": { "point_estimate": 1234567, "confidence_interval": {...} },
+//!   "mean": { "point_estimate": 1234567.0, "confidence_interval": {
+//!     "lower_bound": 1234560.0, "upper_bound": 1234570.0
+//!   } },
 //!   "median": {...},
 //!   "slope": {...},
 //!   "std_dev": {...}
@@ -28,13 +31,16 @@
 //! cpu_percent = (mean_ns / 1_000_000_000) / tick_seconds * 100
 //! ```
 //!
-//! i.e. what fraction of the tick was spent in the provider. Per T-1, this
-//! MUST be ≤ 0.5%.
+//! The parser subtracts the calibrated idle baseline from this measured value;
+//! provider groups MUST be ≤ T-1 (0.5%) and the aggregate group MUST be ≤ T-2
+//! (2.0%).
 
 use std::path::Path;
 
 /// T-1 threshold: max CPU% per provider per tick. From nfr-thresholds.md.
 pub const T1_MAX_CPU_PERCENT: f64 = 0.5;
+/// T-2 threshold: max aggregate CPU% per tick.
+pub const T2_MAX_CPU_PERCENT: f64 = 2.0;
 
 /// A single bench group's evaluation result.
 #[derive(Debug, Clone, PartialEq)]
@@ -45,7 +51,7 @@ pub struct GroupResult {
     pub mean_ns: f64,
     /// Computed CPU% given the tick window.
     pub cpu_percent: f64,
-    /// True if `cpu_percent` exceeds T-1.
+    /// True if `cpu_percent` exceeds the applicable T-1 or T-2 threshold.
     pub exceeded: bool,
 }
 
@@ -68,7 +74,7 @@ impl std::fmt::Display for Report {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(
             f,
-            "parse_threshold report (T-1 = {T1_MAX_CPU_PERCENT}% CPU):"
+            "parse_threshold report (T-1 = {T1_MAX_CPU_PERCENT}% provider, T-2 = {T2_MAX_CPU_PERCENT}% aggregate):"
         )?;
         for g in &self.groups {
             let status = if g.exceeded { "FAIL" } else { "ok  " };
@@ -82,9 +88,8 @@ impl std::fmt::Display for Report {
             let failures: Vec<&GroupResult> = self.groups.iter().filter(|g| g.exceeded).collect();
             write!(
                 f,
-                "NFR-1 violation: {} provider(s) exceeded {:.1}% CPU: {}",
+                "NFR-1 violation: {} group(s) exceeded threshold: {}",
                 failures.len(),
-                T1_MAX_CPU_PERCENT,
                 failures
                     .iter()
                     .map(|g| format!("{} ({:.3}%)", g.name, g.cpu_percent))
@@ -92,7 +97,11 @@ impl std::fmt::Display for Report {
                     .join(", ")
             )
         } else {
-            write!(f, "all {} group(s) under T-1 threshold", self.groups.len())
+            write!(
+                f,
+                "all {} group(s) under T-1/T-2 thresholds",
+                self.groups.len()
+            )
         }
     }
 }
@@ -106,6 +115,15 @@ pub enum ParseError {
     Json(serde_json::Error),
     /// Estimate structurally valid but semantically wrong (e.g. negative).
     InvalidEstimate(String),
+}
+
+/// Calibration metadata emitted by the poll-cost benchmark.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Calibration {
+    /// Idle host CPU percentage measured before Criterion starts.
+    pub idle_cpu_percent: f64,
+    /// Criterion groups expected for a complete run.
+    pub expected_groups: Vec<String>,
 }
 
 impl std::fmt::Display for ParseError {
@@ -139,9 +157,9 @@ impl From<serde_json::Error> for ParseError {
 ///
 /// # Errors
 ///
-/// Returns `ParseError` if the directory cannot be read or any estimate file
-/// is malformed. Missing `estimate.json` files are skipped silently (a group
-/// may have multiple sub-benches, only some of which have estimates).
+/// Returns `ParseError` if the directory cannot be read, no estimate files are
+/// found, or any estimate file is malformed. The gate fails closed so a
+/// partial or empty Criterion run cannot pass as a clean benchmark.
 pub fn evaluate_directory(criterion_root: &Path, tick_seconds: f64) -> Result<Report, ParseError> {
     // The root MUST exist and be a directory. A missing root is an error,
     // not silently an empty report (the bench didn't run).
@@ -160,8 +178,35 @@ pub fn evaluate_directory(criterion_root: &Path, tick_seconds: f64) -> Result<Re
             ),
         )));
     }
+    let calibration_path = criterion_root.join("calibration.txt");
+    let calibration = parse_calibration(&std::fs::read_to_string(&calibration_path)?)?;
     let mut groups = Vec::new();
-    walk_for_estimates(criterion_root, criterion_root, tick_seconds, &mut groups)?;
+    walk_for_estimates(
+        criterion_root,
+        criterion_root,
+        tick_seconds,
+        calibration.idle_cpu_percent,
+        &mut groups,
+    )?;
+    if groups.is_empty() {
+        return Err(ParseError::InvalidEstimate(format!(
+            "no valid estimate.json files found under {}",
+            criterion_root.display()
+        )));
+    }
+    let actual: std::collections::HashSet<&str> = groups.iter().map(|g| g.name.as_str()).collect();
+    let missing: Vec<&str> = calibration
+        .expected_groups
+        .iter()
+        .map(String::as_str)
+        .filter(|name| !actual.contains(name))
+        .collect();
+    if !missing.is_empty() {
+        return Err(ParseError::InvalidEstimate(format!(
+            "partial Criterion report; missing expected group(s): {}",
+            missing.join(", ")
+        )));
+    }
     Ok(Report { groups })
 }
 
@@ -170,6 +215,7 @@ fn walk_for_estimates(
     base: &Path,
     current: &Path,
     tick_seconds: f64,
+    calibration_percent: f64,
     out: &mut Vec<GroupResult>,
 ) -> Result<(), ParseError> {
     if !current.is_dir() {
@@ -180,7 +226,7 @@ fn walk_for_estimates(
         let path = entry.path();
         if path.is_dir() {
             // Recurse into subdirectories.
-            walk_for_estimates(base, &path, tick_seconds, out)?;
+            walk_for_estimates(base, &path, tick_seconds, calibration_percent, out)?;
         } else if path.file_name().is_some_and(|n| n == "estimate.json") {
             // Found an estimate.json — parse and evaluate it.
             // The "group name" is the relative path from `base` to the
@@ -188,24 +234,16 @@ fn walk_for_estimates(
             // "new" component criterion adds.
             let rel = path
                 .parent()
-                .and_then(|p| p.parent())
                 .and_then(|p| p.strip_prefix(base).ok())
                 .map_or_else(|| path.clone(), std::path::Path::to_path_buf);
             let name = rel.to_string_lossy().replace('\\', "/");
             let name = name.trim_end_matches("/new").to_string();
-            match evaluate_one_file(&path, &name, tick_seconds) {
-                Ok(g) => out.push(g),
-                Err(e) => {
-                    // Skip malformed estimates but log them — a single bad
-                    // file shouldn't fail the whole bench gate (criterion
-                    // writes transient files during runs).
-                    eprintln!(
-                        "warn: skipping malformed estimate {}: {}",
-                        path.display(),
-                        e
-                    );
-                }
-            }
+            out.push(evaluate_one_file(
+                &path,
+                &name,
+                tick_seconds,
+                calibration_percent,
+            )?);
         }
     }
     Ok(())
@@ -218,31 +256,101 @@ fn evaluate_one_file(
     path: &Path,
     name: &str,
     tick_seconds: f64,
+    calibration_percent: f64,
 ) -> Result<GroupResult, ParseError> {
     let raw = std::fs::read_to_string(path)?;
     let estimate: Estimate = serde_json::from_str(&raw)?;
-    Ok(evaluate_estimate(name, &estimate, tick_seconds))
+    Ok(evaluate_estimate_with_calibration(
+        name,
+        &estimate,
+        tick_seconds,
+        calibration_percent,
+    ))
 }
 
 /// Evaluate a parsed `Estimate` against T-1. Pure function — testable without
 /// touching the filesystem.
 #[must_use]
 pub fn evaluate_estimate(name: &str, estimate: &Estimate, tick_seconds: f64) -> GroupResult {
-    // Cast precision loss is acceptable here: nanosecond timings from
-    // criterion don't need >52-bit mantissa precision for CPU% comparison.
-    #[allow(clippy::cast_precision_loss)]
-    let mean_ns = estimate.mean.point_estimate as f64;
-    let cpu_percent = if tick_seconds > 0.0 {
+    evaluate_estimate_with_calibration(name, estimate, tick_seconds, 0.0)
+}
+
+/// Evaluate a parsed `Estimate` after subtracting the measured idle CPU.
+#[must_use]
+pub fn evaluate_estimate_with_calibration(
+    name: &str,
+    estimate: &Estimate,
+    tick_seconds: f64,
+    calibration_percent: f64,
+) -> GroupResult {
+    let mean_ns = estimate.mean.point_estimate;
+    let raw_cpu_percent = if tick_seconds > 0.0 {
         (mean_ns / 1_000_000_000.0) / tick_seconds * 100.0
     } else {
         f64::INFINITY
+    };
+    let cpu_percent = raw_cpu_percent - calibration_percent;
+    let threshold = if name == "aggregate" || name.ends_with("/aggregate") {
+        T2_MAX_CPU_PERCENT
+    } else {
+        T1_MAX_CPU_PERCENT
     };
     GroupResult {
         name: name.to_string(),
         mean_ns,
         cpu_percent,
-        exceeded: cpu_percent > T1_MAX_CPU_PERCENT,
+        exceeded: cpu_percent > threshold,
     }
+}
+
+/// Parse the calibration marker written by the poll-cost benchmark.
+pub fn parse_calibration(contents: &str) -> Result<Calibration, ParseError> {
+    let mut idle_cpu_percent = None;
+    let mut expected_groups = Vec::new();
+    for line in contents
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        if let Some(value) = line.strip_prefix("calibration_idle_cpu_percent=") {
+            let value = value.parse::<f64>().map_err(|_| {
+                ParseError::InvalidEstimate(format!("invalid calibration value: {value}"))
+            })?;
+            if !value.is_finite() || !(0.0..=100.0).contains(&value) {
+                return Err(ParseError::InvalidEstimate(format!(
+                    "calibration must be finite and between 0 and 100: {value}"
+                )));
+            }
+            idle_cpu_percent = Some(value);
+        } else if let Some(group) = line.strip_prefix("expected_group=") {
+            if group.is_empty() || expected_groups.iter().any(|g| g == group) {
+                return Err(ParseError::InvalidEstimate(
+                    "calibration expected_group is empty or duplicated".to_string(),
+                ));
+            }
+            expected_groups.push(group.to_string());
+        }
+    }
+    let idle_cpu_percent = idle_cpu_percent.ok_or_else(|| {
+        ParseError::InvalidEstimate(
+            "calibration_idle_cpu_percent field is missing from calibration.txt".to_string(),
+        )
+    })?;
+    let has_provider = expected_groups
+        .iter()
+        .any(|group| group.starts_with("poll_cost/provider/"));
+    let has_aggregate = expected_groups
+        .iter()
+        .any(|group| group.ends_with("/aggregate"));
+    if !has_provider || !has_aggregate {
+        return Err(ParseError::InvalidEstimate(
+            "calibration must list expected provider groups and poll_cost/aggregate".to_string(),
+        ));
+    }
+    Ok(Calibration {
+        idle_cpu_percent,
+        expected_groups,
+    })
 }
 
 /// Construct an `Estimate` from a mean point estimate (ns) — convenience for
@@ -251,7 +359,8 @@ pub fn evaluate_estimate(name: &str, estimate: &Estimate, tick_seconds: f64) -> 
 pub fn make_estimate(mean_ns: u64) -> Estimate {
     Estimate {
         mean: PointEstimate {
-            point_estimate: mean_ns,
+            #[allow(clippy::cast_precision_loss)]
+            point_estimate: mean_ns as f64,
             confidence_interval: None,
         },
     }
@@ -269,7 +378,7 @@ pub struct Estimate {
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct PointEstimate {
     /// The point estimate value (nanoseconds for criterion timings).
-    pub point_estimate: u64,
+    pub point_estimate: f64,
     /// Optional confidence interval; absent in some criterion versions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confidence_interval: Option<ConfidenceInterval>,
@@ -279,9 +388,9 @@ pub struct PointEstimate {
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct ConfidenceInterval {
     /// Lower bound of the confidence interval (nanoseconds).
-    pub lower_bound: u64,
+    pub lower_bound: f64,
     /// Upper bound of the confidence interval (nanoseconds).
-    pub upper_bound: u64,
+    pub upper_bound: f64,
 }
 
 #[cfg(test)]
@@ -387,6 +496,97 @@ mod tests {
         assert!(matches!(result, Err(ParseError::Io(_))));
     }
 
+    #[test]
+    fn empty_criterion_directory_fails_closed() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let root = tmp.path().join("criterion");
+        std::fs::create_dir_all(&root).expect("mkdir");
+        std::fs::write(
+            root.join("calibration.txt"),
+            "calibration_idle_cpu_percent=0\nexpected_group=poll_cost/provider/sysinfo\nexpected_group=poll_cost/aggregate\n",
+        )
+        .expect("calibration");
+        let result = evaluate_directory(&root, 10.0);
+        assert!(matches!(result, Err(ParseError::InvalidEstimate(_))));
+    }
+
+    #[test]
+    fn malformed_estimate_fails_closed() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let estimate = tmp.path().join("criterion").join("poll_cost").join("new");
+        std::fs::create_dir_all(&estimate).expect("mkdir");
+        std::fs::write(
+            tmp.path().join("criterion").join("calibration.txt"),
+            "calibration_idle_cpu_percent=0\nexpected_group=poll_cost/provider/sysinfo\nexpected_group=poll_cost/aggregate\n",
+        )
+        .expect("calibration");
+        std::fs::write(estimate.join("estimate.json"), "not json").expect("write");
+        let result = evaluate_directory(tmp.path().join("criterion").as_path(), 10.0);
+        assert!(matches!(result, Err(ParseError::Json(_))));
+    }
+
+    #[test]
+    fn calibration_parser_reads_idle_field_and_expected_groups() {
+        let calibration = parse_calibration(
+            "calibration_idle_cpu_percent=1.250\nexpected_group=poll_cost/provider/sysinfo\nexpected_group=poll_cost/aggregate\n",
+        )
+        .expect("valid calibration");
+        assert!((calibration.idle_cpu_percent - 1.25).abs() < f64::EPSILON);
+        assert_eq!(calibration.expected_groups.len(), 2);
+    }
+
+    #[test]
+    fn calibration_missing_idle_field_fails_closed() {
+        let result = parse_calibration("expected_group=poll_cost/aggregate\n");
+        assert!(matches!(result, Err(ParseError::InvalidEstimate(_))));
+    }
+
+    #[test]
+    fn aggregate_uses_t2_threshold() {
+        let pass = evaluate_estimate("poll_cost/aggregate", &make_estimate(190_000_000), 10.0);
+        let fail = evaluate_estimate("poll_cost/aggregate", &make_estimate(210_000_000), 10.0);
+        assert!(!pass.exceeded, "1.9% should be under T-2");
+        assert!(fail.exceeded, "2.1% should exceed T-2");
+    }
+
+    #[test]
+    fn calibration_is_subtracted_from_cpu_percent() {
+        let result = evaluate_estimate_with_calibration(
+            "poll_cost/provider/sysinfo",
+            &make_estimate(80_000_000),
+            10.0,
+            0.25,
+        );
+        assert!((result.cpu_percent - 0.55).abs() < 0.001);
+        assert!(result.exceeded);
+    }
+
+    #[test]
+    fn partial_criterion_report_fails_closed() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let root = tmp.path().join("criterion");
+        let provider_dir = root
+            .join("poll_cost")
+            .join("provider")
+            .join("sysinfo")
+            .join("new");
+        std::fs::create_dir_all(&provider_dir).expect("mkdir provider");
+        std::fs::write(
+            provider_dir.join("estimate.json"),
+            serde_json::to_string(&make_estimate(10_000_000)).expect("estimate"),
+        )
+        .expect("write estimate");
+        std::fs::write(
+            root.join("calibration.txt"),
+            "calibration_idle_cpu_percent=0\nexpected_group=poll_cost/provider/sysinfo\nexpected_group=poll_cost/provider/net\nexpected_group=poll_cost/aggregate\n",
+        )
+        .expect("calibration");
+        let result = evaluate_directory(&root, 10.0);
+        assert!(
+            matches!(result, Err(ParseError::InvalidEstimate(message)) if message.contains("partial Criterion report"))
+        );
+    }
+
     /// Round-trip: serialize an Estimate, parse it back, evaluate.
     #[test]
     fn estimate_round_trips_through_serde() {
@@ -397,6 +597,38 @@ mod tests {
         assert!((result.mean_ns - 42_000_000.0).abs() < 0.001);
     }
 
+    #[test]
+    fn real_criterion_float_estimate_parses() {
+        let json = r#"{
+            "mean": {
+                "point_estimate": 123.45,
+                "confidence_interval": {
+                    "confidence_level": 0.95,
+                    "lower_bound": 120.10,
+                    "upper_bound": 126.80
+                }
+            }
+        }"#;
+        let estimate: Estimate = serde_json::from_str(json).expect("real Criterion shape");
+        assert!((estimate.mean.point_estimate - 123.45).abs() < 1e-9);
+        let interval = estimate
+            .mean
+            .confidence_interval
+            .as_ref()
+            .expect("confidence interval");
+        assert!((interval.lower_bound - 120.10).abs() < 1e-9);
+        assert!((interval.upper_bound - 126.80).abs() < 1e-9);
+        let result = evaluate_estimate("poll_cost/provider/sysinfo", &estimate, 10.0);
+        assert!((result.mean_ns - 123.45).abs() < 1e-9);
+    }
+
+    #[test]
+    fn integer_criterion_estimate_still_parses() {
+        let json = r#"{"mean":{"point_estimate":1234567}}"#;
+        let estimate: Estimate = serde_json::from_str(json).expect("integer Criterion shape");
+        assert!((estimate.mean.point_estimate - 1_234_567.0).abs() < f64::EPSILON);
+    }
+
     /// Integration: write a synthetic criterion-style directory tree to a
     /// temp dir (fixture F1) and verify evaluate_directory picks it up.
     #[test]
@@ -404,16 +636,41 @@ mod tests {
         use tempfile::TempDir;
         let tmp = TempDir::new().expect("tempdir");
         let root = tmp.path().join("criterion");
-        let group_dir = root.join("poll_cost").join("sysinfo").join("new");
+        let group_dir = root
+            .join("poll_cost")
+            .join("provider")
+            .join("sysinfo")
+            .join("new");
         std::fs::create_dir_all(&group_dir).expect("mkdir");
+        std::fs::write(
+            root.join("calibration.txt"),
+            "calibration_idle_cpu_percent=0\nexpected_group=poll_cost/provider/sysinfo\nexpected_group=poll_cost/aggregate\n",
+        )
+        .expect("calibration");
         let estimate = make_estimate(60_000_000); // 0.6% — exceeds
         let json = serde_json::to_string(&estimate).expect("serialize");
         std::fs::write(group_dir.join("estimate.json"), json).expect("write");
+        let aggregate_dir = root.join("poll_cost").join("aggregate").join("new");
+        std::fs::create_dir_all(&aggregate_dir).expect("mkdir aggregate");
+        std::fs::write(
+            aggregate_dir.join("estimate.json"),
+            serde_json::to_string(&make_estimate(100_000_000)).expect("serialize aggregate"),
+        )
+        .expect("write aggregate");
 
         let report = evaluate_directory(&root, 10.0).expect("eval");
-        assert_eq!(report.groups.len(), 1, "exactly one group should be found");
+        assert_eq!(
+            report.groups.len(),
+            2,
+            "provider and aggregate groups should be found"
+        );
         assert!(report.any_exceeded());
-        let name = &report.groups[0].name;
+        let name = &report
+            .groups
+            .iter()
+            .find(|group| group.name.contains("sysinfo"))
+            .expect("provider group")
+            .name;
         assert!(
             name.contains("sysinfo"),
             "group name should contain bench name, got: {name}"
