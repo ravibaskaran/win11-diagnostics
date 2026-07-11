@@ -37,6 +37,8 @@ toml = { workspace = true }             # MIT OR Apache-2.0 — config.toml seri
 rusqlite = { workspace = true }         # MIT — SQLite bindings (Integration main.rs accountant thread: open Connection on the LocalSet thread)
 egui = { workspace = true }             # MIT — immediate-mode GUI (Story 8.1)
 eframe = { workspace = true }           # MIT — egui desktop shell (Story 8.1)
+raw-window-handle = { workspace = true } # MIT OR Apache-2.0 — CreationContext root HWND extraction
+windows = { workspace = true, features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
 sidebar-domain = { path = "../sidebar-domain" }   # internal — Reading, MetricKind, Config::ohm.http_port (T-45, Story 7.3)
 sidebar-bandwidth = { path = "../sidebar-bandwidth" }  # internal — BandwidthView DTO (Story 5.3, Story 8.4 render target) + BandwidthAccountant (Integration main.rs)
 sidebar-persistence = { path = "../sidebar-persistence" }  # internal — schema::init + bandwidth_repo (Integration main.rs accountant spawn)

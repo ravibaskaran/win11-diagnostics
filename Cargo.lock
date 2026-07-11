@@ -3435,6 +3435,7 @@ dependencies = [
  "egui",
  "egui_kittest",
  "mockall",
+ "raw-window-handle",
  "rusqlite",
  "semver",
  "serde",
@@ -3458,6 +3459,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "which",
+ "windows",
 ]
 
 [[package]]

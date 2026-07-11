@@ -31,9 +31,9 @@
 //! - Tier probe fails (LHM not installed) → Basic tier (normal first launch).
 //! - SQLite open fails → log + skip the accountant (app still works).
 //! - `%APPDATA%` missing → fall back to `./sidebar_config` next to the binary.
-//! - DWM transparency attrs: skipped — eframe 0.35's ViewportBuilder doesn't
-//!   expose the HWND directly. The window renders opaque; transparency is a
-//!   visual refinement (follow-up: pull the HWND via raw-window-handle).
+//! - DWM capture exclusion: configured from eframe's CreationContext root
+//!   HWND. If the platform handle is unavailable, the app logs and continues;
+//!   capture exclusion is a non-fatal visual refinement.
 //!
 //! Cited: architecture.md §1/§6, nfr-thresholds.md T-3/T-14/T-18/T-19/T-39,
 //! guardrails.md G15/G24, Stories 7.1-7.5 + 8.1/8.5/8.10.
@@ -49,7 +49,10 @@ use sidebar_app::gui::first_run;
 use sidebar_app::gui::{AppState, SidebarApp, SidebarView};
 use sidebar_app::poller::Poller;
 use sidebar_app::provider_registry::build_registry;
-use sidebar_app::shutdown::{run_shutdown, spawn_signal_handler, ShutdownReport, ShutdownTargets};
+use sidebar_app::shutdown::{
+    run_shutdown_with_signal, spawn_signal_handler_with_signal, ShutdownReport, ShutdownSignal,
+    ShutdownTargets,
+};
 use sidebar_app::tier_probe::run_launch_probe;
 use sidebar_bandwidth::accountant::{AccountantConfig, BandwidthAccountant};
 use sidebar_bandwidth::clock::SystemClock;
@@ -88,7 +91,9 @@ fn main() -> eframe::Result {
     let _runtime_guard = runtime.enter();
     let cancel = CancellationToken::new();
     let event_channel = EventChannel::new();
+    let shutdown_signal = ShutdownSignal::new(cancel.clone(), event_channel.raw_tx.clone());
     let event_rx_for_gui = event_channel.subscribe();
+    let event_rx_for_poller = event_channel.subscribe();
 
     // Tier probe: start at Basic + probe ASYNCHRONOUSLY. The probe does up to
     // 11 sequential HTTP GETs (ports 17127-17137) which can block for the OS
@@ -155,7 +160,7 @@ fn main() -> eframe::Result {
     let readings_rx_for_accountant = readings_tx.subscribe();
 
     let accountant_flush_flag = Arc::new(AtomicBool::new(false));
-    spawn_background_tasks(
+    let mut background_tasks = spawn_background_tasks(
         &runtime,
         &cancel,
         wizard_active,
@@ -163,12 +168,13 @@ fn main() -> eframe::Result {
         config.poll_interval_seconds,
         readings_tx,
         readings_rx_for_accountant,
+        event_rx_for_poller,
         &config_dir,
         &config.bandwidth.cycle_start_day,
         &accountant_flush_flag,
     );
 
-    let _signal_join = runtime.spawn(spawn_signal_handler(cancel.clone()));
+    let _signal_join = runtime.spawn(spawn_signal_handler_with_signal(shutdown_signal.clone()));
 
     let state = AppState::new_full(
         tier,
@@ -177,6 +183,7 @@ fn main() -> eframe::Result {
         config,
         SidebarView::default(),
     );
+    state.set_shutdown_signal(shutdown_signal.clone());
     let app = SidebarApp::with_config_path(state, config_path, wizard_active);
 
     tracing::info!("sidebar binary launching — entering eframe GUI loop");
@@ -184,9 +191,10 @@ fn main() -> eframe::Result {
 
     run_graceful_shutdown(
         &runtime,
-        &cancel,
+        &shutdown_signal,
         accountant_flush_flag,
         supervisor.as_mut(),
+        &mut background_tasks,
     );
 
     eframe_result.map(|()| {
@@ -223,6 +231,11 @@ fn build_runtime() -> tokio::runtime::Runtime {
 /// Spawn the poller + bandwidth-accountant tasks (gated by the wizard flag).
 /// The accountant runs on a dedicated OS thread with a LocalSet (it is
 /// `!Send`).
+struct BackgroundTaskHandles {
+    poller: Option<tokio::task::JoinHandle<()>>,
+    accountant: Option<std::thread::JoinHandle<()>>,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn spawn_background_tasks(
     runtime: &tokio::runtime::Runtime,
@@ -232,25 +245,40 @@ fn spawn_background_tasks(
     poll_interval_seconds: u32,
     readings_tx: broadcast::Sender<Vec<Reading>>,
     readings_rx_for_accountant: broadcast::Receiver<Vec<Reading>>,
+    event_rx_for_poller: broadcast::Receiver<sidebar_domain::event::Event>,
     config_dir: &Path,
     cycle_start_day: &sidebar_domain::config::CycleStartDaySerde,
     accountant_flush_flag: &Arc<AtomicBool>,
-) {
+) -> BackgroundTaskHandles {
     if wizard_active {
         // No poller, no accountant — wizard gate (G24). Mark flush done so the
         // shutdown orchestrator doesn't wait for an accountant that isn't there.
         accountant_flush_flag.store(true, Ordering::SeqCst);
         drop(readings_tx);
-        return;
+        return BackgroundTaskHandles {
+            poller: None,
+            accountant: None,
+        };
     }
-    spawn_poller(runtime, cancel, tier, poll_interval_seconds, readings_tx);
-    spawn_accountant(
+    let poller = spawn_poller(
+        runtime,
+        cancel,
+        tier,
+        poll_interval_seconds,
+        readings_tx,
+        event_rx_for_poller,
+    );
+    let accountant = spawn_accountant(
         readings_rx_for_accountant,
         cancel.clone(),
         config_dir,
         cycle_start_day,
         Arc::clone(accountant_flush_flag),
     );
+    BackgroundTaskHandles {
+        poller: Some(poller),
+        accountant: Some(accountant),
+    }
 }
 
 /// Spawn the poller task on the tokio runtime.
@@ -260,7 +288,8 @@ fn spawn_poller(
     tier: ProviderTier,
     poll_interval_seconds: u32,
     readings_tx: broadcast::Sender<Vec<Reading>>,
-) {
+    event_rx: broadcast::Receiver<sidebar_domain::event::Event>,
+) -> tokio::task::JoinHandle<()> {
     let active_tier = match tier {
         ProviderTier::Full => ActiveTier::Full,
         ProviderTier::Basic | ProviderTier::Both => ActiveTier::Basic,
@@ -275,11 +304,21 @@ fn spawn_poller(
     let poller = Poller::new(providers, interval, readings_tx);
     let cancel_for_poller = cancel.clone();
     runtime.spawn(async move {
-        match poller.run(cancel_for_poller).await {
+        let registry_builder = |tier: ProviderTier| {
+            let active_tier = match tier {
+                ProviderTier::Full => ActiveTier::Full,
+                ProviderTier::Basic | ProviderTier::Both => ActiveTier::Basic,
+            };
+            Ok(build_registry(active_tier))
+        };
+        match poller
+            .run_with_events(cancel_for_poller, event_rx, registry_builder)
+            .await
+        {
             Ok(()) => tracing::info!("poller task exited cleanly"),
             Err(e) => tracing::error!(error = ?e, "poller task exited with error"),
         }
-    });
+    })
 }
 
 /// Spawn the bandwidth accountant on a dedicated OS thread + LocalSet (the
@@ -290,7 +329,7 @@ fn spawn_accountant(
     config_dir: &Path,
     cycle_start_day: &sidebar_domain::config::CycleStartDaySerde,
     flush_flag: Arc<AtomicBool>,
-) {
+) -> std::thread::JoinHandle<()> {
     let db_path = config_dir.join("bandwidth.db");
     let cycle_day = sidebar_domain::billing::CycleStartDay::from(cycle_start_day);
     std::thread::Builder::new()
@@ -298,7 +337,7 @@ fn spawn_accountant(
         .spawn(move || {
             run_accountant_on_thread(readings_rx, cancel, &db_path, cycle_day, flush_flag);
         })
-        .expect("failed to spawn accountant thread");
+        .expect("failed to spawn accountant thread")
 }
 
 /// Open the SQLite connection + run the accountant on a current-thread
@@ -357,12 +396,12 @@ fn run_accountant_on_thread(
 /// the T-39 phase hierarchy.
 fn run_graceful_shutdown(
     runtime: &tokio::runtime::Runtime,
-    cancel: &CancellationToken,
+    signal: &ShutdownSignal,
     accountant_flush_flag: Arc<AtomicBool>,
     supervisor: Option<&mut OhmSupervisor<RealHttpClient>>,
+    background_tasks: &mut BackgroundTaskHandles,
 ) {
     tracing::info!("eframe returned — running shutdown orchestrator");
-    cancel.cancel();
     let mut targets = SidebarShutdownTargets {
         accountant_flush_done: accountant_flush_flag,
         accountant_thread_deadline: Duration::from_millis(600),
@@ -370,8 +409,35 @@ fn run_graceful_shutdown(
     };
     let shutdown_guard = Arc::new(AtomicBool::new(false));
     let report: ShutdownReport = runtime
-        .block_on(async { run_shutdown(cancel.clone(), &mut targets, &shutdown_guard).await });
+        .block_on(async { run_shutdown_with_signal(signal, &mut targets, &shutdown_guard).await });
     tracing::info!(?report, "shutdown orchestrator complete");
+    if let Some(mut poller) = background_tasks.poller.take() {
+        let result = runtime.block_on(join_poller_with_timeout(
+            &mut poller,
+            Duration::from_secs(1),
+        ));
+        if let Err(error) = result {
+            tracing::warn!(?error, "poller task did not join cleanly during shutdown");
+        }
+    }
+    if let Some(accountant) = background_tasks.accountant.take() {
+        let _ = accountant.join();
+    }
+}
+
+/// Await a poller task without detaching it when the graceful timeout expires.
+/// The timeout borrows the same handle that is then aborted and awaited, so no
+/// task is left running after shutdown returns.
+async fn join_poller_with_timeout(
+    poller: &mut tokio::task::JoinHandle<()>,
+    timeout_duration: Duration,
+) -> Result<(), tokio::task::JoinError> {
+    if let Ok(result) = tokio::time::timeout(timeout_duration, &mut *poller).await {
+        result
+    } else {
+        poller.abort();
+        poller.await
+    }
 }
 
 /// ShutdownTargets implementation for the integration launch sequence.
@@ -459,5 +525,44 @@ fn load_config(path: &PathBuf) -> Config {
             );
             Config::default()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::join_poller_with_timeout;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn poller_join_timeout_aborts_and_awaits_same_handle() {
+        let completed = Arc::new(AtomicBool::new(false));
+        let completed_by_task = Arc::clone(&completed);
+        let mut handle = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            completed_by_task.store(true, Ordering::SeqCst);
+        });
+
+        let result = join_poller_with_timeout(&mut handle, Duration::from_millis(1)).await;
+        assert!(
+            result
+                .expect_err("timeout must abort the poller")
+                .is_cancelled(),
+            "aborted poller should return a cancelled JoinError"
+        );
+        assert!(
+            handle.is_finished(),
+            "the same handle must be awaited after abort"
+        );
+        assert!(!completed.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn poller_join_completes_before_timeout() {
+        let mut handle = tokio::spawn(async {});
+        let result = join_poller_with_timeout(&mut handle, Duration::from_secs(1)).await;
+        assert!(result.is_ok());
+        assert!(handle.is_finished());
     }
 }

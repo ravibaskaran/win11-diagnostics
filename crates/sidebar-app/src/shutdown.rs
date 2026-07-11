@@ -36,6 +36,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use sidebar_domain::event::Event;
+use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
 /// T-39 phase 2 budget: accountant force-flush must complete within 500ms of
@@ -50,6 +52,45 @@ pub const PHASE_OHM_BUDGET: Duration = Duration::from_secs(2);
 /// within 3s; anything still running at this boundary is force-exited via
 /// `std::process::exit(0)`. Cited: nfr-thresholds.md T-19, T-39.
 pub const TOTAL_SHUTDOWN_BUDGET: Duration = Duration::from_secs(3);
+
+/// Shared shutdown trigger used by GUI close, Ctrl+C, and the main-loop
+/// fallback. The first request cancels workers and emits one Shutdown event;
+/// repeated requests are harmless no-ops.
+#[derive(Clone)]
+pub struct ShutdownSignal {
+    cancel: CancellationToken,
+    events: broadcast::Sender<Event>,
+    emitted: Arc<AtomicBool>,
+}
+
+impl ShutdownSignal {
+    /// Create a shutdown signal bound to a cancellation token and event bus.
+    #[must_use]
+    pub fn new(cancel: CancellationToken, events: broadcast::Sender<Event>) -> Self {
+        Self {
+            cancel,
+            events,
+            emitted: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Clone the cancellation token observed by worker tasks.
+    #[must_use]
+    pub fn cancellation_token(&self) -> CancellationToken {
+        self.cancel.clone()
+    }
+
+    /// Request shutdown exactly once. Returns true for the caller that won
+    /// the race and false for subsequent requests.
+    pub fn request(&self) -> bool {
+        if self.emitted.swap(true, Ordering::SeqCst) {
+            return false;
+        }
+        self.cancel.cancel();
+        let _ = self.events.send(Event::Shutdown);
+        true
+    }
+}
 
 /// Outcome of a single T-39 phase. Captured in [`ShutdownReport`] so the
 /// caller (and tests) can assert which phases succeeded vs timed out vs
@@ -144,7 +185,27 @@ pub trait ShutdownTargets: Send {
 /// returns a `NotConfigured` report immediately (no-op).
 #[allow(clippy::missing_panics_doc)]
 pub async fn run_shutdown<T: ShutdownTargets>(
-    _cancel: CancellationToken,
+    cancel: CancellationToken,
+    targets: &mut T,
+    shutdown_started: &AtomicBool,
+) -> ShutdownReport {
+    cancel.cancel();
+    run_shutdown_phases(targets, shutdown_started).await
+}
+
+/// Run the shutdown phases after emitting the idempotent cancellation/event
+/// signal. Production callers should use this entry point so every trigger
+/// reaches both worker cancellation and the Event channel.
+pub async fn run_shutdown_with_signal<T: ShutdownTargets>(
+    signal: &ShutdownSignal,
+    targets: &mut T,
+    shutdown_started: &AtomicBool,
+) -> ShutdownReport {
+    signal.request();
+    run_shutdown_phases(targets, shutdown_started).await
+}
+
+async fn run_shutdown_phases<T: ShutdownTargets>(
     targets: &mut T,
     shutdown_started: &AtomicBool,
 ) -> ShutdownReport {
@@ -254,6 +315,23 @@ pub fn spawn_signal_handler(cancel: CancellationToken) -> tokio::task::JoinHandl
     })
 }
 
+/// Spawn a Ctrl+C listener that requests the shared idempotent shutdown
+/// signal, including Event::Shutdown propagation.
+#[must_use]
+pub fn spawn_signal_handler_with_signal(signal: ShutdownSignal) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        match tokio::signal::ctrl_c().await {
+            Ok(()) => {
+                tracing::info!("Ctrl+C received — requesting shutdown");
+                signal.request();
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "ctrl_c() listener failed");
+            }
+        }
+    })
+}
+
 /// Convenience wrapper that combines the double-signal guard + orchestrator.
 /// Constructs a fresh `AtomicBool`, runs the shutdown, and returns the report.
 /// Production callers that want to share the guard across trigger sources
@@ -300,10 +378,12 @@ mod tests {
     //! real wall-clock beyond their phase budgets.
 
     use super::*;
+    use sidebar_domain::event::Event;
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::{Arc, Mutex};
     use std::time::Instant;
+    use tokio::sync::broadcast;
 
     /// A boxed future returned by a mock behavior closure. Using
     /// `Pin<Box<dyn Future>>` lets each test return either an immediately-
@@ -621,5 +701,21 @@ mod tests {
         let _ = handle.await;
         // Token was NOT cancelled (we aborted before any signal arrived).
         assert!(!cancel.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn shutdown_signal_cancels_and_emits_once() {
+        let cancel = CancellationToken::new();
+        let (events, mut rx) = broadcast::channel(4);
+        let signal = ShutdownSignal::new(cancel.clone(), events);
+
+        assert!(signal.request());
+        assert!(cancel.is_cancelled());
+        assert_eq!(rx.try_recv(), Ok(Event::Shutdown));
+        assert!(!signal.request());
+        assert!(
+            rx.try_recv().is_err(),
+            "repeated requests emit no duplicate event"
+        );
     }
 }

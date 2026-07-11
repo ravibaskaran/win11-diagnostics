@@ -57,7 +57,7 @@ pub mod sparkline;
 pub mod status_pill;
 pub mod theme;
 
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use eframe::egui;
 use egui::Ui;
@@ -73,6 +73,8 @@ use sidebar_platform::window::ViewportPrefs;
 use sidebar_sensor::descriptor::ProviderTier;
 use tokio::sync::broadcast;
 
+use crate::shutdown::ShutdownSignal;
+
 /// Placeholder text shown when no readings have arrived yet (Boundary #1).
 pub(crate) const WAITING_TEXT: &str = "Waiting for data...";
 
@@ -80,6 +82,32 @@ pub(crate) const WAITING_TEXT: &str = "Waiting for data...";
 /// 64 leaves headroom for the 280×720 viewport at the default font size; the
 /// truncation marker carries the remaining count.
 pub(crate) const MAX_ROWS: usize = 64;
+
+fn recover_read<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
+    match lock.read() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            tracing::warn!(
+                target = "sidebar.app.state",
+                "GUI RwLock poisoned on read; recovering guarded state (G15)"
+            );
+            poisoned.into_inner()
+        }
+    }
+}
+
+fn recover_write<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
+    match lock.write() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            tracing::warn!(
+                target = "sidebar.app.state",
+                "GUI RwLock poisoned on write; recovering guarded state (G15)"
+            );
+            poisoned.into_inner()
+        }
+    }
+}
 
 /// Shared application state. Held inside `Arc` by both the [`SidebarApp`]
 /// (GUI thread) and future background tasks.
@@ -104,6 +132,7 @@ pub struct AppState {
     /// (Story 7.4). Drained each frame in `SidebarApp::logic`; tier changes
     /// update `self.tier`.
     event_rx: RwLock<Option<broadcast::Receiver<Event>>>,
+    shutdown: RwLock<Option<ShutdownSignal>>,
 }
 
 impl AppState {
@@ -135,49 +164,56 @@ impl AppState {
             config: RwLock::new(config),
             view: RwLock::new(view),
             event_rx: RwLock::new(event_rx),
+            shutdown: RwLock::new(None),
         })
     }
 
     /// The runtime tier (Basic / Full).
     #[must_use]
     pub fn tier(&self) -> ProviderTier {
-        self.tier.read().map_or(ProviderTier::Basic, |g| *g)
+        *recover_read(&self.tier)
     }
 
     /// Replace the runtime tier (called by `SidebarApp::logic` when an
     /// `Event::TierChanged` arrives from the EventChannel).
     pub(crate) fn set_tier(&self, tier: ProviderTier) {
-        if let Ok(mut guard) = self.tier.write() {
-            *guard = tier;
-        }
+        *recover_write(&self.tier) = tier;
     }
 
     /// Clone the current config (the settings panel reads + edits a local copy
     /// each frame; the on_change callback persists).
     #[must_use]
     pub fn config(&self) -> Config {
-        self.config.read().map(|g| g.clone()).unwrap_or_default()
+        recover_read(&self.config).clone()
     }
 
     /// Replace the config (the integration host calls this after the settings
     /// panel mutates a local copy).
     pub(crate) fn replace_config(&self, new_config: Config) {
-        if let Ok(mut guard) = self.config.write() {
-            *guard = new_config;
-        }
+        *recover_write(&self.config) = new_config;
     }
 
     /// Clone the current SidebarView payload.
     #[must_use]
     pub fn view(&self) -> SidebarView {
-        self.view.read().map(|g| g.clone()).unwrap_or_default()
+        recover_read(&self.view).clone()
     }
 
     /// Replace the SidebarView (called by `SidebarApp::ui` after the gear
     /// toggle flips or the bandwidth panel DTO refreshes).
     pub(crate) fn replace_view(&self, new_view: SidebarView) {
-        if let Ok(mut guard) = self.view.write() {
-            *guard = new_view;
+        *recover_write(&self.view) = new_view;
+    }
+
+    /// Attach the shared shutdown signal used by the native GUI lifecycle.
+    pub fn set_shutdown_signal(&self, signal: ShutdownSignal) {
+        *recover_write(&self.shutdown) = Some(signal);
+    }
+
+    /// Request cancellation and Event::Shutdown when the GUI closes.
+    pub(crate) fn request_shutdown(&self) {
+        if let Some(signal) = recover_read(&self.shutdown).as_ref() {
+            signal.request();
         }
     }
 
@@ -185,9 +221,7 @@ impl AppState {
     /// events since the last drain (tier/theme/monitor/hotkey/shutdown). Used
     /// by `SidebarApp::logic` each frame.
     pub(crate) fn drain_events(&self) -> Vec<Event> {
-        let Ok(mut guard) = self.event_rx.write() else {
-            return Vec::new();
-        };
+        let mut guard = recover_write(&self.event_rx);
         let Some(rx) = guard.as_mut() else {
             return Vec::new();
         };
@@ -217,25 +251,23 @@ impl AppState {
     /// while updating it), we return an empty `Vec` (placeholder kicks in).
     #[must_use]
     pub fn snapshot(&self) -> Vec<Reading> {
-        match self.readings.read() {
-            Ok(guard) => {
-                let snap = (*guard).clone();
-                // Mirror into last_good. If last_good is poisoned, we drop the
-                // write silently — the next successful snapshot() will retry.
-                if let Ok(mut lg) = self.last_good.write() {
-                    (*lg).clone_from(&snap);
-                }
-                snap
-            }
-            Err(_poison) => {
+        if let Ok(guard) = self.readings.read() {
+            let snap = guard.clone();
+            recover_write(&self.last_good).clone_from(&snap);
+            snap
+        } else {
+            tracing::warn!(
+                target = "sidebar.app.state",
+                "GUI readings RwLock poisoned; returning last-good snapshot (G15)"
+            );
+            if let Ok(guard) = self.last_good.read() {
+                guard.clone()
+            } else {
                 tracing::warn!(
                     target = "sidebar.app.state",
-                    "readings RwLock poisoned — serving last_good snapshot (G15)"
+                    "GUI last-good RwLock also poisoned; returning empty snapshot (G15)"
                 );
-                self.last_good
-                    .read()
-                    .map(|g| (*g).clone())
-                    .unwrap_or_default()
+                Vec::new()
             }
         }
     }
@@ -243,18 +275,7 @@ impl AppState {
     /// Replace the readings snapshot (called by [`SidebarApp::logic`] after a
     /// broadcast drain).
     pub(crate) fn replace_readings(&self, new_readings: Vec<Reading>) {
-        match self.readings.write() {
-            Ok(mut guard) => *guard = new_readings,
-            Err(_) => {
-                // Poisoned — clear the poison by replacing the inner value so
-                // future writes succeed. The next snapshot() still falls back
-                // to last_good (G15).
-                tracing::warn!(
-                    target = "sidebar.app.state",
-                    "readings RwLock poisoned on write — recovering (G15)"
-                );
-            }
-        }
+        *recover_write(&self.readings) = new_readings;
     }
 
     /// Non-blocking drain of the broadcast receiver. Returns `Some(readings)`
@@ -262,7 +283,7 @@ impl AppState {
     /// if the channel is empty/closed. Called every frame by
     /// [`SidebarApp::logic`].
     pub(crate) fn drain_broadcast(&self) -> Option<Vec<Reading>> {
-        let mut guard = self.rx.write().ok()?;
+        let mut guard = recover_write(&self.rx);
         let rx = (*guard).as_mut()?;
         let mut latest: Option<Vec<Reading>> = None;
         loop {
@@ -362,10 +383,13 @@ impl SidebarApp {
         let state = self.state;
         let config_path = self.config_path;
         let wizard_active = self.wizard_active;
+        let display_config = self.config.display.clone();
         eframe::run_native(
             app_name,
             options,
-            Box::new(move |_cc| {
+            Box::new(move |cc| {
+                #[cfg(windows)]
+                configure_capture_exclusion(cc, &display_config);
                 Ok(Box::new(SidebarApp::with_config_path(
                     state,
                     config_path,
@@ -409,7 +433,73 @@ impl SidebarApp {
     }
 }
 
+fn configure_capture_exclusion_for_hwnd<F>(
+    hwnd: windows::Win32::Foundation::HWND,
+    set_affinity: F,
+) -> bool
+where
+    F: FnOnce(windows::Win32::Foundation::HWND) -> sidebar_domain::error::Result<()>,
+{
+    if hwnd.is_invalid() {
+        tracing::warn!("capture exclusion skipped: eframe returned no live HWND");
+        return false;
+    }
+    if let Err(error) = set_affinity(hwnd) {
+        tracing::warn!(?error, "capture exclusion unavailable for sidebar HWND");
+        return false;
+    }
+    true
+}
+
+fn configure_capture_exclusion_for_display<F>(
+    display: &sidebar_domain::config::DisplayConfig,
+    hwnd: windows::Win32::Foundation::HWND,
+    set_affinity: F,
+) -> bool
+where
+    F: FnOnce(windows::Win32::Foundation::HWND) -> sidebar_domain::error::Result<()>,
+{
+    if !display.hide_from_capture {
+        return false;
+    }
+    configure_capture_exclusion_for_hwnd(hwnd, set_affinity)
+}
+
+#[cfg(windows)]
+fn configure_capture_exclusion(
+    cc: &eframe::CreationContext<'_>,
+    display: &sidebar_domain::config::DisplayConfig,
+) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use sidebar_platform::dwm::set_capture_cloak;
+    use windows::Win32::Foundation::HWND;
+
+    let raw_handle = match cc.window_handle() {
+        Ok(handle) => handle.as_raw(),
+        Err(error) => {
+            tracing::warn!(
+                ?error,
+                "capture exclusion skipped: eframe root HWND unavailable"
+            );
+            return;
+        }
+    };
+    let RawWindowHandle::Win32(win32) = raw_handle else {
+        tracing::warn!("capture exclusion skipped: eframe root handle is not Win32");
+        return;
+    };
+    let hwnd = HWND(win32.hwnd.get() as *mut std::ffi::c_void);
+
+    // SAFETY: eframe supplied the live root viewport handle through its
+    // CreationContext; the Win32 raw handle is valid for this app lifetime.
+    configure_capture_exclusion_for_display(display, hwnd, |hwnd| set_capture_cloak(hwnd, true));
+}
+
 impl eframe::App for SidebarApp {
+    fn on_exit(&mut self) {
+        self.state.request_shutdown();
+    }
+
     /// egui 0.35 splits the per-frame hook into `logic` (no painting — the
     /// right place for the broadcast drain + `request_repaint`) and `ui`
     /// (where the readings render goes). See eframe::App docs.
@@ -938,6 +1028,87 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn gui_exit_requests_cancellation_and_shutdown_event() {
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let (events, mut rx) = broadcast::channel(4);
+        let signal = crate::shutdown::ShutdownSignal::new(cancel.clone(), events);
+        let state = AppState::new(ProviderTier::Basic, None);
+        state.set_shutdown_signal(signal);
+        let mut app = SidebarApp::new(state);
+
+        <SidebarApp as eframe::App>::on_exit(&mut app);
+
+        assert!(cancel.is_cancelled());
+        assert_eq!(rx.try_recv(), Ok(Event::Shutdown));
+    }
+
+    #[test]
+    fn capture_exclusion_targets_supplied_hwnd() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        use windows::Win32::Foundation::HWND;
+
+        let supplied = HWND(std::ptr::dangling_mut::<std::ffi::c_void>());
+        let seen = Rc::new(RefCell::new(None));
+        let seen_by_setter = Rc::clone(&seen);
+
+        assert!(configure_capture_exclusion_for_hwnd(
+            supplied,
+            move |hwnd| {
+                *seen_by_setter.borrow_mut() = Some(hwnd);
+                Ok(())
+            }
+        ));
+        assert_eq!(
+            *seen.borrow(),
+            Some(supplied),
+            "capture exclusion must target the supplied root viewport HWND"
+        );
+    }
+
+    #[test]
+    fn default_display_does_not_enable_capture_exclusion() {
+        use std::cell::Cell;
+        use windows::Win32::Foundation::HWND;
+
+        let called = Cell::new(false);
+        let result = configure_capture_exclusion_for_display(
+            &sidebar_domain::config::DisplayConfig::default(),
+            HWND(std::ptr::dangling_mut::<std::ffi::c_void>()),
+            |_| {
+                called.set(true);
+                Ok(())
+            },
+        );
+
+        assert!(!result);
+        assert!(!called.get(), "default config must leave capture enabled");
+    }
+
+    #[test]
+    fn enabled_display_applies_capture_exclusion() {
+        use std::cell::Cell;
+        use windows::Win32::Foundation::HWND;
+
+        let called = Cell::new(false);
+        let display = sidebar_domain::config::DisplayConfig {
+            hide_from_capture: true,
+            ..Default::default()
+        };
+        let result = configure_capture_exclusion_for_display(
+            &display,
+            HWND(std::ptr::dangling_mut::<std::ffi::c_void>()),
+            |_| {
+                called.set(true);
+                Ok(())
+            },
+        );
+
+        assert!(result);
+        assert!(called.get(), "enabled config must apply capture exclusion");
+    }
+
     // ===== Happy Path #1: AppState with one CPU reading → "42%" + "CPU" =====
 
     #[test]
@@ -1022,8 +1193,8 @@ mod tests {
         assert_eq!(snap.len(), 1);
     }
 
-    /// G15 poison recovery: after a successful snapshot, poison the lock
-    /// manually and verify `snapshot()` returns the last-good cache.
+    /// G15 poison recovery: genuinely poison the lock from a panicking writer,
+    /// then verify the guarded value remains writable and readable.
     #[test]
     fn snapshot_falls_back_to_last_good_on_poison() {
         let state = AppState::new(ProviderTier::Basic, None);
@@ -1036,18 +1207,24 @@ mod tests {
         let _ = state.snapshot();
         assert_eq!(state.snapshot().len(), 1);
 
-        // Poison the readings lock by leaking a guard and panicking inside.
-        // We can't easily poison a RwLock from outside, so we verify the
-        // last_good cache is populated (the G15 contract): it must be
-        // non-empty after a successful snapshot().
-        // A real poison would route through the `Err(_)` arm; the unit-test
-        // coverage of the `Ok` arm + non-empty `last_good` is what we assert.
-        // Manual smoke for the poison arm is §7.4 item 5.
-        let last_good_snap = state.snapshot();
+        let state_for_poison = Arc::clone(&state);
+        let poisoned = std::thread::spawn(move || {
+            let mut guard = state_for_poison
+                .readings
+                .write()
+                .expect("first writer lock is healthy");
+            guard[0].value = 99.0;
+            panic!("intentional poison for G15 contract");
+        })
+        .join();
         assert!(
-            !last_good_snap.is_empty(),
-            "last_good must be populated after a successful snapshot (G15 precondition)"
+            poisoned.is_err(),
+            "test setup must genuinely poison the lock"
         );
+
+        let recovered = state.snapshot();
+        assert_eq!(recovered.len(), 1);
+        assert!((recovered[0].value - 42.0).abs() < f64::EPSILON);
     }
 
     // ===== Boundary #3: 1000 readings → truncation marker =====
