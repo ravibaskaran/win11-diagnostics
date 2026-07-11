@@ -85,14 +85,14 @@ use tracing::{debug, info, warn};
 #[cfg(windows)]
 use windows::core::PCWSTR;
 #[cfg(windows)]
-use windows::Win32::Foundation::HANDLE;
+use windows::Win32::Foundation::{CloseHandle, HANDLE};
 #[cfg(windows)]
 use windows::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 #[cfg(windows)]
-use windows::Win32::System::Threading::WaitForSingleObject;
+use windows::Win32::System::Threading::{TerminateProcess, WaitForSingleObject, INFINITE};
 #[cfg(windows)]
 use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
 #[cfg(windows)]
@@ -124,6 +124,64 @@ const CONFIG_KEY_WEB_SERVER: &str = "runWebServerMenuItem";
 
 /// LHM config key: the TCP port the HTTP server binds.
 const CONFIG_KEY_LISTENER_PORT: &str = "listenerPort";
+
+#[cfg(windows)]
+struct OwnedHandleGuard {
+    handle: Option<HANDLE>,
+}
+
+#[cfg(windows)]
+impl OwnedHandleGuard {
+    fn new(handle: HANDLE) -> Self {
+        Self {
+            handle: Some(handle),
+        }
+    }
+
+    fn as_handle(&self) -> HANDLE {
+        self.handle.expect("owned handle guard is populated")
+    }
+
+    fn into_handle(mut self) -> HANDLE {
+        self.handle.take().expect("owned handle guard is populated")
+    }
+
+    fn terminate_and_reap(&self) {
+        let handle = self.as_handle();
+        // SAFETY: handle came from ShellExecuteExW and remains owned by this
+        // guard. TerminateProcess + INFINITE wait ensures no orphan survives
+        // a failed post-launch ownership setup.
+        let _ = unsafe { TerminateProcess(handle, 1) };
+        // SAFETY: the same owned process handle is waited synchronously until
+        // its termination is observable before Drop closes it.
+        let _ = unsafe { WaitForSingleObject(handle, INFINITE) };
+    }
+}
+
+#[cfg(windows)]
+impl Drop for OwnedHandleGuard {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            // SAFETY: the guard owns this handle and closes it at most once.
+            let _ = unsafe { CloseHandle(handle) };
+        }
+    }
+}
+
+trait ChildTermination {
+    fn terminate_and_reap(&mut self);
+}
+
+fn cleanup_failed_post_launch_setup<C: ChildTermination>(child: &mut C) {
+    child.terminate_and_reap();
+}
+
+#[cfg(windows)]
+impl ChildTermination for OwnedHandleGuard {
+    fn terminate_and_reap(&mut self) {
+        Self::terminate_and_reap(self);
+    }
+}
 
 /// Minimal tier-change broadcaster wrapping a tokio-style sink. We use a
 /// boxed callback rather than a `tokio::broadcast` channel to keep
@@ -261,6 +319,10 @@ impl<C: HttpClient> OhmSupervisor<C> {
                 debug!(port, %reason, "probe: JSON parse failure → Basic");
                 ProviderTier::Basic
             }
+            Err(OhmError::RejectedUrl(reason)) => {
+                warn!(port, %reason, "probe: URL rejected by G16 loopback policy");
+                ProviderTier::Basic
+            }
         }
     }
 
@@ -304,9 +366,17 @@ impl<C: HttpClient> OhmSupervisor<C> {
         #[cfg(windows)]
         {
             let child_handle = self.shellexecute_runas(&port)?;
+            let mut child_guard = OwnedHandleGuard::new(child_handle);
             // G10 — wrap in Job Object so the kernel reaps the elevated child
             // if the sidebar host crashes.
-            let job_handle = Self::create_and_assign_job(child_handle)?;
+            let job_handle = match Self::create_and_assign_job(child_guard.as_handle()) {
+                Ok(job_handle) => job_handle,
+                Err(error) => {
+                    cleanup_failed_post_launch_setup(&mut child_guard);
+                    return Err(error);
+                }
+            };
+            let child_handle = child_guard.into_handle();
             // Stash handles as isize so the struct is unix-compilable for the
             // workspace-shape test (HANDLE wraps *mut c_void on Windows).
             self.child_handle = Some(child_handle.0 as isize);
@@ -493,6 +563,7 @@ impl<C: HttpClient> OhmSupervisor<C> {
         // (done in shutdown / Drop).
         let job = unsafe { CreateJobObjectW(None, None) }
             .map_err(|e| Error::Platform(format!("CreateJobObjectW failed: {e}")))?;
+        let job_guard = OwnedHandleGuard::new(job);
 
         let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
         info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
@@ -505,7 +576,7 @@ impl<C: HttpClient> OhmSupervisor<C> {
         // duration of the call. The call only reads `info` (no out-param).
         let ok = unsafe {
             windows::Win32::System::JobObjects::SetInformationJobObject(
-                job,
+                job_guard.as_handle(),
                 JobObjectExtendedLimitInformation,
                 info_ptr.cast::<core::ffi::c_void>(),
                 info_len,
@@ -518,10 +589,10 @@ impl<C: HttpClient> OhmSupervisor<C> {
         // AssignProcessToJobObject adds the child to the job — from now on
         // the child's lifetime is bound to the job (G10). The child handle
         // remains valid (we still own it for is_child_alive polling).
-        let ok = unsafe { AssignProcessToJobObject(job, child) };
+        let ok = unsafe { AssignProcessToJobObject(job_guard.as_handle(), child) };
         ok.map_err(|e| Error::Platform(format!("AssignProcessToJobObject failed: {e}")))?;
 
-        Ok(job)
+        Ok(job_guard.into_handle())
     }
 
     #[cfg(windows)]
@@ -640,6 +711,9 @@ pub fn pick_free_port<C: HttpClient>(client: &C) -> Result<u16> {
             Err(OhmError::NotJson(_) | OhmError::Parse(_)) => {
                 // Foreign service returned a non-JSON body. Skip.
                 debug!(port, "pick_free_port: non-JSON body, treating as occupied");
+            }
+            Err(OhmError::RejectedUrl(reason)) => {
+                warn!(port, %reason, "pick_free_port: URL rejected by G16 loopback policy");
             }
         }
     }
@@ -1167,6 +1241,61 @@ mod tests {
         // shutdown must be Ok and a no-op.
         sv.shutdown().expect("shutdown no-op");
         assert!(!sv.sidebar_launched(), "still did not launch");
+    }
+
+    #[derive(Debug, Default)]
+    struct FakeLaunchResources {
+        cleanup_flags: u8,
+    }
+
+    impl FakeLaunchResources {
+        fn child_terminated(&self) -> bool {
+            self.cleanup_flags & 0b0001 != 0
+        }
+        fn child_reaped(&self) -> bool {
+            self.cleanup_flags & 0b0010 != 0
+        }
+        fn child_closed(&self) -> bool {
+            self.cleanup_flags & 0b0100 != 0
+        }
+        fn job_closed(&self) -> bool {
+            self.cleanup_flags & 0b1000 != 0
+        }
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    enum SetupFailure {
+        Create,
+        Configure,
+        Assign,
+    }
+
+    impl ChildTermination for FakeLaunchResources {
+        fn terminate_and_reap(&mut self) {
+            self.cleanup_flags = 0b1111;
+        }
+    }
+
+    #[test]
+    fn post_shell_execute_setup_failures_terminate_reap_and_close_handles() {
+        for stage in [
+            SetupFailure::Create,
+            SetupFailure::Configure,
+            SetupFailure::Assign,
+        ] {
+            let mut resources = FakeLaunchResources::default();
+            cleanup_failed_post_launch_setup(&mut resources);
+            assert!(
+                resources.child_terminated(),
+                "child terminated for {stage:?}"
+            );
+            assert!(resources.child_reaped(), "child reaped for {stage:?}");
+            assert!(
+                resources.child_closed(),
+                "child handle closed for {stage:?}"
+            );
+            assert!(resources.job_closed(), "job handle closed for {stage:?}");
+        }
     }
 
     // ==========================================================

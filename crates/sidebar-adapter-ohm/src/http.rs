@@ -62,6 +62,64 @@ pub enum OhmError {
     /// match the `LhmNode` tree contract.
     #[error("JSON parse error: {0}")]
     Parse(String),
+
+    /// G16: production HTTP requests must target loopback only.
+    #[error("HTTP URL rejected by loopback-only G16 policy: {0}")]
+    RejectedUrl(String),
+}
+
+/// Validate the G16 loopback-only exception before any HTTP request is sent.
+/// Accepts `http://127.0.0.0/8` and `http://[::1]` authorities, with optional
+/// ports and paths; hostnames, remote IPv4 addresses, and non-HTTP schemes are
+/// rejected without DNS resolution.
+pub fn validate_loopback_url(url: &str) -> Result<(), OhmError> {
+    let rest = url
+        .strip_prefix("http://")
+        .ok_or_else(|| OhmError::RejectedUrl("scheme must be http".to_string()))?;
+    let authority = rest.split('/').next().unwrap_or_default();
+    if authority.is_empty() || authority.contains('@') {
+        return Err(OhmError::RejectedUrl(
+            "missing or credentialed authority".to_string(),
+        ));
+    }
+
+    if let Some(bracketed) = authority.strip_prefix('[') {
+        let Some(end) = bracketed.find(']') else {
+            return Err(OhmError::RejectedUrl("unterminated IPv6 host".to_string()));
+        };
+        if &bracketed[..end] != "::1" {
+            return Err(OhmError::RejectedUrl("IPv6 host is not ::1".to_string()));
+        }
+        let suffix = &bracketed[end + 1..];
+        if !suffix.is_empty() {
+            let port = suffix
+                .strip_prefix(':')
+                .ok_or_else(|| OhmError::RejectedUrl("invalid IPv6 authority".to_string()))?;
+            port.parse::<u16>()
+                .map_err(|_| OhmError::RejectedUrl("invalid port".to_string()))?;
+        }
+        return Ok(());
+    }
+
+    if authority.matches(':').count() > 1 {
+        return Err(OhmError::RejectedUrl(
+            "IPv6 hosts must use [::1] notation".to_string(),
+        ));
+    }
+    let (host, port) = authority.split_once(':').unwrap_or((authority, ""));
+    let parsed = host
+        .parse::<std::net::Ipv4Addr>()
+        .map_err(|_| OhmError::RejectedUrl("host must be a loopback IP".to_string()))?;
+    if !parsed.is_loopback() {
+        return Err(OhmError::RejectedUrl(
+            "IPv4 host is not in 127.0.0.0/8".to_string(),
+        ));
+    }
+    if !port.is_empty() {
+        port.parse::<u16>()
+            .map_err(|_| OhmError::RejectedUrl("invalid port".to_string()))?;
+    }
+    Ok(())
 }
 
 /// Abstraction over the LHM HTTP data source. The production impl wraps a
@@ -95,6 +153,9 @@ impl RealHttpClient {
     #[must_use]
     pub fn new() -> Self {
         let agent = ureq::AgentBuilder::new()
+            // G16: validate only the initial URL and never follow a 3xx
+            // Location that could escape the loopback-only boundary.
+            .redirects(0)
             .timeout(Duration::from_millis(HTTP_TIMEOUT_MS))
             .build();
         Self { agent }
@@ -109,6 +170,7 @@ impl Default for RealHttpClient {
 
 impl HttpClient for RealHttpClient {
     fn get(&self, url: &str) -> Result<String, OhmError> {
+        validate_loopback_url(url)?;
         // `ureq` distinguishes timeout from other transport errors via the
         // `Error::Timeout` variant (2.x); map accordingly so the adapter can
         // log a targeted message per Boundary #2.
@@ -164,4 +226,67 @@ fn is_timeout_transport(t: &ureq::Transport) -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_loopback_url;
+    use super::{HttpClient, OhmError, RealHttpClient};
+
+    #[test]
+    fn loopback_validator_accepts_ipv4_loopback_range() {
+        assert!(validate_loopback_url("http://127.0.0.1:17127/data.json").is_ok());
+        assert!(validate_loopback_url("http://127.255.255.254:8080/data.json").is_ok());
+    }
+
+    #[test]
+    fn loopback_validator_accepts_ipv6_loopback() {
+        assert!(validate_loopback_url("http://[::1]:17127/data.json").is_ok());
+    }
+
+    #[test]
+    fn loopback_validator_rejects_hostnames_and_remote_ips() {
+        assert!(validate_loopback_url("http://localhost:17127/data.json").is_err());
+        assert!(validate_loopback_url("http://192.168.1.10:17127/data.json").is_err());
+        assert!(validate_loopback_url("https://127.0.0.1:17127/data.json").is_err());
+    }
+
+    #[test]
+    fn real_client_rejects_non_loopback_before_transport() {
+        let error = RealHttpClient::new()
+            .get("http://localhost:17127/data.json")
+            .expect_err("G16 must reject before ureq transport");
+        assert!(matches!(error, OhmError::RejectedUrl(_)));
+    }
+
+    #[test]
+    fn real_client_does_not_follow_redirects_to_remote_hosts() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::time::Duration;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local redirect fixture");
+        let address = listener.local_addr().expect("local fixture address");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept redirect request");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .expect("configure redirect fixture timeout");
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request);
+            stream
+                .write_all(
+                    b"HTTP/1.1 302 Found\r\nLocation: http://192.0.2.1:9/data.json\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .expect("write redirect response");
+        });
+
+        let result = RealHttpClient::new().get(&format!("http://{address}/data.json"));
+        server.join().expect("redirect fixture thread");
+        assert!(
+            matches!(result, Ok(ref body) if body.is_empty())
+                || matches!(result, Err(OhmError::HttpFailed(ref message)) if message.contains("HTTP 302")),
+            "redirect must not be followed to remote host, got {result:?}"
+        );
+    }
 }
