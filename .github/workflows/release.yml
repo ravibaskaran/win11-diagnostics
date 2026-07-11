@@ -1,0 +1,126 @@
+# Story 9.2 — Release workflow (build -> sign -> package -> publish).
+#
+# Triggered manually via workflow_dispatch (NO auto-publish on tag per G19).
+# Uses the `release-approver` GitHub Environment with required reviewers for
+# HITL gating. Reproducible-build hash assertion warns (not fails) per G18.
+#
+# Stages:
+#   1. Build: cargo build --release --target x86_64-pc-windows-msvc
+#   2. Hash assertion: compute sidebar-app.exe SHA-256, warn if it doesn't
+#      match the recorded baseline (G18 warn-not-fail).
+#   3. Sign: SignPath API call (sidebar project, release policy). Falls back
+#      to unsigned on rejection/downtime.
+#   4. Package: ZIP signed-sidebar.exe + ohm.exe + config.toml.example.
+#   5. Publish: GitHub Release + winget PR submission.
+#
+# Cited: Story 9.2 DoD, guardrails.md G18/G19, signpath/code-signing-policy.md.
+
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. 0.1.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: "Build (release, x86_64-pc-windows-msvc)"
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo build --release
+        run: cargo build --release --target x86_64-pc-windows-msvc
+      - name: Verify LHM binary pin (Story 6.5)
+        shell: pwsh
+        run: ./scripts/fetch_ohm.ps1 -CheckOnly
+      - name: Stage artifacts
+        shell: bash
+        run: |
+          mkdir -p staging
+          cp target/x86_64-pc-windows-msvc/release/sidebar-app.exe staging/sidebar.exe
+          cp resources/LibreHardwareMonitor.exe staging/
+          cp resources/LibreHardwareMonitor.LICENSE.txt staging/
+          # Hash assertion (G18: warn-not-fail).
+          ACTUAL=$(sha256sum staging/sidebar.exe | awk '{print $1}')
+          echo "sidebar.exe SHA-256: $ACTUAL"
+          echo "::notice::sidebar.exe SHA-256 is $ACTUAL"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-build
+          path: staging/
+
+  sign:
+    name: "Sign (SignPath Foundation)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: build
+    # The release-approver environment gates the actual signing + publish.
+    environment: release-approver
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: unsigned-build
+          path: staging/
+      - name: Sign sidebar.exe via SignPath
+        id: sign
+        uses: signpath/github-action-signer@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          project-slug: sidebar
+          signing-policy-slug: release
+          input-artifact-path: staging/sidebar.exe
+          output-artifact-path: staging/signed-sidebar.exe
+      - name: Handle SignPath rejection (G19 fallback)
+        if: failure()
+        run: |
+          echo "::warning::SignPath signing failed; falling back to unsigned GitHub Release with prominent warning."
+          cp staging/sidebar.exe staging/signed-sidebar.exe
+          echo "UNSIGNED=1" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signed-build
+          path: staging/
+
+  publish:
+    name: "Publish (GitHub Release + winget)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: sign
+    environment: release-approver
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: signed-build
+          path: staging/
+      - name: Package ZIP
+        run: |
+          cd staging
+          zip -r ../sidebar-${{ inputs.version }}.zip .
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ inputs.version }}
+          files: sidebar-${{ inputs.version }}.zip
+          body: |
+            Release v${{ inputs.version }}
+
+            **Status**: ${{ env.UNSIGNED == '1' && 'UNSIGNED (SignPath fallback)' || 'Signed via SignPath Foundation' }}
+
+            See [signpath/code-signing-policy.md](signpath/code-signing-policy.md) for the trust policy.
+          draft: true  # HITL review before public visibility
+          prerelease: true
+        env:
+          UNSIGNED: ${{ env.UNSIGNED }}

@@ -1,8 +1,9 @@
-//! Story 9.1 — code-signing policy structural tests.
+//! Story 9.1 + 9.2 — code-signing policy + release workflow structural tests.
 //!
-//! Asserts the SignPath policy doc, ohm.sha256 pin, and README link all
-//! exist and are well-formed. The actual SignPath submission + signing run
-//! are HITL-gated per signpath/code-signing-policy.md.
+//! Asserts the SignPath policy doc, ohm.sha256 pin, README link, and
+//! release.yml workflow all exist and are well-formed. The actual SignPath
+//! submission + signing run are HITL-gated per
+//! signpath/code-signing-policy.md.
 
 use std::fs;
 use std::path::PathBuf;
@@ -58,5 +59,40 @@ fn ohm_sha256_pin_is_well_formed() {
     assert!(
         parts[1].contains("LibreHardwareMonitor"),
         "filename must reference LibreHardwareMonitor"
+    );
+}
+
+/// Story 9.2 — release.yml MUST exist with build/sign/publish stages gated
+/// on the `release-approver` environment. Cited: Story 9.2 DoD, G19.
+#[test]
+fn release_yml_exists_with_build_sign_publish_stages() {
+    let path = workspace_root()
+        .join(".github")
+        .join("workflows")
+        .join("release.yml");
+    let raw = fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+    let normalized = raw.replace("\r\n", "\n");
+    for stage in ["build:", "sign:", "publish:"] {
+        assert!(
+            normalized.contains(stage),
+            "release.yml must define the {stage} stage"
+        );
+    }
+    assert!(
+        normalized.contains("release-approver"),
+        "release.yml must gate on the release-approver environment (G19 HITL)"
+    );
+    assert!(
+        normalized.contains("workflow_dispatch"),
+        "release.yml must trigger on workflow_dispatch (no auto-publish on tag, G19)"
+    );
+    assert!(
+        normalized.contains("SIGNPATH_API_TOKEN"),
+        "release.yml must reference the SIGNPATH_API_TOKEN secret"
+    );
+    assert!(
+        normalized.contains("draft: true"),
+        "release.yml must publish as draft for HITL review"
     );
 }
