@@ -74,9 +74,12 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+// `HttpClient` + `OhmError` are used by `OhmSupervisor<C: HttpClient>` in
+// production; `HTTP_TIMEOUT_MS` is consumed by the M9 wait_for_probe fix
+// below. `DEFAULT_OHM_PORT` is only referenced in tests.
 #[cfg(test)]
 use sidebar_adapter_ohm::http::DEFAULT_OHM_PORT;
-use sidebar_adapter_ohm::http::{HttpClient, OhmError};
+use sidebar_adapter_ohm::http::{HttpClient, OhmError, HTTP_TIMEOUT_MS};
 use sidebar_domain::error::{Error, Result};
 use sidebar_sensor::descriptor::ProviderTier;
 
@@ -106,13 +109,21 @@ pub const LAUNCH_TIMEOUT_MS: u64 = 5_000;
 /// `OhmSupervisor` probes 17127 first; on collision it walks 17128..17137.
 pub const PORT_RANGE_START: u16 = 17_127;
 
-/// T-45: the last candidate port (inclusive). 10 candidates total
-/// (17127-17137). If all occupied → Full mode unavailable.
+/// T-45: the last candidate port (inclusive). The range
+/// `17127..=17137` is 11 candidates total (the 17127 default plus 10
+/// fallbacks). If all occupied → Full mode unavailable.
 pub const PORT_RANGE_END: u16 = 17_137;
 
+// M10 — compile-time assertion that the port fallback chain is exactly 11
+// candidates (the 17127 default + 10 fallbacks per T-45). Catches an
+// accidental `..` vs `..=` off-by-one regression.
+const _: () = assert!(PORT_RANGE_END - PORT_RANGE_START + 1 == 11);
+
 /// T-11: re-probe interval during the launch wait. We poll the HTTP endpoint
-/// every 200ms (≈25 attempts within the 5s budget) rather than blocking on a
-/// single 500ms-timeout probe.
+/// every 200ms. Note: with the M9 pre-probe deadline check, the worst-case
+/// attempt count within the 5s budget is `5000 / (HTTP_TIMEOUT_MS + interval)`
+/// = `5000 / (500 + 200)` ≈ 7 attempts (NOT 25 — the previous "≈25 attempts"
+/// comment assumed zero probe latency). Cited: M9.
 const LAUNCH_REPROBE_INTERVAL_MS: u64 = 200;
 
 /// `ShellExecuteW` returns an HINSTANCE; Win32 docs define a return value
@@ -344,17 +355,47 @@ impl<C: HttpClient> OhmSupervisor<C> {
     ///
     /// Cited: Story 6.4 Boundary #1, #5, #6, #8, #9, #11. T-11, T-45, G10.
     pub fn launch_elevated(&mut self) -> Result<u16> {
-        // Boundary #5 — LHM binary must exist before we do anything.
-        if !self.lhm_exe.exists() {
-            return Err(Error::Platform(format!(
-                "LibreHardwareMonitor.exe not found at {} — cannot launch Full mode",
-                self.lhm_exe.display()
-            )));
+        // H5 — re-entry guard. If sidebar already launched LHM in this
+        // supervisor's lifetime, refuse to launch again — blindly
+        // overwriting `child_handle`/`job_handle` would leak the first
+        // pair (no CloseHandle) until process exit, leaving an orphan
+        // elevated LHM during sidebar's lifetime. G10 contract.
+        if self.sidebar_launched {
+            return Err(Error::Platform(
+                "launch_elevated called twice without shutdown — refusing to leak prior child/job handle (G10)".into(),
+            ));
         }
 
         // T-45 — pick a free port (handles already-running LHM + fallback).
-        let port = pick_free_port(&self.client)?;
-        self.resolved_port = Some(port);
+        let port = match pick_free_port(&self.client)? {
+            PortPick::AlreadyRunning(already_port) => {
+                // H4 / AD-8 step 1 — LHM is already answering. Reuse the
+                // port WITHOUT relaunching, WITHOUT setting
+                // `sidebar_launched` (G10 — sidebar does not own the
+                // user's LHM and MUST NOT kill it on shutdown). Skip the
+                // config patch + ShellExecuteW + Job Object entirely.
+                self.resolved_port = Some(already_port);
+                debug!(
+                    port = already_port,
+                    "launch_elevated: LHM already running — reusing port, no relaunch (AD-8 step 1)"
+                );
+                return Ok(already_port);
+            }
+            PortPick::Free(free_port) => {
+                // Boundary #5 — only a new launch requires the bundled
+                // executable. An already-running LHM was handled above and
+                // must be reusable even when this installation does not ship
+                // its own executable.
+                if !self.lhm_exe.exists() {
+                    return Err(Error::Platform(format!(
+                        "LibreHardwareMonitor.exe not found at {} — cannot launch Full mode",
+                        self.lhm_exe.display()
+                    )));
+                }
+                self.resolved_port = Some(free_port);
+                free_port
+            }
+        };
 
         // Boundary #11 — patch BOTH keys before launch (the #1 gotcha).
         patch_lhm_config(&self.lhm_config, port)?;
@@ -443,14 +484,28 @@ impl<C: HttpClient> OhmSupervisor<C> {
     ///
     /// Cited: Story 6.4 Boundary #4. G10. T-39 (shutdown hierarchy).
     pub fn shutdown(&mut self) -> Result<()> {
+        self.shutdown_with_budget(Duration::from_millis(1_500))
+    }
+
+    /// Shut down a sidebar-owned child within the caller's remaining budget.
+    /// The Windows waits share one absolute deadline, so the post-terminate
+    /// re-wait cannot add another full timeout after the first wait expires.
+    pub fn shutdown_with_budget(&mut self, budget: Duration) -> Result<()> {
         if !self.sidebar_launched {
             // G10 — user-started LHM is left running.
             debug!("shutdown: sidebar did not launch LHM — leaving child running (G10)");
             return Ok(());
         }
         // Close the Job Object handle. With JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-        // set (see create_and_assign_job), this terminates the child. Closing
-        // the child handle separately is not needed — the job does the kill.
+        // set (see create_and_assign_job), closing it terminates the child.
+        // M8 — wait on the child to synchronize per T-39's staged hierarchy
+        // (the caller has a 1500ms OHM-teardown window). Without the wait,
+        // closing the job handle returns immediately and the caller has no
+        // observable confirmation that LHM is actually dead before the next
+        // shutdown phase runs. The G10 orphan contract still holds (kernel
+        // completes the reap post-exit), but staged shutdown per T-39 is now
+        // observable.
+        let deadline = Instant::now() + budget;
         #[cfg(windows)]
         {
             if let Some(job_raw) = self.job_handle.take() {
@@ -462,11 +517,49 @@ impl<C: HttpClient> OhmSupervisor<C> {
                 let _ = unsafe { windows::Win32::Foundation::CloseHandle(job) };
             }
             if let Some(child_raw) = self.child_handle.take() {
+                let child = HANDLE(child_raw as *mut core::ffi::c_void);
+                // M8 — wait only until the caller's absolute deadline for
+                // the child to actually exit. On WAIT_TIMEOUT, fall back to
+                // TerminateProcess + re-wait with the remaining budget. The
+                // waits are bounded so a wedged child cannot stall shutdown
+                // past T-39.
+                //
+                // SAFETY: `child` is a valid process HANDLE we own (from
+                // ShellExecuteExW hProcess). WaitForSingleObject with a
+                // finite timeout is non-blocking past the timeout and
+                // returns WAIT_OBJECT_0 (signaled = exited) or
+                // WAIT_TIMEOUT. TerminateProcess forces exit.
+                let wait = unsafe {
+                    windows::Win32::System::Threading::WaitForSingleObject(
+                        child,
+                        remaining_wait_millis(deadline),
+                    )
+                };
+                if wait == windows::Win32::Foundation::WAIT_EVENT(0x0000_0102) {
+                    // WAIT_TIMEOUT — child didn't exit; force-kill.
+                    // SAFETY: `child` is a valid process HANDLE we own;
+                    // TerminateProcess is the documented force-kill API and
+                    // is safe to call on a handle with PROCESS_TERMINATE
+                    // access (ShellExecuteExW hProcess grants it).
+                    let _ = unsafe {
+                        windows::Win32::System::Threading::TerminateProcess(
+                            child, 1, // exit code
+                        )
+                    };
+                    // Re-wait briefly so CloseHandle runs after exit, not
+                    // mid-termination (cleaner kernel accounting).
+                    // SAFETY: same `child` HANDLE; the re-wait is bounded by the
+                    // same absolute shutdown deadline.
+                    let _ = unsafe {
+                        windows::Win32::System::Threading::WaitForSingleObject(
+                            child,
+                            remaining_wait_millis(deadline),
+                        )
+                    };
+                }
                 // SAFETY: child_raw is the HANDLE from ShellExecuteExW's
                 // hProcess. Closing it after the job has killed the process
-                // is the documented cleanup.
-                let child = HANDLE(child_raw as *mut core::ffi::c_void);
-                // SAFETY: see above — CloseHandle on an owned process handle.
+                // (or TerminateProcess forced exit) is the documented cleanup.
                 let _ = unsafe { windows::Win32::Foundation::CloseHandle(child) };
             }
         }
@@ -599,7 +692,21 @@ impl<C: HttpClient> OhmSupervisor<C> {
     fn wait_for_probe(&self, port: u16) -> Result<bool> {
         let deadline = Instant::now() + Duration::from_millis(LAUNCH_TIMEOUT_MS);
         let interval = Duration::from_millis(LAUNCH_REPROBE_INTERVAL_MS);
+        // Upper bound on a single probe's wall-clock cost (T-10 = 500ms).
+        // We check `now + probe_budget >= deadline` BEFORE each probe so a
+        // probe started near the deadline cannot overshoot T-11 by a full
+        // probe timeout (~500ms). The original post-probe check could
+        // reach ~5500ms in the worst case (probe at t=4999ms returns at
+        // t≈5499ms, then the deadline check fires) — T-11 is 5000ms hard.
+        let probe_budget = Duration::from_millis(HTTP_TIMEOUT_MS);
         loop {
+            // Pre-flight: if a probe would overshoot the deadline, stop.
+            // `checked_add` guards against Instant overflow (theoretically
+            // impossible with a 5s deadline but defensive).
+            let next_probe_end = Instant::now().checked_add(probe_budget);
+            if next_probe_end.is_none_or(|end| end >= deadline) {
+                return Ok(false);
+            }
             if self.probe(port) == ProviderTier::Full {
                 return Ok(true);
             }
@@ -671,18 +778,48 @@ pub fn is_lhm_signature(body: &str) -> bool {
     has_text && has_children
 }
 
-/// Walk the T-45 port fallback chain (17127..17137) and return the first port
+/// Convert the time remaining before an absolute shutdown deadline to the
+/// millisecond timeout expected by Win32. Saturation keeps the conversion
+/// safe even if callers pass a very distant deadline.
+fn remaining_wait_millis(deadline: Instant) -> u32 {
+    u32::try_from(
+        deadline
+            .saturating_duration_since(Instant::now())
+            .as_millis()
+            .min(u128::from(u32::MAX)),
+    )
+    .unwrap_or(u32::MAX)
+}
+
+/// The outcome of [`pick_free_port`] — distinguishes the
+/// "LHM-already-running" case (caller MUST NOT relaunch, MUST NOT mark
+/// itself as the launcher per G10) from the "free port" case (caller
+/// relaunches LHM and owns the child).
+///
+/// Cited: AD-8 step 1, G10 ownership, Story 6.4 H4.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PortPick {
+    /// The port is free (connection refused). Caller launches LHM on it.
+    Free(u16),
+    /// LHM is already answering on this port with a signature body. Caller
+    /// reuses the port WITHOUT relaunching and WITHOUT setting
+    /// `sidebar_launched` (G10 — sidebar does not own the user's LHM).
+    AlreadyRunning(u16),
+}
+
+/// Walk the T-45 port fallback chain (17127..=17137) and return the first port
 /// that is NOT occupied by a non-LHM service. Classification per port:
-/// - LHM signature body → return that port (LHM already running — AD-8 step 1).
-/// - connection-refused/timeout → port is free → return it.
+/// - LHM signature body → [`PortPick::AlreadyRunning`] (LHM already running
+///   — AD-8 step 1; caller reuses the port WITHOUT relaunching).
+/// - connection-refused/timeout → port is free → [`PortPick::Free`].
 /// - non-LHM body (HTML etc.) → port occupied by a foreign service → skip.
 ///
-/// Returns `Ok(port)` on the first usable port, or `Err` if all 10 candidates
-/// are occupied by non-LHM services (Boundary #9 "out of fallback chain" →
-/// the caller keeps Basic tier).
+/// Returns `Ok(PortPick)` on the first usable port, or `Err` if all 11
+/// candidates are occupied by non-LHM services (Boundary #9 "out of
+/// fallback chain" → the caller keeps Basic tier).
 ///
 /// Cited: Story 6.4 Boundary #9. T-45.
-pub fn pick_free_port<C: HttpClient>(client: &C) -> Result<u16> {
+pub fn pick_free_port<C: HttpClient>(client: &C) -> Result<PortPick> {
     for port in PORT_RANGE_START..=PORT_RANGE_END {
         let url = format!("http://127.0.0.1:{port}/data.json");
         match client.get(&url) {
@@ -690,7 +827,7 @@ pub fn pick_free_port<C: HttpClient>(client: &C) -> Result<u16> {
                 if is_lhm_signature(&body) {
                     // LHM already running here — reuse the port, no relaunch.
                     debug!(port, "pick_free_port: LHM already running on this port");
-                    return Ok(port);
+                    return Ok(PortPick::AlreadyRunning(port));
                 }
                 // Non-LHM body — occupied by a foreign service. Skip.
                 debug!(
@@ -701,7 +838,7 @@ pub fn pick_free_port<C: HttpClient>(client: &C) -> Result<u16> {
             Err(OhmError::HttpFailed(_)) => {
                 // Connection refused — port is free.
                 debug!(port, "pick_free_port: port free (connection refused)");
-                return Ok(port);
+                return Ok(PortPick::Free(port));
             }
             Err(OhmError::Timeout) => {
                 // T-10 timeout — ambiguous; treat as occupied (something is
@@ -1150,8 +1287,12 @@ mod tests {
                 Err(OhmError::HttpFailed("connection refused".to_string()))
             }
         });
-        let port = pick_free_port(&mock).expect("free port");
-        assert_eq!(port, 17_128, "must fall back to 17128 when 17127 occupied");
+        let pick = pick_free_port(&mock).expect("free port");
+        assert_eq!(
+            pick,
+            PortPick::Free(17_128),
+            "must fall back to Free(17128) when 17127 occupied"
+        );
     }
 
     /// T-45: if 17127 is free (connection-refused), pick it (don't skip).
@@ -1160,11 +1301,11 @@ mod tests {
         let mut mock = MockFakeClient::new();
         mock.expect_get()
             .returning(|_| Err(OhmError::HttpFailed("connection refused".to_string())));
-        let port = pick_free_port(&mock).expect("free port");
-        assert_eq!(port, 17_127);
+        let pick = pick_free_port(&mock).expect("free port");
+        assert_eq!(pick, PortPick::Free(17_127));
     }
 
-    /// T-45: if all 10 candidates (17127-17137) are occupied by non-LHM
+    /// T-45: if all 11 candidates (17127-17137) are occupied by non-LHM
     /// services → `Err` (Full unavailable). Cited: "out of fallback chain".
     #[test]
     fn pick_free_port_errors_when_all_occupied() {
@@ -1177,15 +1318,19 @@ mod tests {
 
     /// T-45: a port already running LHM (LHM signature body) is NOT "free" —
     /// it means LHM is already running. `pick_free_port` returns that port
-    /// (caller can use it directly without relaunching). This is the
-    /// "already-running LHM" path (AD-8 step 1).
+    /// as `AlreadyRunning` (caller reuses WITHOUT relaunching). This is the
+    /// "already-running LHM" path (AD-8 step 1, H4).
     #[test]
-    fn pick_free_port_returns_lhm_port_if_already_running() {
+    fn pick_free_port_returns_already_running_when_lhm_signature() {
         let mut mock = MockFakeClient::new();
         mock.expect_get()
             .returning(move |_| Ok(LHM_SIGNATURE_BODY.to_string()));
-        let port = pick_free_port(&mock).expect("port");
-        assert_eq!(port, 17_127, "first LHM-detected port is the pick");
+        let pick = pick_free_port(&mock).expect("port");
+        assert_eq!(
+            pick,
+            PortPick::AlreadyRunning(17_127),
+            "LHM-detected port is AlreadyRunning"
+        );
     }
 
     // ==========================================================
@@ -1212,6 +1357,146 @@ mod tests {
                 || msg.to_lowercase().contains("missing"),
             "error must mention LHM/exe/missing: {msg}"
         );
+    }
+
+    // ==========================================================
+    // Boundary #11 (H4) — already-running LHM: launch_elevated MUST
+    // skip relaunch (no spurious UAC, sidebar_launched stays false).
+    // ==========================================================
+
+    /// Cited: AD-8 step 1 ("if LHM already running, use it, do not
+    /// relaunch"), G10 (kill on shutdown only if sidebar-launched).
+    ///
+    /// RED: `launch_elevated` cannot distinguish "LHM already running"
+    /// from "free port" — `pick_free_port` returned `Ok(port)` for both
+    /// before H4. So when LHM is already answering on 17127,
+    /// `launch_elevated` unconditionally patched the config + called
+    /// `ShellExecuteW("runas")` + set `sidebar_launched=true`. The
+    /// consequences: a redundant UAC prompt, the new child failing to
+    /// bind 17127 (silent failure), and sidebar believing it owns a
+    /// process it doesn't really own.
+    ///
+    /// This test stages an LHM-shaped probe body on 17127 with the LHM
+    /// exe present in the tempdir (so the binary-existence check passes)
+    /// and asserts `launch_elevated` returns `Ok(17127)` WITHOUT setting
+    /// `sidebar_launched`, WITHOUT touching `child_handle`/`job_handle`.
+    #[test]
+    fn launch_elevated_skips_relaunch_when_lhm_already_running() {
+        let mut mock = MockFakeClient::new();
+        // 17127 answers with an LHM signature body — LHM is already up.
+        mock.expect_get()
+            .returning(move |_| Ok(LHM_SIGNATURE_BODY.to_string()));
+        let (mut sv, dir) = supervisor_in_tempdir(mock);
+
+        // Stage a stub LHM exe so the binary-existence early-return does
+        // NOT fire (we want to reach the pick_free_port branch). The stub
+        // is an empty file; launch_elevated never actually executes it
+        // because the already-running path must short-circuit first.
+        let exe = dir.path().join("LibreHardwareMonitor.exe");
+        std::fs::write(&exe, b"stub").expect("write stub exe");
+
+        let result = sv.launch_elevated();
+        assert!(result.is_ok(), "must return Ok(port), got {result:?}");
+        assert_eq!(result.unwrap(), 17_127, "resolved port is 17127");
+        // H4 core assertions — sidebar did NOT take ownership.
+        assert!(
+            !sv.sidebar_launched(),
+            "AD-8 step 1: sidebar MUST NOT mark itself as the launcher when LHM is already running"
+        );
+        assert!(
+            sv.child_handle.is_none(),
+            "no child handle when reusing already-running LHM"
+        );
+        assert!(
+            sv.job_handle.is_none(),
+            "no job handle when reusing already-running LHM"
+        );
+        assert_eq!(sv.resolved_port(), Some(17_127));
+    }
+
+    /// AD-8 step 1 must not require the bundled executable when an existing
+    /// LHM instance is already answering. Reuse is specifically the path for
+    /// installations where the user owns LHM independently of this binary.
+    #[test]
+    fn launch_elevated_reuses_running_lhm_without_bundled_exe() {
+        let mut mock = MockFakeClient::new();
+        mock.expect_get()
+            .returning(move |_| Ok(LHM_SIGNATURE_BODY.to_string()));
+        let (mut sv, _dir) = supervisor_in_tempdir(mock);
+
+        // Do not create LibreHardwareMonitor.exe: probing must happen before
+        // the bundled-executable check on the already-running path.
+        let result = sv.launch_elevated();
+        assert_eq!(result.expect("reuse must succeed"), 17_127);
+        assert!(!sv.sidebar_launched());
+        assert!(sv.child_handle.is_none());
+        assert!(sv.job_handle.is_none());
+        assert_eq!(sv.resolved_port(), Some(17_127));
+        assert!(
+            !sv.lhm_config.exists(),
+            "already-running reuse must not patch a launch config"
+        );
+    }
+
+    // ==========================================================
+    // Boundary #12 (H5) — launch_elevated re-entry guard
+    // ==========================================================
+
+    /// Cited: G10 (no orphan elevated LHM during sidebar's lifetime).
+    ///
+    /// RED: `launch_elevated` blindly overwrites `child_handle`/`job_handle`
+    /// on retry without `CloseHandle`. A retry after a T-11 timeout leaks
+    /// the first child+job handle until process exit.
+    ///
+    /// We simulate a previously-launched supervisor by manually setting
+    /// `sidebar_launched=true` (the production post-launch state) and
+    /// assert a second `launch_elevated` returns `Err` without invoking
+    /// `shellexecute_runas` again.
+    #[test]
+    fn launch_elevated_reentry_returns_err_without_leaking_handles() {
+        let mut mock = MockFakeClient::new();
+        mock.expect_get()
+            .returning(|_| Err(OhmError::HttpFailed("connection refused".to_string())));
+        let (mut sv, dir) = supervisor_in_tempdir(mock);
+
+        // Stage LHM exe so the early-return doesn't fire.
+        let exe = dir.path().join("LibreHardwareMonitor.exe");
+        std::fs::write(&exe, b"stub").expect("write stub exe");
+
+        // Simulate a prior successful launch (the H5 re-entry state). We
+        // can't easily exercise the real `shellexecute_runas` path in a
+        // unit test (it triggers UAC), so we mark the state directly.
+        sv.sidebar_launched = true;
+        sv.child_handle = Some(0xDEAD_BEEF_isize); // sentinel — never a real handle
+        sv.job_handle = Some(0xCAFE_F00D_isize);
+
+        let result = sv.launch_elevated();
+        assert!(
+            result.is_err(),
+            "H5: re-entry MUST return Err (got {result:?})"
+        );
+        let msg = format!("{}", result.unwrap_err());
+        assert!(
+            msg.to_lowercase().contains("already")
+                || msg.to_lowercase().contains("launched")
+                || msg.to_lowercase().contains("re-entry")
+                || msg.to_lowercase().contains("twice")
+                || msg.to_lowercase().contains("leak"),
+            "H5 error must mention already/launched/re-entry/twice/leak: {msg}"
+        );
+        // State is unchanged — the sentinel handles are still there (we
+        // did NOT overwrite them, did NOT leak them).
+        assert!(sv.sidebar_launched, "state unchanged");
+        assert_eq!(sv.child_handle, Some(0xDEAD_BEEF_isize));
+        assert_eq!(sv.job_handle, Some(0xCAFE_F00D_isize));
+    }
+
+    #[test]
+    fn remaining_wait_millis_never_exceeds_deadline_budget() {
+        let deadline = Instant::now() + Duration::from_millis(25);
+        assert!(remaining_wait_millis(deadline) <= 25);
+        std::thread::sleep(Duration::from_millis(30));
+        assert_eq!(remaining_wait_millis(deadline), 0);
     }
 
     /// `is_shellexecute_error`: HINSTANCE values ≤32 are errors.

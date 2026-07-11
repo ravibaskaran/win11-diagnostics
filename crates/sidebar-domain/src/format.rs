@@ -1,3 +1,5 @@
+//! Test Layer: L0 — inline unit tests in this module.
+//!
 //! Story 1.3 — NFR-8 human-readable formatters.
 //!
 //! Pure functions that map `(value, unit)` → display string. Defaults are
@@ -122,7 +124,11 @@ pub fn format_bps(bps: u64) -> String {
     }
     #[allow(clippy::cast_precision_loss)]
     let v = bps as f64;
-    format_scaled(v, 1_000.0, &["bps", "kbps", "Mbps", "Gbps", "Tbps", "Pbps"])
+    format_scaled(
+        v,
+        1_000.0,
+        &["bps", "kbps", "Mbps", "Gbps", "Tbps", "Pbps", "Ebps"],
+    )
 }
 
 // ===========================================================================
@@ -256,16 +262,53 @@ fn format_scaled(value: f64, base: f64, units: &[&str]) -> String {
         v /= base;
         idx += 1;
     }
-    // 3 significant figures: if v >= 100, no decimals; if v >= 10, 1 decimal;
-    // else 2 decimals. This yields "3.84", "48.2", "184" — matching §7.1.
-    let formatted = if v >= 100.0 {
-        format!("{v:.0}")
-    } else if v >= 10.0 {
-        format!("{v:.1}")
-    } else {
-        format!("{v:.2}")
-    };
-    format!("{formatted} {}", units[idx])
+    // T-30: choose decimal places from the value's current magnitude, then
+    // round and re-evaluate once. Re-evaluation matters at 9.996 → 10.0 and
+    // 99.96 → 100; choosing precision from an integer-rounded candidate
+    // would incorrectly turn 99.5 into 100 and lose a significant figure.
+    loop {
+        let mut precision = if v >= 100.0 {
+            0
+        } else if v >= 10.0 {
+            1
+        } else {
+            2
+        };
+        let mut factor = match precision {
+            0 => 1.0,
+            1 => 10.0,
+            _ => 100.0,
+        };
+        let mut rounded = (v * factor).round() / factor;
+        let rounded_precision = if rounded >= 100.0 {
+            0
+        } else if rounded >= 10.0 {
+            1
+        } else {
+            2
+        };
+        if rounded_precision < precision {
+            precision = rounded_precision;
+            factor = match precision {
+                0 => 1.0,
+                1 => 10.0,
+                _ => 100.0,
+            };
+            rounded = (v * factor).round() / factor;
+        }
+
+        if rounded >= base && idx + 1 < units.len() {
+            idx += 1;
+            v = rounded / base;
+            // A tier rollover is conventionally rendered without artificial
+            // trailing zeroes (999.995 kHz → 1 MHz).
+            if (v - 1.0).abs() < f64::EPSILON {
+                return format!("1 {}", units[idx]);
+            }
+            continue;
+        }
+        return format!("{rounded:.precision$} {}", units[idx]);
+    }
 }
 
 #[cfg(test)]
@@ -428,6 +471,21 @@ mod tests {
     }
 
     #[test]
+    fn format_hz_keeps_three_figures_at_99_5_boundary() {
+        assert_eq!(format_hz(99_500_000), "99.5 MHz");
+    }
+
+    #[test]
+    fn format_hz_rounds_99_94_to_99_9_not_100() {
+        assert_eq!(format_hz(99_940_000), "99.9 MHz");
+    }
+
+    #[test]
+    fn format_bps_max_u64_uses_ebps_and_three_figures() {
+        assert_eq!(format_bps(u64::MAX), "18.4 Ebps");
+    }
+
+    #[test]
     fn format_temp_rounds_correctly() {
         assert_eq!(format_temp(62.4, TempUnit::Celsius), "62 °C");
         assert_eq!(format_temp(62.5, TempUnit::Celsius), "63 °C");
@@ -444,5 +502,116 @@ mod tests {
         assert_eq!(format_percent(42.4), "42%");
         assert_eq!(format_percent(42.5), "43%");
         assert_eq!(format_percent(0.0), "0%");
+    }
+
+    // ----- Boundary #6: significant figures at magnitude rollover (T-30).
+    //
+    // T-30 mandates 3 significant figures for Hz/bytes/bps. The original
+    // implementation chose the decimal-place branch on the PRE-rounded
+    // mantissa, so values that round across a magnitude boundary produced
+    // 4+ sig figs ("10.00 MHz", "100.0 MHz"). These tests pin the
+    // round-then-branch fix.
+
+    /// Cited: T-30, format_hz — value just under 10 MHz that rounds up to
+    /// 10.00 with the pre-rounded algorithm. Must display as "10.0 MHz"
+    /// (3 sig figs), not "10.00 MHz" (4 sig figs).
+    #[test]
+    fn format_hz_just_under_10mhz_rounds_to_3_sig_figs() {
+        // Currently fails: emits "10.00 MHz".
+        assert_eq!(format_hz(9_996_000), "10.0 MHz");
+    }
+
+    /// Cited: T-30 — value just under 100 MHz that rounds up to 100.0.
+    /// Must display as "100 MHz" (3 sig figs), not "100.0 MHz".
+    #[test]
+    fn format_hz_just_under_100mhz_rounds_to_3_sig_figs() {
+        // Currently fails: emits "100.0 MHz".
+        assert_eq!(format_hz(99_990_000), "100 MHz");
+    }
+
+    /// Cited: T-30 — value just under 10 GHz that rounds up to 10.00 GHz.
+    #[test]
+    fn format_hz_just_under_10ghz_rounds_to_3_sig_figs() {
+        // 9_996_000_000 Hz = 9.996 GHz → rounds to "10.0 GHz" (3 sig figs,
+        // the trailing zero after the decimal counts as a sig fig).
+        assert_eq!(format_hz(9_996_000_000), "10.0 GHz");
+    }
+
+    /// Cited: T-30 — value just under 100 MHz that rounds up across the
+    /// kHz/MHz boundary. 9.995e7 Hz = 99.95 MHz → rounds to "100 MHz".
+    #[test]
+    fn format_hz_khz_value_near_boundary() {
+        // 99_995_000 Hz = 99.995 MHz rounds to "100 MHz" (3 sig figs).
+        assert_eq!(format_hz(99_995_000), "100 MHz");
+    }
+
+    /// Cited: T-30 — bytes near a tier boundary behave identically.
+    #[test]
+    fn format_bytes_near_magnitude_boundary_decimal() {
+        // 9_996_000_000 B = 9.996 GB → rounds to "10.0 GB" (3 sig figs;
+        // trailing zero after the decimal is significant). NOT "10.00 GB"
+        // (4 sig figs, the original bug).
+        assert_eq!(format_bytes(9_996_000_000, Base::Decimal), "10.0 GB");
+    }
+
+    /// Cited: T-30 — across-tier rollover: 999.995 kHz rounds to 1000 kHz
+    /// which exceeds 3 sig figs; the fix rolls it into "1 MHz".
+    #[test]
+    fn format_hz_just_under_1mhz_rolls_to_next_tier() {
+        // 999_995 Hz = 999.995 kHz → rounds to 1000 kHz → rolls to "1 MHz".
+        assert_eq!(format_hz(999_995), "1 MHz");
+    }
+
+    /// Cited: T-30 — bytes across-tier rollover.
+    #[test]
+    fn format_bytes_rolls_across_tier_at_boundary() {
+        // 999_995_000 B = 999.995 MB → rolls to "1 GB".
+        assert_eq!(format_bytes(999_995_000, Base::Decimal), "1 GB");
+    }
+
+    /// Cited: T-30 — regression guard. The mantissa token of every
+    /// `format_hz` output (numeric portion) must contain at most 3
+    /// significant figures when expressed without leading/trailing zeros.
+    /// Sampled across magnitudes that historically triggered the bug.
+    #[test]
+    fn format_hz_no_more_than_3_sig_figs_across_magnitudes() {
+        let cases = [
+            0u64,
+            1,
+            500,
+            999,
+            1_000,
+            9_996,
+            99_995,
+            99_996,
+            999_995,
+            9_996_000,
+            99_990_000,
+            99_995_000,
+            999_990_000,
+            9_996_000_000,
+            99_990_000_000,
+            u64::MAX,
+        ];
+        for &hz in &cases {
+            let s = format_hz(hz);
+            let num: &str = s.split_whitespace().next().unwrap();
+            // Significant-figure count: drop '-', take digits before '.',
+            // strip leading zeros, then count digits (the integer part
+            // already implies sig-fig width; decimals add to it).
+            let neg = num.starts_with('-');
+            let abs = &num[usize::from(neg)..];
+            let (int_part, frac_part) = abs.split_once('.').unwrap_or((abs, ""));
+            let int_digits: String = int_part.chars().filter(char::is_ascii_digit).collect();
+            let int_sig: String = int_digits.trim_start_matches('0').to_string();
+            // int_sig.len() (1-3) + frac digits must total ≤3.
+            let int_sig_len = if int_sig.is_empty() { 0 } else { int_sig.len() };
+            let frac_len = frac_part.chars().filter(char::is_ascii_digit).count();
+            let sig_figs = int_sig_len + frac_len;
+            assert!(
+                sig_figs <= 3,
+                "T-30: format_hz({hz}) = {s:?}; mantissa {abs:?} has {sig_figs} sig figs (>3)"
+            );
+        }
     }
 }

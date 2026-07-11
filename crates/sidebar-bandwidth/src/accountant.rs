@@ -61,7 +61,7 @@ use sidebar_domain::reading::{MetricKind, Reading};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
-use crate::accumulator::MonthlyAccumulator;
+use crate::accumulator::{AccEntry, MonthlyAccumulator};
 use crate::clock::Clock;
 
 /// Configuration for the accountant — injected at construction time so tests
@@ -114,6 +114,7 @@ pub struct BandwidthAccountant {
     config: AccountantConfig,
     accumulator: MonthlyAccumulator,
     cycle_start: NaiveDate,
+    active_cycle_start_day: CycleStartDay,
 }
 
 impl BandwidthAccountant {
@@ -133,14 +134,116 @@ impl BandwidthAccountant {
         clock: Box<dyn Clock>,
         config: AccountantConfig,
     ) -> Self {
-        let cycle_start = cycle_start_for_today(config.cycle_start_day, clock.now().date());
+        let today = clock.now().date();
+        let configured_cycle_start = cycle_start_for_today(config.cycle_start_day, today);
+        // R11 (crash/restart recovery): rehydrate the in-memory accumulator
+        // from any persisted `current_cycle` rows. Without this, the first
+        // live tick re-baselines the raw counter (delta 0) and the next
+        // flush's UPSERT (ON CONFLICT DO UPDATE) OVERWRITES the pre-restart
+        // byte totals with the small post-restart delta — silent data loss
+        // on every restart. Rehydrating preserves rx_bytes/tx_bytes/cycle_start
+        // while leaving prev_rx_counter=None so the first live tick still
+        // re-baselines the counter without losing the cumulative totals.
+        // G15: a rehydrate error is logged + swallowed — the accountant
+        // starts with an empty accumulator (degraded but functional) rather
+        // than crashing startup. Rows whose cycle_start predates the
+        // current cycle are skipped (the rollover check will archive them
+        // on the first debounce tick).
+        let (cycle_start, rows) = match sidebar_persistence::bandwidth_repo::load_current_cycle(
+            &conn,
+        ) {
+            Ok(rows) => {
+                // A config edit can move the computed start backwards or
+                // forwards while the persisted cycle is still active. Keep
+                // the newest persisted row from the current billing window
+                // authoritative; this prevents a restart from re-splitting
+                // totals into a newly configured cycle. Rows older than the
+                // maximum 31-day cycle remain stale and are left for the
+                // rollover archive path.
+                let persisted_start = rows
+                    .iter()
+                    .filter_map(|row| NaiveDate::parse_from_str(&row.cycle_start, "%Y-%m-%d").ok())
+                    .filter(|start| {
+                        let age = (today - *start).num_days();
+                        (0..=31).contains(&age)
+                    })
+                    .max();
+                (persisted_start.unwrap_or(configured_cycle_start), rows)
+            }
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    "BandwidthAccountant: load_current_cycle failed on startup (G15 — starting with empty accumulator)"
+                );
+                (configured_cycle_start, Vec::new())
+            }
+        };
+        let persisted_rule = match sidebar_persistence::bandwidth_repo::load_current_cycle_metadata(
+            &conn,
+        ) {
+            Ok(Some(metadata)) if metadata.cycle_start == cycle_start.to_string() => {
+                parse_cycle_rule(&metadata.cycle_start_rule)
+            }
+            Ok(_) => None,
+            Err(e) => {
+                tracing::warn!(error = %e, "rehydrate: cycle metadata unavailable; inferring rule");
+                None
+            }
+        };
+        let active_cycle_start_day = persisted_rule.unwrap_or_else(|| {
+            rows.iter()
+                .filter_map(|row| NaiveDate::parse_from_str(&row.cycle_start, "%Y-%m-%d").ok())
+                .find(|start| *start == cycle_start)
+                .map_or(config.cycle_start_day, infer_cycle_start_day)
+        });
+        let mut accumulator = MonthlyAccumulator::new();
+        if !rows.is_empty() {
+            for row in &rows {
+                let Ok(row_start) = NaiveDate::parse_from_str(&row.cycle_start, "%Y-%m-%d") else {
+                    tracing::warn!(
+                        luid = row.adapter_luid,
+                        cycle_start = %row.cycle_start,
+                        "rehydrate: unparseable cycle_start; skipping row"
+                    );
+                    continue;
+                };
+                // Only rehydrate rows belonging to the current cycle.
+                // Older rows belong to a cycle that should have been
+                // archived already — the rollover path will sweep them
+                // via archive_cycle on the next debounce tick.
+                if row_start != cycle_start {
+                    tracing::info!(
+                        luid = row.adapter_luid,
+                        row_cycle = %row_start,
+                        current_cycle = %cycle_start,
+                        "rehydrate: row belongs to a previous cycle; skipping (rollover will archive)"
+                    );
+                    continue;
+                }
+                let luid = row.adapter_luid.cast_unsigned();
+                let entry = AccEntry {
+                    cycle_start: row_start,
+                    rx_bytes: row.rx_bytes.cast_unsigned(),
+                    tx_bytes: row.tx_bytes.cast_unsigned(),
+                    prev_rx_counter: None,
+                    prev_tx_counter: None,
+                };
+                accumulator.by_luid.insert(luid, entry);
+            }
+            tracing::info!(
+                rehydrated = accumulator.by_luid.len(),
+                cycle_start = %cycle_start,
+                "BandwidthAccountant: rehydrated accumulator from current_cycle (R11)"
+            );
+        }
         Self {
             rx,
             conn,
             clock,
             config,
-            accumulator: MonthlyAccumulator::new(),
+            accumulator,
             cycle_start,
+            active_cycle_start_day,
         }
     }
 
@@ -231,7 +334,7 @@ impl BandwidthAccountant {
         let today = self.clock.now().date();
         // Compute the end of the cycle that `self.cycle_start` belongs to.
         let Some(cycle_end_date) = cycle_end(
-            self.config.cycle_start_day,
+            self.active_cycle_start_day,
             self.cycle_start.year(),
             self.cycle_start.month(),
         ) else {
@@ -276,6 +379,7 @@ impl BandwidthAccountant {
             }
             // New cycle starts the day after cycle_end.
             self.cycle_start = next_cycle_start(cycle_end_date);
+            self.active_cycle_start_day = self.config.cycle_start_day;
             // Reset the in-memory accumulator so per-LUID prev-counter
             // baselines re-establish (first tick of the new cycle = delta 0).
             self.accumulator = MonthlyAccumulator::new();
@@ -293,6 +397,14 @@ impl BandwidthAccountant {
     fn flush(&self) {
         let updated_at = iso_ts(self.clock.now());
         let cycle_start_str = self.cycle_start.to_string();
+        let cycle_rule = cycle_rule_key(self.active_cycle_start_day);
+        if let Err(e) = sidebar_persistence::bandwidth_repo::save_current_cycle_metadata(
+            &self.conn,
+            &cycle_start_str,
+            &cycle_rule,
+        ) {
+            tracing::error!(error = %e, "flush: save_current_cycle_metadata failed (G15 — continuing)");
+        }
         for (luid, entry) in &self.accumulator.by_luid {
             // T-26: LUID + byte counters stored as i64 reinterpret-cast.
             // u64 → i64 cast is the documented boundary contract.
@@ -389,23 +501,78 @@ pub fn group_network_readings(readings: &[Reading]) -> HashMap<u64, (u64, u64)> 
 /// tokio task.
 #[must_use]
 pub fn cycle_start_for_today(cycle_start_day: CycleStartDay, today: NaiveDate) -> NaiveDate {
-    let day = match cycle_start_day {
-        CycleStartDay::Day(d) => u32::from(d),
-        CycleStartDay::LastDayOfMonth => {
-            sidebar_domain::billing::last_day_of_month(today.year(), today.month())
-        }
-    };
-    if today.day() >= day {
-        // Start day already passed this month → start is this month's `day`.
-        NaiveDate::from_ymd_opt(today.year(), today.month(), day).unwrap_or(today)
-    } else {
-        // Start day is yet to come this month → start is last month's `day`.
-        let (y, m) = if today.month() == 1 {
-            (today.year() - 1, 12u32)
+    // The two variants need different month-day arithmetic: `Day(d)` carries
+    // a fixed day-of-month that exists in every month (T-26 caps at 28);
+    // `LastDayOfMonth` is a moving target — the previous cycle's start day
+    // is the LAST day of the PREVIOUS month (NOT this month's last day
+    // applied to the previous month, which fails for short months).
+    if let Some(d) = cycle_start_day.day_value() {
+        let day = u32::from(d);
+        if today.day() >= day {
+            // Start day already passed this month → start is this month's `day`.
+            NaiveDate::from_ymd_opt(today.year(), today.month(), day).unwrap_or(today)
         } else {
-            (today.year(), today.month() - 1)
-        };
-        NaiveDate::from_ymd_opt(y, m, day).unwrap_or(today)
+            // Start day is yet to come this month → start is last month's `day`.
+            let (y, m) = prev_month(today.year(), today.month());
+            NaiveDate::from_ymd_opt(y, m, day).unwrap_or(today)
+        }
+    } else {
+        // The cycle "start day" for THIS month is the last day of this
+        // month; for the PREVIOUS cycle it is the last day of the
+        // previous month.
+        let this_month_last =
+            sidebar_domain::billing::last_day_of_month(today.year(), today.month());
+        if today.day() >= this_month_last {
+            // Today is the last day (or past it — impossible within a
+            // single month but the >= is defensive) → start is this
+            // month's last day.
+            NaiveDate::from_ymd_opt(today.year(), today.month(), this_month_last).unwrap_or(today)
+        } else {
+            // Last day of this month hasn't arrived yet → start is the
+            // last day of the PREVIOUS month.
+            let (y, m) = prev_month(today.year(), today.month());
+            let prev_last = sidebar_domain::billing::last_day_of_month(y, m);
+            NaiveDate::from_ymd_opt(y, m, prev_last).unwrap_or(today)
+        }
+    }
+}
+
+/// Return the `(year, month)` pair for the calendar month before the given
+/// `(year, month)`. December → previous year's January.
+fn prev_month(year: i32, month: u32) -> (i32, u32) {
+    if month == 1 {
+        (year - 1, 12)
+    } else {
+        (year, month - 1)
+    }
+}
+
+/// Infer the active cycle rule from a persisted cycle start. This lets a
+/// mid-cycle config edit remain pending until the persisted cycle rolls over.
+fn infer_cycle_start_day(start: NaiveDate) -> CycleStartDay {
+    if start.day() == sidebar_domain::billing::last_day_of_month(start.year(), start.month()) {
+        CycleStartDay::LastDayOfMonth
+    } else {
+        CycleStartDay::clamped_day(u8::try_from(start.day()).unwrap_or(28))
+    }
+}
+
+fn cycle_rule_key(rule: CycleStartDay) -> String {
+    rule.day_value().map_or_else(
+        || "last_day_of_month".to_string(),
+        |day| format!("day:{day}"),
+    )
+}
+
+fn parse_cycle_rule(rule: &str) -> Option<CycleStartDay> {
+    if rule == "last_day_of_month" {
+        return Some(CycleStartDay::LastDayOfMonth);
+    }
+    let day = rule.strip_prefix("day:")?.parse::<u8>().ok()?;
+    if (1..=28).contains(&day) {
+        Some(CycleStartDay::day(day))
+    } else {
+        None
     }
 }
 
@@ -534,7 +701,7 @@ mod tests {
         let (tx, rx) = broadcast::channel::<Vec<Reading>>(8);
         let clock = FakeClock::new(t0);
         let config = AccountantConfig {
-            cycle_start_day: CycleStartDay::Day(1),
+            cycle_start_day: CycleStartDay::day(1),
             flush_interval: Duration::from_millis(flush_interval_ms),
             history_keep: 1,
         };
@@ -593,6 +760,212 @@ mod tests {
         assert_eq!(row.adapter_luid, 100_i64, "LUID 100 round-trips (T-26)");
         assert_eq!(row.rx_bytes, 500_i64, "rx_bytes = delta 1500-1000 = 500");
         assert_eq!(row.tx_bytes, 200_i64, "tx_bytes = delta 700-500 = 200");
+    }
+
+    // ---------------------------------------------------------------------
+    // R11 regression — restart mid-cycle MUST rehydrate the accumulator
+    // from `current_cycle` so the user-visible byte totals don't reset.
+    //
+    // RED: BandwidthAccountant::new always starts with an empty
+    // MonthlyAccumulator; the persisted pre-restart totals are never
+    // loaded back. After two ticks (delta rx=500, tx=200) the flush UPSERT
+    // (ON CONFLICT DO UPDATE) OVERWRITES the pre-restart 40_000/20_000
+    // with 500/200 — silent data loss on every restart.
+    // ---------------------------------------------------------------------
+    /// Cited: architecture.md §6 (R11 rehydrate), Story 5.2 R11 contract,
+    /// `bandwidth_repo::load_current_cycle` doc ("used by the accountant on
+    /// startup (R11) to rehydrate in-memory state after a restart / crash").
+    #[tokio::test]
+    async fn restart_mid_cycle_rehydrates_persisted_totals() {
+        // 1. Seed the DB with a pre-restart cycle row.
+        let (conn, db_path, dir) = open_temp_db();
+        let cycle_start = "2026-07-01";
+        let updated_at = "2026-07-15 12:00:00";
+        bandwidth_repo::save_accumulator(
+            &conn,
+            100_i64,
+            "eth0",
+            40_000_i64,
+            20_000_i64,
+            cycle_start,
+            updated_at,
+        )
+        .expect("seed pre-restart row");
+        // Drop our writer so the accountant can own the only connection.
+        // (Reusing the same connection via `conn` would also work — the
+        // accountant takes ownership — but dropping is cleaner.)
+        drop(conn);
+
+        // 2. Construct an accountant against the seeded DB. The accountant's
+        //    `new()` must rehydrate `accumulator` from `current_cycle`.
+        let accountant_conn = Connection::open(&db_path).expect("reopen");
+        let (tx, rx) = broadcast::channel::<Vec<Reading>>(8);
+        let clock = FakeClock::new(t0_dt()); // 2026-07-15 — same cycle
+        let config = AccountantConfig {
+            cycle_start_day: CycleStartDay::day(1),
+            flush_interval: Duration::from_millis(50),
+            history_keep: 1,
+        };
+        let accountant = BandwidthAccountant::new(rx, accountant_conn, Box::new(clock), config);
+
+        // 3. Two live ticks → delta rx=500, tx=200 over the pre-restart baseline.
+        tx.send(net_readings(100, 1000, 500))
+            .expect("send tick 1 (baseline)");
+        tx.send(net_readings(100, 1500, 700))
+            .expect("send tick 2 (delta 500/200)");
+        drop(tx);
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            accountant.run(CancellationToken::new()),
+        )
+        .await
+        .expect("accountant exits within 2s");
+        assert!(result.is_ok());
+
+        // 4. Inspect — the persisted row must show rehydrated + delta totals.
+        let reader = inspect_db(&db_path);
+        let rows = bandwidth_repo::load_current_cycle(&reader).expect("load");
+        assert_eq!(rows.len(), 1, "exactly 1 LUID row");
+        let row = &rows[0];
+        assert_eq!(row.adapter_luid, 100_i64, "LUID 100");
+        assert_eq!(
+            row.rx_bytes, 40_500_i64,
+            "rx_bytes must be rehydrated 40_000 + delta 500 = 40_500"
+        );
+        assert_eq!(
+            row.tx_bytes, 20_200_i64,
+            "tx_bytes must be rehydrated 20_000 + delta 200 = 20_200"
+        );
+        // Hold the TempDir guard until after inspection so the file isn't deleted.
+        drop(dir);
+    }
+
+    /// A changed cycle-start setting must not retroactively split an already
+    /// persisted current cycle. The persisted cycle start remains authoritative
+    /// until rollover; the new setting applies to the next cycle.
+    #[tokio::test]
+    async fn config_change_preserves_persisted_current_cycle() {
+        let (conn, db_path, dir) = open_temp_db();
+        bandwidth_repo::save_accumulator(
+            &conn,
+            100_i64,
+            "eth0",
+            40_000_i64,
+            20_000_i64,
+            "2026-07-01",
+            "2026-07-15 12:00:00",
+        )
+        .expect("seed pre-change row");
+        drop(conn);
+
+        let accountant_conn = Connection::open(&db_path).expect("reopen");
+        let (tx, rx) = broadcast::channel::<Vec<Reading>>(8);
+        let config = AccountantConfig {
+            cycle_start_day: CycleStartDay::day(20),
+            flush_interval: Duration::from_millis(50),
+            history_keep: 1,
+        };
+        let accountant = BandwidthAccountant::new(
+            rx,
+            accountant_conn,
+            Box::new(FakeClock::new(t0_dt())),
+            config,
+        );
+        tx.send(net_readings(100, 1_000, 500))
+            .expect("baseline tick");
+        tx.send(net_readings(100, 1_500, 700)).expect("delta tick");
+        drop(tx);
+
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            accountant.run(CancellationToken::new()),
+        )
+        .await
+        .expect("accountant exits")
+        .expect("accountant succeeds");
+
+        let reader = inspect_db(&db_path);
+        let rows = bandwidth_repo::load_current_cycle(&reader).expect("load");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].cycle_start, "2026-07-01");
+        assert_eq!(rows[0].rx_bytes, 40_500);
+        assert_eq!(rows[0].tx_bytes, 20_200);
+        drop(dir);
+    }
+
+    /// Metadata must distinguish fixed Day(28) from LastDayOfMonth when the
+    /// persisted cycle starts on February 28. The fixed-day cycle ends on
+    /// March 27; misclassifying it as month-end would delay rollover to March
+    /// 30 and violate no-retroactive-resplit semantics.
+    #[tokio::test]
+    async fn persisted_day28_rule_rolls_over_before_month_end() {
+        let (conn, db_path, dir) = open_temp_db();
+        bandwidth_repo::save_accumulator(
+            &conn,
+            100_i64,
+            "eth0",
+            40_000_i64,
+            20_000_i64,
+            "2024-02-28",
+            "2024-03-15 12:00:00",
+        )
+        .expect("seed current row");
+        bandwidth_repo::save_current_cycle_metadata(&conn, "2024-02-28", "day:28")
+            .expect("seed fixed-day metadata");
+        drop(conn);
+
+        let clock = FakeClock::new(
+            NaiveDate::from_ymd_opt(2024, 3, 15)
+                .unwrap()
+                .and_hms_opt(12, 0, 0)
+                .unwrap(),
+        );
+        let accountant_conn = Connection::open(&db_path).expect("reopen");
+        let (tx, rx) = broadcast::channel::<Vec<Reading>>(8);
+        let accountant = BandwidthAccountant::new(
+            rx,
+            accountant_conn,
+            Box::new(clock.clone()),
+            AccountantConfig {
+                cycle_start_day: CycleStartDay::LastDayOfMonth,
+                flush_interval: Duration::from_millis(50),
+                history_keep: 1,
+            },
+        );
+
+        clock.set(
+            NaiveDate::from_ymd_opt(2024, 3, 28)
+                .unwrap()
+                .and_hms_opt(12, 0, 0)
+                .unwrap(),
+        );
+        tx.send(net_readings(100, 1_000, 500))
+            .expect("boundary tick");
+        drop(tx);
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            accountant.run(CancellationToken::new()),
+        )
+        .await
+        .expect("accountant exits")
+        .expect("accountant succeeds");
+
+        let reader = inspect_db(&db_path);
+        let history_end: String = reader
+            .query_row(
+                "SELECT cycle_end FROM bandwidth_history WHERE adapter_luid = 100",
+                [],
+                |row| row.get(0),
+            )
+            .expect("fixed Day(28) row must archive at March 27");
+        assert_eq!(history_end, "2024-03-27");
+        let metadata = bandwidth_repo::load_current_cycle_metadata(&reader)
+            .expect("metadata load")
+            .expect("new cycle metadata");
+        assert_eq!(metadata.cycle_start, "2024-03-28");
+        assert_eq!(metadata.cycle_start_rule, "last_day_of_month");
+        drop(dir);
     }
 
     // ---------------------------------------------------------------------
@@ -714,7 +1087,7 @@ mod tests {
         let (tx, rx) = broadcast::channel::<Vec<Reading>>(8);
         let clock = FakeClock::new(t0_dt());
         let config = AccountantConfig {
-            cycle_start_day: CycleStartDay::Day(1),
+            cycle_start_day: CycleStartDay::day(1),
             flush_interval: Duration::from_millis(50),
             history_keep: 2,
         };
@@ -847,7 +1220,7 @@ mod tests {
         let (tx, rx) = broadcast::channel::<Vec<Reading>>(8);
         let clock = FakeClock::new(t0_dt());
         let config = AccountantConfig {
-            cycle_start_day: CycleStartDay::Day(1),
+            cycle_start_day: CycleStartDay::day(1),
             flush_interval: Duration::from_millis(50),
             history_keep: 1,
         };
@@ -974,7 +1347,7 @@ mod tests {
     fn cycle_start_for_today_mid_month() {
         let today = NaiveDate::from_ymd_opt(2026, 7, 15).unwrap();
         assert_eq!(
-            cycle_start_for_today(CycleStartDay::Day(1), today),
+            cycle_start_for_today(CycleStartDay::day(1), today),
             NaiveDate::from_ymd_opt(2026, 7, 1).unwrap()
         );
     }
@@ -984,7 +1357,7 @@ mod tests {
         // Day(10), today is the 5th → start is the 10th of last month.
         let today = NaiveDate::from_ymd_opt(2026, 7, 5).unwrap();
         assert_eq!(
-            cycle_start_for_today(CycleStartDay::Day(10), today),
+            cycle_start_for_today(CycleStartDay::day(10), today),
             NaiveDate::from_ymd_opt(2026, 6, 10).unwrap()
         );
     }
@@ -992,16 +1365,96 @@ mod tests {
     #[test]
     fn cycle_start_for_today_on_start_day_is_today() {
         let today = NaiveDate::from_ymd_opt(2026, 7, 1).unwrap();
-        assert_eq!(cycle_start_for_today(CycleStartDay::Day(1), today), today);
+        assert_eq!(cycle_start_for_today(CycleStartDay::day(1), today), today);
     }
 
     #[test]
     fn cycle_start_for_today_january_wraps_to_december() {
         let today = NaiveDate::from_ymd_opt(2026, 1, 5).unwrap();
         assert_eq!(
-            cycle_start_for_today(CycleStartDay::Day(10), today),
+            cycle_start_for_today(CycleStartDay::day(10), today),
             NaiveDate::from_ymd_opt(2025, 12, 10).unwrap()
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // Boundary #2 — LastDayOfMonth: cycle_start_for_today MUST compute the
+    // previous month's last day (NOT this month's last day applied to the
+    // previous month).
+    // ---------------------------------------------------------------------
+
+    /// Cited: Story 5.2 Boundary, T-26 (LastDayOfMonth variant). Today is
+    /// March 15 2026 → the LastDayOfMonth cycle started on Feb 28 (the last
+    /// day of February). The original implementation reused THIS month's
+    /// last day (31) on the previous month's `(y, m)`, hit
+    /// `from_ymd_opt(2026, 2, 31)` = None, and fell back to `today`
+    /// (Mar 15) — silently mis-stamping the cycle.
+    #[test]
+    fn cycle_start_for_today_last_day_of_month_mid_month() {
+        // Currently fails: returns 2026-03-15 (today's date fallback).
+        let today = NaiveDate::from_ymd_opt(2026, 3, 15).unwrap();
+        assert_eq!(
+            cycle_start_for_today(CycleStartDay::LastDayOfMonth, today),
+            NaiveDate::from_ymd_opt(2026, 2, 28).unwrap()
+        );
+    }
+
+    /// Cited: Story 5.2 Boundary, T-26. Today is Feb 15 → the
+    /// LastDayOfMonth cycle started on Jan 31.
+    #[test]
+    fn cycle_start_for_today_last_day_of_month_february_mid_month() {
+        // Currently fails: returns Jan 28 (reusing Feb's last day on Jan).
+        let today = NaiveDate::from_ymd_opt(2026, 2, 15).unwrap();
+        assert_eq!(
+            cycle_start_for_today(CycleStartDay::LastDayOfMonth, today),
+            NaiveDate::from_ymd_opt(2026, 1, 31).unwrap()
+        );
+    }
+
+    /// Cited: Story 5.2 Boundary, T-26. Today is March 31 (the start day
+    /// itself) → cycle starts today.
+    #[test]
+    fn cycle_start_for_today_last_day_of_month_on_start_day() {
+        let today = NaiveDate::from_ymd_opt(2026, 3, 31).unwrap();
+        assert_eq!(
+            cycle_start_for_today(CycleStartDay::LastDayOfMonth, today),
+            today
+        );
+    }
+
+    /// Cited: T-25 cycle-length invariant extended to LastDayOfMonth. The
+    /// gap between `cycle_start_for_today(LastDayOfMonth, today)` and the
+    /// same call one day later must stay inside [27, 31] days — a sanity
+    /// check that LastDayOfMonth never produces a too-short or too-long
+    /// cycle around month boundaries.
+    #[test]
+    fn cycle_start_for_today_last_day_of_month_cycle_length_invariant() {
+        for (y, m, d) in [
+            (2026, 1, 15),
+            (2026, 2, 15),
+            (2026, 3, 15),
+            (2026, 4, 15),
+            (2026, 5, 15),
+            (2026, 6, 15),
+            (2026, 7, 15),
+            (2026, 8, 15),
+            (2026, 9, 15),
+            (2026, 10, 15),
+            (2026, 11, 15),
+            (2026, 12, 15),
+        ] {
+            let today = NaiveDate::from_ymd_opt(y, m, d).unwrap();
+            let start = cycle_start_for_today(CycleStartDay::LastDayOfMonth, today);
+            // The cycle is `start..cycle_end(start)`; cycle_end for
+            // LastDayOfMonth is the day before the next month's last day.
+            let end = cycle_end(CycleStartDay::LastDayOfMonth, start.year(), start.month())
+                .expect("cycle_end");
+            let len = (end - start).num_days();
+            assert!(
+                (27..=31).contains(&len),
+                "T-25 LastDayOfMonth len {len} for {start}"
+            );
+        }
     }
 
     #[test]

@@ -14,7 +14,8 @@
 ///
 /// Returns `None` for an empty history (per T-20 — no NaN). Returns
 /// `Some(v)` for non-empty input where `v` is the recursively-weighted
-/// average.
+/// average. Non-finite samples (NaN, ±Inf) are dropped before smoothing;
+/// if the filtered history is empty, returns `None`.
 ///
 /// # Examples
 ///
@@ -29,13 +30,25 @@ pub fn ewma(history: &[f64], alpha: f64) -> Option<f64> {
     if history.is_empty() {
         return None;
     }
-    // Standard recursive EWMA: start with the first value, then
-    //   smoothed[i] = alpha * history[i] + (1 - alpha) * smoothed[i-1]
-    let mut smoothed = history[0];
-    for &v in &history[1..] {
-        smoothed = alpha * v + (1.0 - alpha) * smoothed;
+    // T-20 defense: drop non-finite samples (NaN, ±Inf). A single NaN
+    // otherwise poisons the recursion forever (`alpha*v + (1-alpha)*NaN ==
+    // NaN` for every subsequent step) — a transient bad sensor read would
+    // brick the smoother until process restart. After filtering, if no
+    // finite value remains, return None (matches the empty-history rule).
+    // `alpha` itself is NOT filtered: a non-finite alpha is a programmer
+    // bug; letting the output go non-finite surfaces it at the format layer
+    // (which renders "--" per T-20) instead of silently masking it here.
+    let mut smoothed: Option<f64> = None;
+    for &v in history {
+        if !v.is_finite() {
+            continue;
+        }
+        smoothed = Some(match smoothed {
+            None => v,
+            Some(prev) => alpha * v + (1.0 - alpha) * prev,
+        });
     }
-    Some(smoothed)
+    smoothed
 }
 
 #[cfg(test)]
@@ -84,5 +97,44 @@ mod tests {
         // The last value (100) has weight alpha=0.5, so the result is at
         // least 50.0.
         assert!(r >= 50.0, "ewma should be >= 50.0, got {r}");
+    }
+
+    // ----- Boundary #2: non-finite samples MUST NOT corrupt the smoother (T-20).
+
+    /// Cited: Story 1.2 Boundary #2, T-20. A single NaN sample MUST NOT
+    /// permanently poison the smoother. The finite samples before and after
+    /// the NaN must still produce a finite, sensible result.
+    #[test]
+    fn ewma_ignores_non_finite_samples() {
+        // Currently fails: a NaN at index 1 propagates forever (smoothed =
+        // alpha*v + (1-alpha)*NaN = NaN), so the result is Some(NaN).
+        // Expected: filter the NaN out, compute ewma of [10.0, 10.0] with
+        // alpha=0.5 → smoothed = 0.5*10 + 0.5*10 = 10.0.
+        let r = ewma(&[10.0, f64::NAN, 10.0], 0.5);
+        assert!(r.is_some(), "finite input must yield Some(_), got {r:?}");
+        let r = r.unwrap();
+        assert!(r.is_finite(), "NaN must not leak: got {r}");
+        assert!(
+            (r - 10.0).abs() < 1e-9,
+            "finite sequence of 10s must yield ~10.0, got {r}"
+        );
+    }
+
+    /// Cited: Story 1.2 Boundary #2, T-20. An all-NaN history MUST return
+    /// None (no finite value to produce), never `Some(NaN)`.
+    #[test]
+    fn ewma_all_nan_history_returns_none() {
+        // Currently fails: returns Some(NaN). Expected: None (the
+        // post-filter slice is empty, matching the empty-history rule).
+        let r = ewma(&[f64::NAN, f64::NAN], 0.5);
+        assert!(r.is_none(), "all-NaN input must yield None, got {r:?}");
+    }
+
+    /// Cited: Story 1.2 Boundary #2, T-20. Infinity is also non-finite
+    /// and must be filtered.
+    #[test]
+    fn ewma_ignores_infinity_samples() {
+        let r = ewma(&[10.0, f64::INFINITY, f64::NEG_INFINITY, 10.0], 0.5);
+        assert!(r.unwrap().is_finite());
     }
 }

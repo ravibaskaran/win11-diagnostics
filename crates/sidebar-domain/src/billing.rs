@@ -14,18 +14,36 @@
 /// exist in every month (February has 28 or 29). Users wanting a cycle that
 /// starts at month-end use `LastDayOfMonth`.
 ///
-/// Construction with `Day(0)` or `Day(29+)` panics in debug builds; in
+/// Construction with `day(0)` or `day(29+)` panics in debug builds; in
 /// release builds it clamps to `Day(1)` or `Day(28)` respectively and logs
 /// a warning (per T-26 contract, approved by the user 2026-07-09).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum CycleStartDay {
-    /// Start on day-of-month `d`, where `1 ≤ d ≤ 28`.
+pub struct CycleStartDay(CycleStartDayKind);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum CycleStartDayKind {
     Day(u8),
-    /// Start on the last day of the month (28th in Feb non-leap, 31st in Jan, etc.).
     LastDayOfMonth,
 }
 
 impl CycleStartDay {
+    /// Start on the last day of the month (28th in Feb non-leap, 31st in Jan,
+    /// etc.). This associated constant preserves the original call syntax
+    /// while keeping the representation private.
+    #[allow(non_upper_case_globals)]
+    pub const LastDayOfMonth: Self = Self(CycleStartDayKind::LastDayOfMonth);
+
+    /// Construct a `Day(d)` by clamping untrusted configuration input to the
+    /// T-26 range. Unlike [`Self::day`], this path never panics in debug builds.
+    #[must_use]
+    pub fn clamped_day(d: u8) -> Self {
+        let clamped = d.clamp(1, 28);
+        if clamped != d {
+            tracing::warn!(original = d, clamped, "T-26: Day out of range; clamped");
+        }
+        Self(CycleStartDayKind::Day(clamped))
+    }
+
     /// Construct a `Day(d)` with T-26 invariant enforcement.
     ///
     /// In debug builds: panics if `d < 1 || d > 28`.
@@ -42,18 +60,23 @@ impl CycleStartDay {
             "T-26: CycleStartDay::Day({d}) out of range [1, 28]. \
              In release builds this clamps to [1, 28]."
         );
-        Self::Day(d)
+        Self(CycleStartDayKind::Day(d))
     }
 
     /// Construct a `Day(d)` with T-26 invariant enforcement (release build).
     #[must_use]
     #[cfg(not(debug_assertions))]
     pub fn day(d: u8) -> Self {
-        let clamped = d.clamp(1, 28);
-        if clamped != d {
-            tracing::warn!(original = d, clamped, "T-26: Day out of range; clamped");
+        Self::clamped_day(d)
+    }
+
+    /// Return the validated fixed day, or `None` for month-end cycles.
+    #[must_use]
+    pub fn day_value(self) -> Option<u8> {
+        match self {
+            Self(CycleStartDayKind::Day(day)) => Some(day),
+            Self(CycleStartDayKind::LastDayOfMonth) => None,
         }
-        Self::Day(clamped)
     }
 }
 
@@ -80,13 +103,12 @@ pub fn cycle_start_of_next_month(
     } else {
         (year, month + 1)
     };
-    match start {
-        CycleStartDay::Day(d) => {
-            let d = u32::from(d);
-            NaiveDate::from_ymd_opt(ny, nm, d)
-                .or_else(|| NaiveDate::from_ymd_opt(ny, nm, last_day_of_month(ny, nm)))
-        }
-        CycleStartDay::LastDayOfMonth => NaiveDate::from_ymd_opt(ny, nm, last_day_of_month(ny, nm)),
+    if let Some(d) = start.day_value() {
+        let d = u32::from(d);
+        NaiveDate::from_ymd_opt(ny, nm, d)
+            .or_else(|| NaiveDate::from_ymd_opt(ny, nm, last_day_of_month(ny, nm)))
+    } else {
+        NaiveDate::from_ymd_opt(ny, nm, last_day_of_month(ny, nm))
     }
 }
 
@@ -123,7 +145,7 @@ mod tests {
 
     #[test]
     fn cycle_end_day7_july_2026() {
-        let end = cycle_end(CycleStartDay::Day(7), 2026, 7);
+        let end = cycle_end(CycleStartDay::day(7), 2026, 7);
         assert_eq!(end, Some(NaiveDate::from_ymd_opt(2026, 8, 6).unwrap()));
     }
 
@@ -138,7 +160,7 @@ mod tests {
 
     #[test]
     fn cycle_end_year_boundary() {
-        let end = cycle_end(CycleStartDay::Day(15), 2026, 12);
+        let end = cycle_end(CycleStartDay::day(15), 2026, 12);
         assert_eq!(end, Some(NaiveDate::from_ymd_opt(2027, 1, 14).unwrap()));
     }
 
@@ -168,20 +190,20 @@ mod tests {
 
     #[test]
     fn day28_in_february_leap() {
-        let end = cycle_end(CycleStartDay::Day(28), 2024, 2);
+        let end = cycle_end(CycleStartDay::day(28), 2024, 2);
         assert_eq!(end, Some(NaiveDate::from_ymd_opt(2024, 3, 27).unwrap()));
     }
 
     #[test]
     fn day28_in_february_non_leap() {
-        let end = cycle_end(CycleStartDay::Day(28), 2023, 2);
+        let end = cycle_end(CycleStartDay::day(28), 2023, 2);
         assert_eq!(end, Some(NaiveDate::from_ymd_opt(2023, 3, 27).unwrap()));
     }
 
     #[test]
     fn day_valid_values_unchanged() {
         for d in 1..=28u8 {
-            assert_eq!(CycleStartDay::day(d), CycleStartDay::Day(d));
+            assert_eq!(CycleStartDay::day(d).day_value(), Some(d));
         }
     }
 
@@ -228,7 +250,7 @@ mod tests {
         for year in [2023, 2024, 2025, 2026] {
             for month in 1u32..=12 {
                 for d in [1u8, 7, 15, 28] {
-                    let start = CycleStartDay::Day(d);
+                    let start = CycleStartDay::day(d);
                     let start_date = NaiveDate::from_ymd_opt(year, month, u32::from(d))
                         .unwrap_or_else(|| {
                             NaiveDate::from_ymd_opt(year, month, last_day_of_month(year, month))

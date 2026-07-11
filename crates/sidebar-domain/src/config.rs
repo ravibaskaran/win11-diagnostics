@@ -224,9 +224,9 @@ impl Default for CycleStartDaySerde {
 
 impl From<CycleStartDay> for CycleStartDaySerde {
     fn from(d: CycleStartDay) -> Self {
-        match d {
-            CycleStartDay::Day(n) => Self::Day(n),
-            CycleStartDay::LastDayOfMonth => Self::LastDayOfMonth,
+        match d.day_value() {
+            Some(n) => Self::Day(n),
+            None => Self::LastDayOfMonth,
         }
     }
 }
@@ -463,6 +463,21 @@ impl Config {
             );
             config.graph.window = 600;
         }
+        // T-26: cycle_start_day Day(d) where d ∉ [1, 28] must clamp + warn
+        // The `CycleStartDaySerde` -> `CycleStartDay` -> back round-trip uses
+        // the non-panicking `clamped_day` validator so malformed user config
+        // is safe in both debug and release builds. LastDayOfMonth passes
+        // through unchanged; direct `day()` construction remains strict in
+        // debug builds for programmer-facing invariant checks.
+        let clamped_day = match config.bandwidth.cycle_start_day {
+            CycleStartDaySerde::Day(n) => {
+                // Coerce through the non-panicking configuration validator;
+                // round-trip back to the serde form (clamped payload).
+                CycleStartDaySerde::from(CycleStartDay::clamped_day(n))
+            }
+            other @ CycleStartDaySerde::LastDayOfMonth => other,
+        };
+        config.bandwidth.cycle_start_day = clamped_day;
         config
     }
 }
@@ -591,5 +606,48 @@ mod tests {
     fn first_run_flag_defaults_false() {
         let config = Config::default();
         assert!(!config.first_run_complete);
+    }
+
+    // ----- Boundary #4: cycle_start_day out of range clamps to [1, 28] (T-26).
+
+    /// Cited: Story 1.4 Boundary, T-26. TOML deserializes `Day = 29` into
+    /// `CycleStartDaySerde::Day(29)` without complaint. `clamp_values` MUST
+    /// use the non-panicking configuration validator so the stored value is
+    /// `Day(28)` in both debug and release builds.
+    #[test]
+    fn cycle_start_day_out_of_range_clamps_to_28() {
+        // Currently fails: clamp_values doesn't touch cycle_start_day, so
+        // the value stays at Day(29) (silent T-26 violation).
+        let toml_str = "[bandwidth]\ncycle_start_day = { Day = 29 }";
+        let config = Config::from_toml_str(toml_str).expect("must parse");
+        assert_eq!(
+            config.bandwidth.cycle_start_day,
+            CycleStartDaySerde::Day(28),
+            "Day(29) must clamp to Day(28) at config load (T-26)"
+        );
+    }
+
+    /// Cited: T-26 — `Day(0)` clamps UP to `Day(1)` in all build profiles.
+    #[test]
+    fn cycle_start_day_zero_clamps_to_1() {
+        let toml_str = "[bandwidth]\ncycle_start_day = { Day = 0 }";
+        let config = Config::from_toml_str(toml_str).expect("must parse");
+        assert_eq!(
+            config.bandwidth.cycle_start_day,
+            CycleStartDaySerde::Day(1),
+            "Day(0) must clamp to Day(1) at config load (T-26)"
+        );
+    }
+
+    /// Cited: T-26 — `LastDayOfMonth` is valid and passes through clamping
+    /// unchanged.
+    #[test]
+    fn cycle_start_day_last_day_of_month_passes_through() {
+        let toml_str = "[bandwidth]\ncycle_start_day = \"LastDayOfMonth\"";
+        let config = Config::from_toml_str(toml_str).expect("must parse");
+        assert_eq!(
+            config.bandwidth.cycle_start_day,
+            CycleStartDaySerde::LastDayOfMonth
+        );
     }
 }

@@ -222,13 +222,40 @@ async fn run_shutdown_phases<T: ShutdownTargets>(
 
     tracing::info!("shutdown: T-39 phase hierarchy starting");
 
-    // ---- Phase 2: accountant force-flush (≤500ms per T-39) ----
-    let flush_outcome = run_phase("force_flush", PHASE_FLUSH_BUDGET, targets.force_flush()).await;
+    // T-39 defines a CUMULATIVE hierarchy: t=0–500ms force-flush,
+    // t=500–2000ms OHM teardown, t=2000–3000ms runtime drop. Each phase
+    // MUST end by its cumulative T-39 boundary, NOT consume a fresh
+    // per-phase budget. We capture `Instant::now()` once at the top and
+    // cap each phase's budget by the time remaining to its cumulative
+    // boundary.
+    //
+    //   flush boundary = 500ms   → flush budget = min(500ms, 500ms - elapsed)
+    //   ohm   boundary = 2000ms  → ohm   budget = min(2000ms, 2000ms - elapsed)
+    //
+    // This stops a flush hang (consumes 500ms) + an OHM hang (2000ms
+    // per-phase) from reaching 2500ms total — OHM gets only 1500ms
+    // (2000ms boundary − 500ms already consumed).
+    let start = std::time::Instant::now();
+    let remaining_to = |boundary: Duration| {
+        boundary
+            .checked_sub(start.elapsed())
+            .unwrap_or(Duration::ZERO)
+    };
 
-    // ---- Phase 3: OhmSupervisor teardown (≤2000ms per T-39) ----
+    // ---- Phase 2: accountant force-flush (cumulative boundary t=500ms) ----
+    let flush_budget = PHASE_FLUSH_BUDGET.min(remaining_to(PHASE_FLUSH_BUDGET));
+    let flush_outcome = run_phase("force_flush", flush_budget, targets.force_flush()).await;
+
+    // ---- Phase 3: OhmSupervisor teardown (cumulative boundary t=2000ms).
     // This runs unconditionally — even if flush timed out (Boundary #1) the
-    // OHM child must still be torn down.
-    let ohm_outcome = run_phase("teardown_ohm", PHASE_OHM_BUDGET, targets.teardown_ohm()).await;
+    // OHM child must still be torn down. The OHM phase's per-phase budget
+    // is 2000ms (T-39), but we cap by the cumulative t=2000ms boundary
+    // (`PHASE_FLUSH_BUDGET + PHASE_OHM_BUDGET` = 500ms + 2000ms... no —
+    // T-39 says the OHM phase ENDS at t=2000ms, so the cumulative cap for
+    // OHM is `Duration::from_secs(2)`).
+    let ohm_boundary = Duration::from_secs(2);
+    let ohm_budget = PHASE_OHM_BUDGET.min(remaining_to(ohm_boundary));
+    let ohm_outcome = run_phase("teardown_ohm", ohm_budget, targets.teardown_ohm()).await;
 
     tracing::info!(
         flush = ?flush_outcome,
@@ -742,6 +769,74 @@ mod tests {
         assert!(
             rx.try_recv().is_err(),
             "repeated requests emit no duplicate event"
+        );
+    }
+
+    // =================================================================
+    // Boundary #5 (M6) — T-39 budgets are CUMULATIVE across phases, not
+    // per-phase. If force_flush consumes its full 500ms, the OHM phase
+    // must run within the REMAINING budget (t=500..2000ms cumulative =
+    // 1500ms), not a fresh 2000ms.
+    //
+    // RED: `run_shutdown_phases` gives each phase its full per-phase
+    // budget. force_flush hangs to its 500ms ceiling, then teardown_ohm
+    // hangs to its 2000ms ceiling → total ~2500ms. T-39 cumulative says
+    // teardown_ohm should get only 1500ms → total ~2000ms.
+    // =================================================================
+
+    /// Cited: T-39 cumulative phase hierarchy, Story 7.5. Force-flush
+    /// consumes its full 500ms (hangs); OHM teardown then hangs. Under
+    /// T-39 cumulative reading, OHM must complete by t=2000ms (it gets
+    /// 1500ms remaining); under per-phase, OHM gets a fresh 2000ms and
+    /// total reaches 2500ms.
+    #[tokio::test]
+    async fn shutdown_phase_budgets_are_cumulative_under_t39() {
+        let flush_calls = Arc::new(Mutex::new(0usize));
+        let ohm_calls = Arc::new(Mutex::new(0usize));
+        // Record the wall-clock instant teardown_ohm started so we can
+        // assert it was launched within the cumulative flush window.
+        let ohm_start = Arc::new(Mutex::new(None::<Instant>));
+        let fc = flush_calls.clone();
+        let oc = ohm_calls.clone();
+        let os = ohm_start.clone();
+        let mut targets = MockTargets {
+            flush_calls: flush_calls.clone(),
+            ohm_calls: ohm_calls.clone(),
+            flush_behavior: Box::new(move || {
+                *fc.lock().unwrap() += 1;
+                // Hang — force the flush phase to time out at its budget.
+                Box::pin(std::future::pending())
+            }),
+            ohm_behavior: Box::new(move || {
+                *oc.lock().unwrap() += 1;
+                *os.lock().unwrap() = Some(Instant::now());
+                // Hang — force OHM phase to time out at its (cumulative)
+                // budget.
+                Box::pin(std::future::pending())
+            }),
+        };
+
+        let cancel = CancellationToken::new();
+        let guard = Arc::new(AtomicBool::new(false));
+        let start = Instant::now();
+        let _report = tokio::time::timeout(
+            TOTAL_SHUTDOWN_BUDGET + Duration::from_secs(1),
+            run_shutdown(cancel, &mut targets, &guard),
+        )
+        .await
+        .expect("orchestrator must not hang");
+        let total = start.elapsed();
+
+        // Both phases ran (and both timed out against their budgets).
+        assert_eq!(*flush_calls.lock().unwrap(), 1, "flush ran");
+        assert_eq!(*ohm_calls.lock().unwrap(), 1, "ohm ran");
+
+        // T-39 cumulative: total must be ≤ 2000ms (flush's 500ms + OHM's
+        // remaining 1500ms). Currently fails: per-phase budgets make total
+        // ≈ 500ms + 2000ms = 2500ms.
+        assert!(
+            total <= Duration::from_millis(2_100),
+            "T-39 cumulative: total shutdown must be ≤ ~2000ms when flush hangs to its 500ms ceiling (got {total:?})"
         );
     }
 }

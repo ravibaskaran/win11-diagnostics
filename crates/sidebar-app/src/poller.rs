@@ -89,6 +89,20 @@ type RegistryBuilder =
 /// and blow the T-2 CPU budget.
 pub const MIN_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
+/// Per-provider call timeout (T-13). Every provider's `read_all` is
+/// awaited inside `tokio::time::timeout(PROVIDER_TIMEOUT, ...)`. A hung
+/// syscall (NVML driver stall, PDH deadlock, ureq socket hang) is aborted
+/// at this boundary; the provider contributes zero readings for the tick
+/// and a `warn!` is logged. The poller continues with the survivors.
+///
+/// T-13 was originally documented as an NVML-only contract
+/// (`crates/sidebar-adapter-nvml/src/lib.rs:27-33`,
+/// `crates/sidebar-adapter-nvml/src/backend.rs:44-54` push the wrapper onto
+/// the poller), but a generic wrapper is correct for ALL blocking
+/// providers (sysinfo, PDH, OHM, net) — every adapter is a synchronous
+/// syscall susceptible to driver/network stalls. See H1 in the audit.
+pub const PROVIDER_TIMEOUT: Duration = Duration::from_millis(100);
+
 /// Injectable monotonic clock. Returns `Instant` (the timestamp type on
 /// `Reading`). Production uses [`SystemInstantClock`]; tests inject a
 /// controllable implementation so the "single timestamp per tick" contract
@@ -352,7 +366,8 @@ impl Poller {
         let mut handles = Vec::with_capacity(self.providers.len());
         for provider in &self.providers {
             let provider = Arc::clone(provider);
-            handles.push(tokio::task::spawn_blocking(move || {
+            let provider_name = provider.descriptor().name;
+            let handle = tokio::task::spawn_blocking(move || {
                 // SAFETY (G15, HITL — G11): `catch_unwind` requires the
                 // closure be `UnwindSafe`. `Arc<dyn SensorProvider>` is not
                 // `UnwindSafe` by construction — the compiler cannot prove
@@ -383,20 +398,25 @@ impl Poller {
                 //      review flagged at G11.
                 let result = std::panic::catch_unwind(AssertUnwindSafe(|| provider.read_all()));
                 (provider.descriptor().name, result)
-            }));
+            });
+            // Keep the descriptor outside the blocking closure so timeout
+            // diagnostics still identify a provider whose synchronous call
+            // never returned.
+            handles.push((provider_name, handle));
         }
 
-        // Await all handles, concatenate survivors, stamp.
+        // Await all handles, concatenate survivors, stamp. T-13: all handles
+        // share one deadline. A timeout aborts only the async waiter; a
+        // started synchronous syscall may continue on Tokio's blocking pool.
         let mut out: Vec<Reading> = Vec::new();
-        for handle in handles {
-            // spawn_blocking's JoinError (panic inside the blocking thread
-            // beyond the catch_unwind) is also a panic path — treat it
-            // identically to catch_unwind's Err: log + skip.
-            match handle.await {
-                Ok((_name, Ok(readings))) => {
+        let deadline = tokio::time::Instant::now() + PROVIDER_TIMEOUT;
+        for (provider_name, mut handle) in handles {
+            match tokio::time::timeout_at(deadline, &mut handle).await {
+                // Within budget — inspect the inner result.
+                Ok(Ok((_name, Ok(readings)))) => {
                     out.extend(readings);
                 }
-                Ok((name, Err(panic_payload))) => {
+                Ok(Ok((name, Err(panic_payload)))) => {
                     tracing::error!(
                         provider = name,
                         "Poller: provider panicked during read_all — skipping (G15)"
@@ -405,10 +425,32 @@ impl Poller {
                     // downcast it — the panic-hook already wrote diagnostics.
                     drop(panic_payload);
                 }
-                Err(join_err) => {
+                Ok(Err(join_err)) => {
+                    // spawn_blocking's JoinError (panic inside the blocking
+                    // thread beyond the catch_unwind) is also a panic path —
+                    // treat it identically to catch_unwind's Err: log + skip.
                     tracing::error!(
                         error = %join_err,
                         "Poller: blocking task join failed — skipping provider (G15)"
+                    );
+                }
+                Err(_elapsed) => {
+                    // T-13 budget exceeded. Aborting a JoinHandle only stops
+                    // the async waiter; once spawn_blocking has started, the
+                    // synchronous provider call itself cannot be cancelled.
+                    // The missing readings are the visible symptom, and the
+                    // limitation is intentionally documented rather than
+                    // falsely claiming the blocking thread was reclaimed.
+                    handle.abort();
+                    // `as_millis()` returns u128; PROVIDER_TIMEOUT is 100ms so
+                    // the cast to u64 is safe. Allow matches the shutdown.rs
+                    // pattern for the same u128→u64 budget cast.
+                    #[allow(clippy::cast_possible_truncation)]
+                    let timeout_ms = PROVIDER_TIMEOUT.as_millis() as u64;
+                    tracing::warn!(
+                        provider = provider_name,
+                        timeout_ms,
+                        "Poller: provider exceeded T-13 timeout — waiter aborted; blocking call may still run (T-13)"
                     );
                 }
             }
@@ -472,7 +514,7 @@ mod tests {
     use sidebar_domain::reading::{MetricKind, SensorId, Unit};
     use sidebar_sensor::descriptor::{CostClass, ProviderTier, SensorDescriptor};
     use std::sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Mutex,
     };
     use tokio::time::Duration;
@@ -859,6 +901,146 @@ mod tests {
             "panicking provider contributed no readings"
         );
         let _ = run.await;
+    }
+
+    // ===== Boundary #2: T-13 — a hung provider is timed out at 100ms =====
+
+    /// Story 7.2 Boundary, T-13 (NVML call timeout: wrap each in
+    /// `tokio::time::timeout(100ms, ...)`). A provider whose `read_all`
+    /// blocks beyond the T-13 budget MUST be aborted; the tick returns in
+    /// <150ms with zero readings from that provider, and the OTHER
+    /// provider's readings still flow through.
+    ///
+    /// RED: the current poller wraps only `catch_unwind`, not
+    /// `tokio::time::timeout`. A 200ms-blocking provider holds the
+    /// spawn_blocking thread for the full 200ms — the tick takes ~200ms,
+    /// far over the 100ms T-13 budget.
+    #[tokio::test]
+    async fn hung_provider_is_timed_out_at_t13_budget() {
+        let mut h = harness();
+        // Slow provider: sleeps 200ms inside read_all (simulates a hung
+        // NVML/PDH syscall). T-13 budget is 100ms.
+        let slow = stub("slow", || {
+            std::thread::sleep(Duration::from_millis(200));
+            vec![reading("slow", "0", MetricKind::CpuUtilization)]
+        });
+        let fast = stub("fast", || {
+            vec![reading("fast", "0", MetricKind::CpuUtilization)]
+        });
+
+        let poller =
+            Poller::with_clock_raw(vec![slow, fast], Duration::from_millis(100), h.tx, h.clock);
+        let shutdown = CancellationToken::new();
+        let cancel = shutdown.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            cancel.cancel();
+        });
+
+        let start = Instant::now();
+        let run = tokio::spawn(async move { poller.run(shutdown).await });
+        let msg = tokio::time::timeout(Duration::from_millis(150), h.rx.recv())
+            .await
+            .expect("RED: tick must complete within T-13 budget + jitter (got timeout)")
+            .expect("broadcast closed");
+        let elapsed = start.elapsed();
+
+        // T-13: tick must complete well under the 200ms sleep. We allow
+        // generous slack (200ms) for spawn_blocking + runtime overhead +
+        // CI scheduler jitter, but the tick MUST NOT wait for the slow
+        // provider's full 200ms (which would prove the timeout is broken).
+        assert!(
+            elapsed < Duration::from_millis(200),
+            "T-13: tick must complete in <200ms (T-13=100ms + CI jitter), got {elapsed:?}"
+        );
+
+        // The fast provider's readings still arrive.
+        assert!(
+            msg.iter().any(|r| r.sensor.category == "fast"),
+            "T-13: fast provider's readings MUST still be published"
+        );
+        // The slow provider contributed no readings (it was aborted).
+        assert!(
+            !msg.iter().any(|r| r.sensor.category == "slow"),
+            "T-13: timed-out provider contributed no readings"
+        );
+
+        let _ = run.await;
+    }
+
+    /// T-13 is a shared per-tick deadline, not a fresh 100ms allowance for
+    /// every handle. Four slow providers plus one fast provider must still
+    /// publish within one timeout window; sequential per-handle timeouts
+    /// would take roughly 400ms before the fast result is observed.
+    #[tokio::test]
+    async fn multiple_hung_providers_share_one_tick_deadline() {
+        let mut h = harness();
+        let slow_names = ["slow0", "slow1", "slow2", "slow3"];
+        let mut providers: Vec<Arc<dyn SensorProvider>> = slow_names
+            .into_iter()
+            .map(|name| {
+                stub(name, || {
+                    std::thread::sleep(Duration::from_millis(250));
+                    vec![reading(name, "0", MetricKind::CpuUtilization)]
+                })
+            })
+            .collect();
+        providers.push(stub("fast", || {
+            vec![reading("fast", "0", MetricKind::CpuUtilization)]
+        }));
+
+        let poller = Poller::with_clock_raw(providers, Duration::from_millis(100), h.tx, h.clock);
+        let shutdown = CancellationToken::new();
+        let cancel = shutdown.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(450)).await;
+            cancel.cancel();
+        });
+
+        let start = Instant::now();
+        let run = tokio::spawn(async move { poller.run(shutdown).await });
+        let msg = tokio::time::timeout(Duration::from_millis(200), h.rx.recv())
+            .await
+            .expect("all providers must share one T-13 deadline")
+            .expect("broadcast closed");
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(200),
+            "tick must not scale with hung provider count (got {elapsed:?})"
+        );
+        assert!(
+            msg.iter().any(|r| r.sensor.category == "fast"),
+            "fast provider must publish despite multiple hung providers"
+        );
+        assert!(
+            msg.iter().all(|r| !r.sensor.category.starts_with("slow")),
+            "timed-out providers must contribute no readings"
+        );
+        let _ = run.await;
+    }
+
+    /// A timeout drops the async waiter, not an already-running blocking
+    /// closure. This guard test documents the unavoidable adapter limitation so
+    /// future changes do not regress into a false cancellation claim.
+    #[tokio::test]
+    async fn timed_out_blocking_call_may_finish_after_tick_returns() {
+        let h = harness();
+        let completed = Arc::new(AtomicBool::new(false));
+        let marker = Arc::clone(&completed);
+        let slow = stub("slow", move || {
+            std::thread::sleep(Duration::from_millis(160));
+            marker.store(true, Ordering::SeqCst);
+            vec![reading("slow", "0", MetricKind::CpuUtilization)]
+        });
+        let poller = Poller::with_clock_raw(vec![slow], Duration::from_millis(100), h.tx, h.clock);
+
+        let start = Instant::now();
+        let readings = poller.tick().await;
+        assert!(readings.is_empty());
+        assert!(start.elapsed() < Duration::from_millis(150));
+        assert!(!completed.load(Ordering::SeqCst));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(completed.load(Ordering::SeqCst));
     }
 
     // ===== Boundary #3: receiver lags → oldest dropped (T-14) =====
