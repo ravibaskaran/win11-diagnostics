@@ -261,6 +261,7 @@ pub(crate) fn is_known_combination(kind: MetricKind, unit: Unit) -> bool {
         temp_unit: TempUnit::Celsius,
         raw_values: false,
         decimal_base: true,
+        hide_from_capture: false,
     };
     format_reading_with_config(&sentinel, &display) != "unknown"
 }
@@ -377,6 +378,7 @@ mod tests {
             temp_unit: TempUnit::Celsius,
             raw_values: false,
             decimal_base: true,
+            hide_from_capture: false,
         }
     }
 

@@ -86,6 +86,10 @@ pub struct DisplayConfig {
     /// Use decimal GB (10^9) vs binary GiB (2^30) (T-28).
     #[serde(default = "default_decimal_base")]
     pub decimal_base: bool,
+
+    /// Exclude the sidebar from supported screen-capture APIs (default OFF).
+    #[serde(default)]
+    pub hide_from_capture: bool,
 }
 
 /// Bandwidth tracking settings.
@@ -318,6 +322,7 @@ impl Default for DisplayConfig {
             temp_unit: default_temp_unit(),
             raw_values: false,
             decimal_base: default_decimal_base(),
+            hide_from_capture: false,
         }
     }
 }
@@ -475,6 +480,7 @@ mod tests {
         assert_eq!(c.display.temp_unit, TempUnit::Celsius);
         assert!(!c.display.raw_values);
         assert!(c.display.decimal_base);
+        assert!(!c.display.hide_from_capture);
         assert_eq!(c.process.top_n, 5);
         assert_eq!(c.graph.window, 60);
         assert_eq!(c.theme.mode, "Dark");
@@ -492,6 +498,14 @@ mod tests {
         let toml_str = original.to_toml_string().unwrap();
         let parsed = Config::from_toml_str(&toml_str).unwrap();
         assert_eq!(original, parsed);
+    }
+
+    #[test]
+    fn hide_from_capture_round_trips_when_enabled() {
+        let config = Config::from_toml_str("[display]\nhide_from_capture = true").unwrap();
+        assert!(config.display.hide_from_capture);
+        let parsed = Config::from_toml_str(&config.to_toml_string().unwrap()).unwrap();
+        assert!(parsed.display.hide_from_capture);
     }
 
     #[test]
