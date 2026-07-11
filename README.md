@@ -4,7 +4,12 @@
 
 A ground-up Rust clone of the user-facing experience of [SidebarDiagnostics](https://github.com/ArcadeRenegade/SidebarDiagnostics) (C#/.NET/WPF + LibreHardwareMonitor), rebuilt natively for Windows 11 with a strict lightweight mandate and a two-tier sensor model that degrades gracefully when elevated privileges are unavailable.
 
-**Status:** Design phase complete (PRD, architecture, full audited backlog). No implementation yet — the dev environment is provisioned and ready for Story 0.1 (workspace skeleton).
+**Status:** Epic 0–8 implementation is present in the workspace (48/68 tracked
+stories merged, including integration wiring). Workspace tests currently pass
+528/528 with 11 ignored hardware/UAC/capture smokes; Epic 10.1 verification is
+ready to start. Raw `cargo audit` reports only the documented transitive
+`quick-xml`/`ttf-parser` advisory exceptions (see `deny.toml`). Known launch/UI wiring gaps are tracked in `docs/PRD.md` §12,
+`docs/architecture.md` §14, and Story 12.8.
 
 ## Honest framing
 
@@ -20,7 +25,7 @@ docs/
 ├── dev-env.md             Development environment setup guide + machine inventory
 └── backlog/
     ├── README.md             Backlog index (4-pass audit complete)
-    ├── epics-and-stories.md  12 Epics / 59 Stories, TDD-contract-bound, with wiring metadata
+├── epics-and-stories.md  13 Epics / 68 Stories (including parity/closure), with wiring metadata
     ├── guardrails.md         27 cross-cutting rules (G1..G27) + HITL action matrix
     ├── nfr-thresholds.md     45 NFR thresholds (T-1..T-45) — single source of truth
     ├── tdd-fixtures.md       14 test-fixture patterns (F-1..F-14)
@@ -32,7 +37,8 @@ scripts/
 └── fetch_ohm.ps1          Idempotent LHM binary download + SHA-256 verify
 resources/
 ├── ohm.sha256             SHA-256 pin for the bundled LHM binary
-└── LibreHardwareMonitor.LICENSE.txt   MPL-2.0 (redistribution terms)
+├── LibreHardwareMonitor.exe          (provisioned locally; release packaging pending)
+└── LibreHardwareMonitor.LICENSE.txt  MPL-2.0 (redistribution terms)
 ```
 
 ## Quick start
@@ -56,11 +62,12 @@ See [`docs/dev-env.md`](docs/dev-env.md) for the full setup guide, including the
 
 ## Distribution
 
-Zero-cost-first: SignPath Foundation (free OSS code signing) + GitHub Releases + winget + optional Microsoft Store (free Partner Center onboarding). Total annual cost: $0. See `docs/architecture.md` §11 and `docs/grants.md` for the full analysis.
+Zero-cost-first: SignPath Foundation (free OSS code signing) + GitHub Releases + winget + optional Microsoft Store (free Partner Center onboarding). Total annual cost: $0. See `docs/architecture.md` §11, `docs/grants.md`, and [`signpath/code-signing-policy.md`](signpath/code-signing-policy.md) for the full analysis + signing policy.
 
 ## License
 
-TBD (MIT or MPL-2.0 — see PRD OQ-1 / Story 0.5). The bundled LibreHardwareMonitor binary is MPL-2.0.
+The host workspace is **MIT** (`LICENSE`). The bundled
+`LibreHardwareMonitor.exe` and its license remain MPL-2.0.
 
 ## Documentation
 
