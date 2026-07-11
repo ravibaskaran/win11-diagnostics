@@ -182,6 +182,10 @@ impl<C: HttpClient + Send> SensorProvider for OhmAdapterGeneric<C> {
                 warn!(port = self.port, %reason, "LHM /data.json parse failed");
                 return Vec::new();
             }
+            Err(OhmError::RejectedUrl(reason)) => {
+                warn!(port = self.port, %reason, "LHM URL rejected by G16 loopback policy");
+                return Vec::new();
+            }
         };
 
         match serde_json::from_str::<Vec<LhmNode>>(&body) {
