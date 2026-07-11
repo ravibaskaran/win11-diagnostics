@@ -613,7 +613,7 @@ impl PlatformRuntime {
         };
         let changed = self.monitor_id.as_deref() != Some(target.id.as_str());
         if changed {
-            if !config.dock.monitor_id.eq_ignore_ascii_case(&target.id) {
+            if monitor_id_is_real_fallback(&config.dock.monitor_id, &target.id) {
                 tracing::warn!(
                     configured_id = %config.dock.monitor_id,
                     fallback_id = %target.id,
@@ -723,7 +723,7 @@ fn configure_platform(cc: &eframe::CreationContext<'_>, app: &mut SidebarApp) {
     }
     if let Ok(displays) = monitors::enumerate() {
         if let Some(target) = monitors::resolve_target(&displays, &app.config.dock.monitor_id) {
-            if !app.config.dock.monitor_id.eq_ignore_ascii_case(&target.id) {
+            if monitor_id_is_real_fallback(&app.config.dock.monitor_id, &target.id) {
                 tracing::warn!(
                     configured_id = %app.config.dock.monitor_id,
                     fallback_id = %target.id,
@@ -744,6 +744,25 @@ fn configure_platform(cc: &eframe::CreationContext<'_>, app: &mut SidebarApp) {
         tracing::warn!("monitor enumeration failed; using eframe default position");
     }
     app.platform = Some(platform);
+}
+
+/// Story 12.x fix: decide whether the monitor-resolution change from
+/// `configured_id` to `resolved_id` represents a genuine fallback (configured
+/// monitor gone) OR the expected `"primary"` sentinel resolving to the
+/// primary device-id. Returns `true` only for the genuine-fallback case
+/// (so the warning + config-overwrite fire correctly; the `"primary"`
+/// sentinel is stable across reboots per T-36 and should NOT be overwritten
+/// with a device-id).
+///
+/// Cited: T-36 (default primary; monitor_id = DeviceID or "primary").
+#[must_use]
+fn monitor_id_is_real_fallback(configured_id: &str, resolved_id: &str) -> bool {
+    // The "primary" sentinel is never a fallback — it always resolves to
+    // whatever the primary display is, and that's the intended behavior.
+    if configured_id.eq_ignore_ascii_case("primary") {
+        return false;
+    }
+    !configured_id.eq_ignore_ascii_case(resolved_id)
 }
 
 #[cfg(windows)]
@@ -2006,6 +2025,42 @@ mod tests {
         assert!(
             app.child_exit_degraded,
             "latch must be set so subsequent frames don't rebroadcast"
+        );
+    }
+
+    // =================================================================
+    // Monitor sentinel false-fallback fix (T-36).
+    // =================================================================
+
+    #[test]
+    fn primary_sentinel_is_not_a_real_fallback() {
+        // "primary" resolving to a device-id is the expected behavior, not
+        // a fallback. The helper must return false so no warning fires and
+        // the config is NOT overwritten with the device-id.
+        assert!(
+            !monitor_id_is_real_fallback("primary", "MONITOR\\LEN88AE\\0001"),
+            "\"primary\" sentinel must NOT be treated as a fallback"
+        );
+        // Case-insensitive.
+        assert!(
+            !monitor_id_is_real_fallback("Primary", "MONITOR\\LEN88AE\\0001"),
+            "\"Primary\" (capitalized) must NOT be a fallback either"
+        );
+    }
+
+    #[test]
+    fn real_device_id_mismatch_is_a_fallback() {
+        assert!(
+            monitor_id_is_real_fallback("MONITOR\\OLD\\0001", "MONITOR\\LEN88AE\\0001"),
+            "a real configured device-id that doesn't match the resolved id IS a fallback"
+        );
+    }
+
+    #[test]
+    fn matching_device_id_is_not_a_fallback() {
+        assert!(
+            !monitor_id_is_real_fallback("MONITOR\\LEN88AE\\0001", "MONITOR\\LEN88AE\\0001"),
+            "matching device-id is not a fallback"
         );
     }
 }
