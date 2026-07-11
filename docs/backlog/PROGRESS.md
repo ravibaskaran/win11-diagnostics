@@ -73,7 +73,7 @@ The swarm reads this file at task-startup to identify the ready set (stories who
 | 9.1 | pending | — | — | — | — |
 | 9.2 | pending | — | — | — | — |
 | 9.3 | pending | — | — | — | — |
-| 10.1 | pending | — | — | — | Host-probe bench/tests are present; workspace fmt/clippy/tests and CI syntax pass offline. Production cold-start/RSS/egress remains a Windows CI/manual smoke gate; release benchmark execution and NFR threshold evidence are still pending. |
+| 10.1 | partial | 2026-07-11T00Z | story-10.1 | L0:22 L1:4 | poll_cost Criterion bench (real 60s T-31 idle calibration, fail-closed) + parse_threshold parser (subtractive T-1/T-2 gate, 22 unit tests) + nfr_cold_start (T-7, non-ignored) + nfr_rss (T-4/T-5, #[ignore] 30s smoke) + nfr_sqlite_rss (T-6, NEW) + runtime_no_egress (G16, #[ignore] smoke). Production reference-hardware T-31 sign-off + full #[ignore] smoke CI run remain HITL-gated. |
 | 10.2 | pending | — | — | — | — |
 | 11.1 | pending | — | — | — | — |
 | 11.2 | pending | — | — | — | — |
