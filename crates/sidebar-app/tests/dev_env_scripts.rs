@@ -278,3 +278,73 @@ fn fetch_ohm_ps1_exists_and_parses() {
         "fetch_ohm.ps1 must be syntactically valid PowerShell. Got: {stdout}"
     );
 }
+
+/// Story 6.5 Boundary: the `-CheckOnly` flag validates the local LHM binary
+/// against `resources/ohm.sha256` without any network egress. This is the
+/// offline-deterministic mode CI uses to gate on the committed hash. Cited:
+/// Story 6.5 Validate checklist item, G16 (zero runtime egress in CI),
+/// R7 (OHM binary pin).
+#[test]
+fn fetch_ohm_ps1_check_only_validates_local_hash_offline() {
+    let pwsh = require_pwsh!();
+    let script = workspace_root().join("scripts").join("fetch_ohm.ps1");
+    let lhm = workspace_root()
+        .join("resources")
+        .join("LibreHardwareMonitor.exe");
+    if !lhm.exists() {
+        eprintln!(
+            "skipping: LibreHardwareMonitor.exe not present at {}",
+            lhm.display()
+        );
+        return;
+    }
+
+    let output = Command::new(pwsh)
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-File",
+            &script.display().to_string(),
+            "-CheckOnly",
+        ])
+        .output()
+        .expect("failed to invoke pwsh");
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_lowercase();
+    assert!(
+        output.status.success(),
+        "fetch_ohm.ps1 -CheckOnly must exit 0 when the local hash matches the pin. \
+         exit={:?} stdout={stdout}",
+        output.status.code()
+    );
+    assert!(
+        stdout.contains("local files match") || stdout.contains("match"),
+        "fetch_ohm.ps1 -CheckOnly must report the local files match the pin. stdout={stdout}"
+    );
+}
+
+/// Story 6.5 Validate: CI must run `fetch_ohm.ps1 -CheckOnly` so a hash drift
+/// on the committed LHM binary fails the build offline (no network egress,
+/// G16-compliant). Cited: Story 6.5 DoD, regression-harness.md CI contract.
+#[test]
+fn ci_yaml_runs_fetch_ohm_check_only() {
+    let ci = workspace_root()
+        .join(".github")
+        .join("workflows")
+        .join("ci.yml");
+    let raw = std::fs::read_to_string(&ci)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", ci.display()));
+    // Strip `#`-comment lines so the assertion matches the actual `run:` step,
+    // not a comment that happens to mention the script + flag.
+    let non_comment: String = raw
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        non_comment.contains("fetch_ohm.ps1 -CheckOnly")
+            || non_comment.contains("fetch_ohm.ps1') -CheckOnly"),
+        "ci.yml must invoke `fetch_ohm.ps1 -CheckOnly` in a non-comment run step. \
+         non-comment snippet:\n{non_comment}"
+    );
+}

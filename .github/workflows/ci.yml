@@ -1,9 +1,8 @@
 # Story 0.2 — Continuous Integration gate.
 #
 # Runs the full L0..L3 regression matrix on every PR + on every push to main.
-# Gates: fmt → clippy → deny (advisory until Story 0.3 lands deny.toml) →
-# audit → test (L0+L1) → bench (L3, deferred until Story 10.1 lands
-# benches/poll_cost.rs).
+# Gates: lint (fmt + clippy) → supply-chain checks → unit (L0) →
+# integration (L1) → bench (L3).
 #
 # Cited:
 #   - architecture.md §11.4 (CI vs Release separation)
@@ -34,29 +33,19 @@ env:
   CARGO_INCREMENTAL: "0"
 
 jobs:
-  fmt:
-    name: "cargo fmt (T-22 budget: 60s)"
-    runs-on: windows-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - name: cargo fmt --all -- --check
-        run: cargo fmt --all -- --check
-
-  clippy:
-    name: "cargo clippy -D warnings (T-22 budget: 180s)"
+  lint:
+    name: "lint (fmt + clippy)"
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: rustfmt, clippy
+      - name: "cargo fmt --all -- --check (T-22 budget: 60s)"
+        run: cargo fmt --all -- --check
       - uses: Swatinem/rust-cache@v2
-      - name: cargo clippy --workspace --all-targets -- -D warnings
+      - name: "cargo clippy --workspace --all-targets -- -D warnings (T-22 budget: 180s)"
         run: cargo clippy --workspace --all-targets -- -D warnings
 
   deny:
@@ -69,7 +58,6 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check bans licenses advisories sources
-          arguments: --workspace
 
   audit:
     name: "cargo audit (RUSTSEC advisories)"
@@ -81,43 +69,70 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-  test:
-    name: "cargo test --workspace --all-targets (L0+L1, T-22 budget: 120s)"
+  # Story 6.5 — LHM binary integrity gate. Offline-deterministic: validates
+  # the committed `resources/LibreHardwareMonitor.exe` against the committed
+  # `resources/ohm.sha256` pin via `fetch_ohm.ps1 -CheckOnly`. NO network
+  # egress (G16). A hash drift on the bundled binary fails the build. Cited:
+  # Story 6.5 DoD, R7 (OHM binary pin), G18 (reproducible builds).
+  lhm-hash:
+    name: "LHM hash gate (Story 6.5, offline -CheckOnly)"
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate bundled LHM against resources/ohm.sha256
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./scripts/fetch_ohm.ps1 -CheckOnly
+
+  unit:
+    name: "cargo test --workspace --lib (L0, T-40 budget: 60s)"
+    runs-on: windows-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: cargo test --workspace --all-targets
-        run: cargo test --workspace --all-targets
+      - name: cargo test --workspace --lib
+        run: cargo test --workspace --lib
 
-  bench:
-    name: "cargo bench (L3, deferred until Story 10.1)"
+  integration:
+    name: "cargo test --workspace --tests (L1, T-40 budget: 60s)"
     runs-on: windows-latest
-    timeout-minutes: 20
-    # Story 10.1 lands benches/poll_cost.rs. We can't use hashFiles() at
-    # job-level (actionlint restriction), so the first step checks for the
-    # file and skips the rest via a conditional on each subsequent step.
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - name: Check for benches/poll_cost.rs
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test --workspace --tests
+        run: cargo test --workspace --tests
+
+  bench:
+    name: "cargo bench (L3, T-40 budget: 600s)"
+    runs-on: windows-latest
+    timeout-minutes: 20
+    # Story 11.1 owns the layer smoke bench. Story 10.1 adds the NFR benches;
+    # the same job will run them when they land.
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for a bench target
         id: bench_exists
         shell: bash
         run: |
-          if [ -f "benches/poll_cost.rs" ]; then
+          if find crates -path '*/benches/*.rs' -o -path 'benches/*.rs' | grep -q .; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "Story 10.1 not yet merged — skipping bench gate."
+            echo "No bench target found — skipping L3 until one is added."
           fi
       - uses: dtolnay/rust-toolchain@stable
         if: steps.bench_exists.outputs.exists == 'true'
       - uses: Swatinem/rust-cache@v2
         if: steps.bench_exists.outputs.exists == 'true'
-      - name: cargo bench --bench poll_cost
+      - name: cargo bench --workspace --all-targets
         if: steps.bench_exists.outputs.exists == 'true'
-        run: cargo bench --bench poll_cost
+        run: cargo bench --workspace --all-targets
       - name: parse_threshold NFR-1 gate
-        if: steps.bench_exists.outputs.exists == 'true'
+        if: steps.bench_exists.outputs.exists == 'true' && hashFiles('crates/**/benches/poll_cost.rs') != ''
         run: cargo run -p sidebar-app --bin parse_threshold -- target/criterion 10
