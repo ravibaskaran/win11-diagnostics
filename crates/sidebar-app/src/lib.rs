@@ -9,8 +9,10 @@
 
 pub mod event_channel;
 pub mod gui;
+pub mod nfr;
 pub mod parse_threshold;
 pub mod poller;
+pub mod progress_parser;
 pub mod provider_registry;
 pub mod shutdown;
 pub mod tier_probe;

@@ -1,0 +1,84 @@
+# Story 11.4 — PROGRESS.md auto-update on PR merge.
+#
+# When a PR titled `Story X.Y[: description]` merges to main, this workflow
+# parses the title, updates the matching PROGRESS.md row to `merged`, and
+# commits back via git-auto-commit-action. Reverted PRs (detected via the
+# merge-commit message) flip the row to `reverted`.
+#
+# The Rust-side parser (crates/sidebar-app/src/progress_parser.rs) is the
+# tested reference implementation; this workflow mirrors its logic in Python
+# so CI doesn't need a Rust build step.
+#
+# Cited: Story 11.4 DoD, guardrails.md G27 (story wiring discipline).
+# HITL mandatory (G11/G19) — the swarm reads PROGRESS.md to pick stories;
+# tampering or schema drift = silent story-skipping.
+
+name: track-progress
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  update-progress:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Parse PR title and update PROGRESS.md
+        shell: bash
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          set -euo pipefail
+          python3 <<'PYEOF'
+          import re, sys, os, subprocess
+          title = os.environ["PR_TITLE"]
+          pr = os.environ["PR_NUMBER"]
+          merge_sha = os.environ["MERGE_SHA"]
+          # Mirror of progress_parser::parse_pr_title.
+          m = re.match(r'\s*[Ss]tory\s+(\d+\.\d+)\s*(?::\s*(.+))?\s*$', title)
+          if not m:
+              print(f"PR title {title!r} does not conform to 'Story X.Y' — skipping.")
+              sys.exit(0)
+          story = m.group(1)
+          # Detect revert via the merge-commit message.
+          merge_msg = subprocess.check_output(
+              ["git", "log", "-1", "--pretty=%B", merge_sha], text=True
+          )
+          status = "reverted" if merge_msg.strip().lower().startswith("revert") else "merged"
+          # Update the PROGRESS.md row.
+          path = "docs/backlog/PROGRESS.md"
+          with open(path) as f:
+              lines = f.readlines()
+          pattern = re.compile(r'^\| ' + re.escape(story) + r' \|')
+          updated = False
+          for i, line in enumerate(lines):
+              if pattern.match(line):
+                  fields = line.split('|')
+                  if len(fields) >= 6:
+                      notes = fields[5].strip()
+                      lines[i] = f'| {story} | {status} | {pr} | {notes} |\n'
+                      updated = True
+                      break
+          if not updated:
+              print(f"WARNING: no PROGRESS.md row for story {story}", file=sys.stderr)
+              sys.exit(0)
+          with open(path, 'w') as f:
+              f.writelines(lines)
+          print(f"Updated PROGRESS.md row for {story} -> {status}")
+          PYEOF
+      - name: Commit back PROGRESS.md
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore(progress): auto-update from PR merge (Story 11.4)"
+          file_pattern: docs/backlog/PROGRESS.md
