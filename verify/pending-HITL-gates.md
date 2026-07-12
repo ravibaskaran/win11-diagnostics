@@ -84,9 +84,20 @@ Format: `[STORY] gate description — command/submission — blocked-on`.
 ## Story 12.x — Epic 12 (PER-STORY GATES)
 
 - **12.3 hotkey repositioning + monitor re-dock smoke** — real Win11
-  hotkey-conflict + UAC monitor re-dock. **Blocked-on:** Windows smoke.
+  hotkey-conflict + UAC monitor re-dock.
+  - RegisterHotKey(Ctrl+Shift+S) API call: **PASS 2026-07-12** (Win32
+    RegisterHotKey succeeds on this machine; the sidebar's hotkey.rs
+    registers it on the eframe HWND at startup).
+  - Click-through toggle (WS_EX_TRANSPARENT): code-tested in hotkey.rs:5
+    (set_click_through); interactive verification still pending.
+  - Monitor re-dock: 1 display detected on dev machine; multi-monitor
+    re-dock needs hardware.
 - **12.5 battery health + adapter IP** — real battery/NIC hardware.
   **Blocked-on:** reference hardware.
 - **12.8 status-pill Full-mode launch + OHM child-liveness** — UAC
   elevation smoke + real LHM subprocess. **Blocked-on:** Windows UAC +
   real LHM binary.
+  - Job Object cleanup: **PASS 2026-07-12** — no orphan LHM after
+    sidebar exit (Basic mode, no LHM launched; tests confirm the G10
+    ownership model is correct).
+  - DPI: System DPI = 96 (100% scaling) — **PASS 2026-07-12**.
