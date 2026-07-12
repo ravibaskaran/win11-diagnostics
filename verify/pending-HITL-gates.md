@@ -88,16 +88,23 @@ Format: `[STORY] gate description — command/submission — blocked-on`.
   - RegisterHotKey(Ctrl+Shift+S) API call: **PASS 2026-07-12** (Win32
     RegisterHotKey succeeds on this machine; the sidebar's hotkey.rs
     registers it on the eframe HWND at startup).
-  - Click-through toggle (WS_EX_TRANSPARENT): code-tested in hotkey.rs:5
-    (set_click_through); interactive verification still pending.
-  - Monitor re-dock: 1 display detected on dev machine; multi-monitor
-    re-dock needs hardware.
+  - Window position: **PASS 2026-07-12** — sidebar window rect L=1640 T=0
+    R=1920 B=720 docked to RIGHT edge of 1920x1080 screen (AppBar correct).
+  - Click-through default OFF: **PASS 2026-07-12** — WS_EX_TRANSPARENT not
+    set initially (correct default).
+  - Click-through TOGGLE via physical Ctrl+Shift+S: **PENDING** —
+    SendKeys/SendInput does NOT trigger WM_HOTKEY on Win11 (the OS hotkey
+    system intercepts synthesized keyboard input differently from physical
+    key presses). Requires manual physical keyboard test.
+  - WS_EX_TOOLWINDOW: **INFO** — not set at window-creation level; AppBar
+    registration uses SHAppBarMessage(ABM_NEW) which is a separate system.
+  - Monitor re-dock: 1 display on dev machine; multi-monitor needs hardware.
 - **12.5 battery health + adapter IP** — real battery/NIC hardware.
   **Blocked-on:** reference hardware.
 - **12.8 status-pill Full-mode launch + OHM child-liveness** — UAC
   elevation smoke + real LHM subprocess. **Blocked-on:** Windows UAC +
   real LHM binary.
-  - Job Object cleanup: **PASS 2026-07-12** — no orphan LHM after
-    sidebar exit (Basic mode, no LHM launched; tests confirm the G10
-    ownership model is correct).
+  - Job Object cleanup (Basic mode): **PASS 2026-07-12** — no orphan LHM
+    after sidebar exit. Sidebar-owned LHM cleanup requires UAC launch first.
   - DPI: System DPI = 96 (100% scaling) — **PASS 2026-07-12**.
+  - LHM hash pin: **PASS 2026-07-12** — SHA-256 matches ohm.sha256 pin.
