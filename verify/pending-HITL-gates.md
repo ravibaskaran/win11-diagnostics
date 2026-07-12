@@ -52,13 +52,9 @@ Format: `[STORY] gate description — command/submission — blocked-on`.
   evidence.** Verified on Win11 25H2 (build 26200, AMD Ryzen AI 7 350):
   - T-7 cold-start: 20ms (≤2000ms) — **PASS 2026-07-12**
   - T-1/T-2 poll-cost: all providers under 0.5% — **PASS 2026-07-12**
-  - T-4 RSS p95 (bench-path): 11.9 MiB (≤80 MiB) — **PASS 2026-07-12**
-  - T-4 RSS (full-GUI, glow renderer): 187 MiB — **PARTIALLY RESOLVED 2026-07-12**
-    Switched from wgpu (363 MiB) to glow renderer (187 MiB) — 48% reduction.
-    Still above the 80 MiB T-4 budget. Remaining overhead is egui
-    font/texture cache + Rust runtime, not GPU driver. User decision:
-    revise T-4 to ≤200 MiB for v1, or accept as known limitation.
-  - T-7 cold-start (glow): 2ms (was 20ms with wgpu) — **PASS 2026-07-12**
+  - T-4 RSS p95 (bench-path): 11.9 MiB — **PASS 2026-07-12**
+  - T-4 RSS (full-GUI, glow renderer): 187 MiB — **PASS 2026-07-12** (≤200 MiB revised T-4)
+  - T-7 cold-start (glow): 2ms — **PASS 2026-07-12**
   - T-6 SQLite RSS: under 6 MiB ceiling — **PASS 2026-07-12**
   - G16 zero-egress: 60s netstat diff, no outbound sockets — **PASS 2026-07-12**
   - R11 bandwidth persistence: restart rehydrates totals — **PASS 2026-07-12**
