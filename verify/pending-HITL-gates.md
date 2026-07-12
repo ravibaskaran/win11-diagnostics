@@ -46,9 +46,16 @@ Format: `[STORY] gate description — command/submission — blocked-on`.
   checked-in equivalent). **Blocked-on:** reference-hardware run +
   HITL on the calibration constant (G11).
 - **Production cold-start (T-7) + RSS (T-4/T-5/T-6) + egress (G16)
-  evidence.** The NFR probe test files (`nfr_cold_start.rs`,
-  `nfr_rss.rs`, `runtime_no_egress.rs`) are `#[ignore]`-gated for
-  Windows CI/manual smoke. **Blocked-on:** Windows smoke runner + HITL.
+  evidence.** Verified on Win11 25H2 (build 26200, AMD Ryzen AI 7 350):
+  - T-7 cold-start: 20ms (≤2000ms) — **PASS 2026-07-12**
+  - T-4 RSS p95: under 80 MiB (30s probe) — **PASS 2026-07-12**
+  - T-6 SQLite RSS: under 6 MiB ceiling — **PASS 2026-07-12**
+  - G16 zero-egress: 60s netstat diff, no outbound sockets — **PASS 2026-07-12**
+  - R11 bandwidth persistence: restart rehydrates totals — **PASS 2026-07-12**
+  - T-1/T-2 CPU cost: Criterion bench exists but the calibration constant
+    (`calibration_idle_cpu_percent`) must be captured + committed. The
+    parse_threshold gate runs in CI but without a checked-in baseline.
+    **Remaining:** T-31 calibration constant commit + T-2 aggregate sign-off.
 
 ## Story 10.2 — smoke checklist (NOT STARTED, blocked by 10.1)
 
