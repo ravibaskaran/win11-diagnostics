@@ -75,6 +75,20 @@ const READINGS_CHANNEL_CAPACITY: usize = 8;
 /// Number of tokio worker threads (T-18: 2 workers).
 const TOKIO_WORKERS: usize = 2;
 
+type SupervisorHandles = (
+    Option<std::sync::mpsc::Sender<()>>,
+    Arc<AtomicBool>,
+    Arc<AtomicBool>,
+    Option<std::thread::JoinHandle<()>>,
+);
+
+/// Child-liveness is meaningful only after this process explicitly launches
+/// LHM. An external LHM instance is intentionally not owned or monitored.
+#[must_use]
+fn child_probe_is_alive(launched: bool, alive: bool) -> bool {
+    !launched || alive
+}
+
 #[allow(clippy::too_many_lines)]
 fn main() -> eframe::Result {
     init_tracing();
@@ -170,17 +184,16 @@ fn main() -> eframe::Result {
     // (b) the OHM child-liveness poll (Gap 3). The supervisor stays on this
     // thread from construction to shutdown (no Arc-Mutex needed). The main
     // thread joins this handle during the T-39 teardown phase.
-    let (launch_tx, child_alive_flag, supervisor_thread): (
-        Option<std::sync::mpsc::Sender<()>>,
-        Arc<AtomicBool>,
-        Option<std::thread::JoinHandle<()>>,
-    ) = if supervisor.is_some() {
-        let (tx, rx) = std::sync::mpsc::channel::<()>();
-        let alive = Arc::new(AtomicBool::new(false));
-        let alive_clone = Arc::clone(&alive);
-        let mut sv = supervisor.take().expect("supervisor was Some");
-        let shutdown_token = cancel.clone();
-        let handle = std::thread::Builder::new()
+    let (launch_tx, child_alive_flag, child_launched_flag, supervisor_thread): SupervisorHandles =
+        if supervisor.is_some() {
+            let (tx, rx) = std::sync::mpsc::channel::<()>();
+            let alive = Arc::new(AtomicBool::new(false));
+            let alive_clone = Arc::clone(&alive);
+            let launched = Arc::new(AtomicBool::new(false));
+            let launched_clone = Arc::clone(&launched);
+            let mut sv = supervisor.take().expect("supervisor was Some");
+            let shutdown_token = cancel.clone();
+            let handle = std::thread::Builder::new()
             .name("sidebar-supervisor".to_string())
             .spawn(move || {
                 // Gap 3: poll child liveness every 2s; update the shared flag.
@@ -194,10 +207,12 @@ fn main() -> eframe::Result {
                             );
                             match sv.launch_elevated() {
                                 Ok(port) => {
+                                    launched_clone.store(true, Ordering::SeqCst);
                                     alive_clone.store(true, Ordering::SeqCst);
                                     tracing::info!(port, "LHM launched elevated via status-pill click");
                                 }
                                 Err(e) => {
+                                    launched_clone.store(sv.sidebar_launched(), Ordering::SeqCst);
                                     tracing::warn!(error = %e, "launch_elevated failed (UAC declined?)");
                                 }
                             }
@@ -226,10 +241,15 @@ fn main() -> eframe::Result {
                 }
             })
             .expect("failed to spawn supervisor thread");
-        (Some(tx), alive, Some(handle))
-    } else {
-        (None, Arc::new(AtomicBool::new(false)), None)
-    };
+            (Some(tx), alive, launched, Some(handle))
+        } else {
+            (
+                None,
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(AtomicBool::new(false)),
+                None,
+            )
+        };
 
     let readings_tx = broadcast::channel::<Vec<Reading>>(READINGS_CHANNEL_CAPACITY).0;
     let readings_rx_for_gui = readings_tx.subscribe();
@@ -277,8 +297,8 @@ fn main() -> eframe::Result {
     // supervisor thread via mpsc channel).
     let app = if let Some(tx) = launch_tx {
         let launch_fn: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
-            // Non-blocking send; if the channel is full or closed, the click
-            // is a no-op (the thread will pick up the next one).
+            // Non-blocking send; this unbounded channel only fails when it is
+            // closed, in which case the click is a no-op.
             let _ = tx.send(());
         });
         app.with_launch_fn(launch_fn)
@@ -290,7 +310,10 @@ fn main() -> eframe::Result {
     let app = if has_supervisor {
         let probe: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new({
             let flag = Arc::clone(&child_alive_flag);
-            move || flag.load(Ordering::SeqCst)
+            let launched = Arc::clone(&child_launched_flag);
+            move || {
+                child_probe_is_alive(launched.load(Ordering::SeqCst), flag.load(Ordering::SeqCst))
+            }
         });
         app.with_child_alive_fn(probe)
     } else {
@@ -860,7 +883,10 @@ fn load_config(path: &PathBuf) -> Config {
 
 #[cfg(test)]
 mod tests {
-    use super::{join_poller_with_timeout, join_thread_with_timeout, watchdog_should_force_exit};
+    use super::{
+        child_probe_is_alive, join_poller_with_timeout, join_thread_with_timeout,
+        watchdog_should_force_exit,
+    };
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
@@ -869,6 +895,14 @@ mod tests {
     fn watchdog_decision_only_forces_exit_when_shutdown_is_incomplete() {
         assert!(watchdog_should_force_exit(false));
         assert!(!watchdog_should_force_exit(true));
+    }
+
+    #[test]
+    fn child_liveness_is_ignored_before_explicit_launch() {
+        assert!(child_probe_is_alive(false, false));
+        assert!(child_probe_is_alive(false, true));
+        assert!(child_probe_is_alive(true, true));
+        assert!(!child_probe_is_alive(true, false));
     }
 
     #[tokio::test(flavor = "current_thread")]

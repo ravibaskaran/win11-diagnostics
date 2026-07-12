@@ -472,6 +472,24 @@ impl SidebarApp {
         self
     }
 
+    fn apply_runtime_hooks(
+        mut app: Self,
+        bandwidth_view_rx: Option<tokio::sync::watch::Receiver<Option<BandwidthView>>>,
+        child_alive_fn: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+        launch_fn: Option<Arc<dyn Fn() + Send + Sync>>,
+    ) -> Self {
+        if let Some(rx) = bandwidth_view_rx {
+            app = app.with_bandwidth_view_rx(rx);
+        }
+        if let Some(probe) = child_alive_fn {
+            app = app.with_child_alive_fn(probe);
+        }
+        if let Some(launch) = launch_fn {
+            app = app.with_launch_fn(launch);
+        }
+        app
+    }
+
     /// Launch the native eframe window with the sidebar viewport prefs.
     /// NOT unit-testable (opens a real OS window); the `logic`/`ui` methods
     /// are tested headlessly via the F8 harness.
@@ -496,6 +514,9 @@ impl SidebarApp {
         let wizard_active = self.wizard_active;
         let display_config = self.config.display.clone();
         let event_tx = self.event_tx.clone();
+        let bandwidth_view_rx = self.bandwidth_view_rx;
+        let child_alive_fn = self.child_alive_fn;
+        let launch_fn = self.launch_fn;
         eframe::run_native(
             app_name,
             options,
@@ -504,6 +525,12 @@ impl SidebarApp {
                 configure_capture_exclusion(cc, &display_config);
                 let mut app = SidebarApp::with_config_path(state, config_path, wizard_active);
                 app.event_tx.clone_from(&event_tx);
+                app = SidebarApp::apply_runtime_hooks(
+                    app,
+                    bandwidth_view_rx,
+                    child_alive_fn,
+                    launch_fn,
+                );
                 #[cfg(windows)]
                 configure_platform(cc, &mut app);
                 Ok(Box::new(app))
@@ -1129,6 +1156,7 @@ pub fn render_sidebar(
         // frame via chrono::Local (no network time source per Story 12.1).
         let now = chrono::Local::now();
         header.label(sidebar_domain::format::format_clock(now.time()));
+        header.label(sidebar_domain::format::format_clock_date(now.date_naive()));
         header.with_layout(egui::Layout::right_to_left(egui::Align::Center), |right| {
             let mut open = view.settings_open;
             let gear = right.checkbox(&mut open, "⚙");
@@ -1965,6 +1993,31 @@ mod tests {
     }
 
     #[test]
+    fn render_sidebar_renders_local_clock_and_date_header() {
+        let readings = vec![reading(MetricKind::CpuUtilization, 42.0, Unit::Percent)];
+        let mut config = Config::default();
+        let view = SidebarView::default();
+        let expected_date = chrono::Local::now().date_naive().to_string();
+        let mut harness = Harness::new_ui(|ui| {
+            render_sidebar(
+                ui,
+                &readings,
+                ProviderTier::Basic,
+                &mut config,
+                &view,
+                &|| {},
+                &|| {},
+            );
+        });
+        harness.run();
+        let labels = all_labels(&harness).join(" | ");
+        assert!(
+            labels.contains(&expected_date),
+            "header must render locale-stable date {expected_date} (got: {labels})"
+        );
+    }
+
+    #[test]
     fn render_sidebar_critical_temp_paints_metric_row_red() {
         // 95°C CPU temp with default thresholds (warn 80, crit 90) → Critical
         // → metric row tinted CRITICAL_RED. We assert the value label's color
@@ -2193,5 +2246,25 @@ mod tests {
             1,
             "clicking the Basic status pill MUST invoke the launch callback exactly once"
         );
+    }
+
+    #[test]
+    fn run_rebinds_runtime_hooks_after_eframe_app_recreation() {
+        let state = AppState::new(ProviderTier::Basic, None);
+        let app = SidebarApp::new(state);
+        let (_view_tx, view_rx) = tokio::sync::watch::channel::<Option<BandwidthView>>(None);
+        let child_alive: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(|| true);
+        let launch: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
+
+        let rebound = SidebarApp::apply_runtime_hooks(
+            app,
+            Some(view_rx),
+            Some(Arc::clone(&child_alive)),
+            Some(Arc::clone(&launch)),
+        );
+
+        assert!(rebound.bandwidth_view_rx.is_some());
+        assert!(rebound.child_alive_fn.is_some());
+        assert!(rebound.launch_fn.is_some());
     }
 }

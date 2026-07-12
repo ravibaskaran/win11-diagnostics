@@ -1,10 +1,10 @@
 # PRD — sidebar (sidebar-v1)
 
 **Change:** `sidebar-v1`
-**Phase:** sdd-design (proposal, **v2 amendment**)
-**Status:** Draft for orchestrator review
+**Phase:** implementation snapshot (Epic 0–8 delivered; closure work pending)
+**Status:** Requirements remain authoritative; current implementation gaps are listed in §12
 **Date:** 2026-07-07 (v2 amendment, same date)
-**Workspace:** `D:\dev\sidebar` (greenfield)
+**Workspace:** `C:\dev\hobby\sidebar`
 **Engram artifact:** `sdd/sidebar-v1/proposal` (type: `decision`, topic_key upsert)
 **Research foundation:** Engram observations `sdd-init/sidebar/*` (topic keys: `sdd-init/sidebar`, `sdd-init/sidebar/stack`, `sdd-init/sidebar/architecture`, `sdd-init/sidebar/testing`, `sdd-init/sidebar/conventions`, `sdd-init/sidebar/risks`)
 
@@ -14,7 +14,7 @@
 > 3. **NFR-8 (NEW) — Human-readable output by default.** See §6.
 > 4. **Distribution format OQ-1 is now RESOLVED** with a zero-cost-first recommendation (SignPath + GitHub Releases + winget + Microsoft Store free onboarding). See §9 OQ-1.
 
-> **Honest framing up front.** This product is **Rust-native except for CPU package temperature and a small set of low-level hardware sensors**, which require a bundled OpenHardwareMonitor (OHM) subprocess. We do not claim "pure Rust" anywhere in this proposal or the accompanying architecture. The OHM bundling is a deliberate, research-validated design decision (see §7 Architecture Decisions in `architecture.md`), not a fallback.
+> **Honest framing up front.** This product is **Rust-native except for CPU package temperature and a small set of low-level hardware sensors**, which require a bundled LibreHardwareMonitor (LHM) subprocess exposing the local HTTP `/data.json` endpoint. We do not claim "pure Rust" anywhere in this proposal or the accompanying architecture. The LHM bundling is a deliberate, research-validated design decision, not a fallback.
 
 ---
 
@@ -24,7 +24,12 @@
 
 **Tagline:** *"Glanceable system health, calmly."*
 
-**The defining constraint.** Windows exposes no stable, documented, user-mode Rust-callable API for CPU package temperature, core clocks, fan speeds, or motherboard voltages. The `sysinfo` crate (now v0.39.3, retrieved 2026-07-07) reads CPU temperature only on Linux via `/sys/class/hwmon` and returns an empty iterator on Windows. The only widely-used, license-compatible solution is to run [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) (or its upstream OpenHardwareMonitor fork) as a sidecar process that publishes readings to the `root\LibreHardwareMonitor` WMI namespace, which the Rust host then queries. This is the same architecture SidebarDiagnostics uses, and it is the architecture we adopt. (Sources: MetricsHub LibreHardwareMonitor connector docs, https://www.metricshub.com/docs/latest/connectors/librehardwaremonitor, retrieved 2026-07-07; Sentry Software Hardware Connectors Library v41, https://www.sentrysoftware.com/docs/hardware-connectors/latest/connectors/MS_HW_LibreHardwareMonitor.html, documentation as of 2026-03-04.)
+**The defining constraint.** Windows exposes no stable, documented, user-mode Rust-callable API for CPU package temperature, core clocks, fan speeds, or motherboard voltages. The `sysinfo` crate returns no CPU temperature readings on Windows. The current integration runs [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) as a sidecar and reads its local HTTP `GET /data.json` endpoint on loopback. LHM v0.9.5+ no longer publishes the historical WMI namespace.
+
+**Implementation correction (2026-07-11):** LHM v0.9.6 no longer exposes the
+WMI namespace described in the historical research sentence above. The shipped
+bridge is HTTP-only (`/data.json` on literal loopback), with redirect suppression
+and a 500 ms timeout.
 
 **What makes this different from the C# original.**
 1. **Rust memory safety** in the host process (GUI, polling, config, persistence).
@@ -58,17 +63,17 @@ v1 ships **three tiers of telemetry, all IN scope**, gated only by the two-tier 
 |---|---|---|---|
 | CPU utilization (per-core + aggregate) | ✅ | ✅ | `sysinfo` (0.39.3) `System::cpus()` |
 | CPU frequency (per-core) | ✅ | ✅ | `sysinfo` |
-| CPU package temperature | ❌ | ✅ | OHM via WMI `root\LibreHardwareMonitor` |
-| CPU per-core temperatures | ❌ | ✅ | OHM via WMI |
-| CPU power draw (package) | ❌ | ✅ | OHM via WMI |
-| CPU fan speed(s) | ❌ | ✅ | OHM via WMI |
-| Voltage rails (VCORE, +3.3V, +5V, +12V, etc.) | ❌ | ✅ | OHM via WMI |
+| CPU package temperature | ❌ | ✅ | LHM HTTP `/data.json` |
+| CPU per-core temperatures | ❌ | ✅ | LHM HTTP `/data.json` |
+| CPU power draw (package) | ❌ | ✅ | LHM HTTP `/data.json` |
+| CPU fan speed(s) | ❌ | ✅ | LHM HTTP `/data.json` |
+| Voltage rails (VCORE, +3.3V, +5V, +12V, etc.) | ❌ | ✅ | LHM HTTP `/data.json` |
 | GPU utilization | ✅ (NVIDIA only) | ✅ (all vendors via OHM) | `nvml-wrapper` 0.12.0; OHM fallback |
 | GPU temperature | ✅ (NVIDIA only) | ✅ (all vendors) | `nvml-wrapper`; OHM fallback |
 | GPU memory utilization / VRAM | ✅ (NVIDIA only) | ✅ (all vendors) | `nvml-wrapper`; OHM fallback |
 | GPU power draw | ✅ (NVIDIA only) | ✅ (all vendors) | `nvml-wrapper`; OHM fallback |
-| GPU fan speed | ❌ | ✅ | OHM via WMI |
-| GPU clocks | ❌ | ✅ | OHM via WMI |
+| GPU fan speed | ❌ | ✅ | LHM HTTP `/data.json` |
+| GPU clocks | ❌ | ✅ | LHM HTTP `/data.json` |
 | RAM used / free / total | ✅ | ✅ | `sysinfo` |
 | RAM usage history (sparkline) | ✅ | ✅ | Derived from `sysinfo` |
 | Battery (state, percent, rate, health) | ✅ | ✅ | `starship-battery` crate |
@@ -79,8 +84,8 @@ v1 ships **three tiers of telemetry, all IN scope**, gated only by the two-tier 
 |---|---|---|---|
 | Per-drive used / free / total capacity | ✅ | ✅ | `sysinfo` `Disks` |
 | Per-drive read/write throughput | ✅ | ✅ | Performance Data Helper (PDH) via `windows` crate counters — confirmed lightweight |
-| SSD SMART health / endurance remaining | ❌ | ✅ | OHM via WMI (`hw.physical_disk.endurance_utilization`) |
-| SSD temperature | ❌ | ✅ | OHM via WMI |
+| SSD SMART health / endurance remaining | ❌ | ✅ | LHM HTTP `/data.json` (`hw.physical_disk.endurance_utilization`) |
+| SSD temperature | ❌ | ✅ | LHM HTTP `/data.json` |
 
 ### Tier 3 — Per-process top-N
 | Feature | Basic | Full | Source |
@@ -99,10 +104,10 @@ Network adapter throughput was previously **Out-of-Scope** in v1 (Appendix A). I
 
 | Feature | Basic mode | Full mode | Source |
 |---|---|---|---|
-| Per-NIC bytes/sec received (RX) | ✅ | ✅ | `GetIfEntry2` (per-adapter `MIB_IF_ROW2.InOctets` delta between ticks) via the `windows` crate — **lightweight** (single-row fill per adapter, no table allocation; see Appendix A amendment and §7). `sysinfo::Networks` is an alternative but does not expose error counters; we use the `windows` crate directly. |
-| Per-NIC bytes/sec sent (TX) | ✅ | ✅ | `GetIfEntry2` (`MIB_IF_ROW2.OutOctets` delta) |
-| Per-NIC packets/sec (RX + TX) | ✅ | ✅ | `GetIfEntry2` (`InUcastPkts` + `InNUcastPkts`, `OutUcastPkts` + `OutNUcastPkts`) |
-| Per-NIC error count (optional) | ✅ | ✅ | `GetIfEntry2` (`InErrors`, `OutErrors`) — shown only if non-zero |
+| Per-NIC bytes/sec received (RX) | ✅ | ✅ | `GetIfTable2` (`MIB_IF_ROW2.InOctets` raw counter; delta downstream) via the `windows` crate — **lightweight** at the configured tick. |
+| Per-NIC bytes/sec sent (TX) | ✅ | ✅ | `GetIfTable2` (`MIB_IF_ROW2.OutOctets` raw counter; delta downstream) |
+| Per-NIC packets/sec (RX + TX) | ✅ | ✅ | `GetIfTable2` row counters (future display extension) |
+| Per-NIC error count (optional) | ✅ | ✅ | `GetIfTable2` row error counters (future display extension) |
 | Per-NIC live throughput formatted in Mbps/Gbps | ✅ | ✅ | Derived from RX/TX deltas (NFR-8 formatting) |
 | **Monthly RX bytes (per-NIC)** | ✅ | ✅ | Accumulated by `BandwidthAccountant` (see architecture) from live deltas; persisted to SQLite |
 | **Monthly TX bytes (per-NIC)** | ✅ | ✅ | Same |
@@ -113,18 +118,19 @@ Network adapter throughput was previously **Out-of-Scope** in v1 (Appendix A). I
 | **Running monthly total in GB** (RX, TX, total, per-NIC) | ✅ | ✅ | Persisted across app close/reopen, reboot, sleep |
 | **Short history table** (current cycle + last 1–2 cycles, per-NIC) | ✅ | ✅ | SQLite `bandwidth_history` table; UI shows a small table. Keep v1 simple: current + previous month only |
 
-**NFR-1 justification for `GetIfEntry2`.** `GetIfEntry2` fills a caller-provided `MIB_IF_ROW2` for a single interface — it does **not** allocate a full table (unlike `GetIfTable2`, which allocates and returns the whole table and must be freed with `FreeMibTable`). At a 10s polling interval over a handful of adapters, this is a sub-millisecond, sub-0.1%-CPU operation — well within the Lightweight cost class. The cost classifier tags this source `Lightweight`. (Sources: Microsoft Learn `GetIfEntry2` and `GetIfTable2` reference, https://learn.microsoft.com/en-us/windows/win32/api/netioapi/nf-netioapi-getifentry2 and https://learn.microsoft.com/en-us/windows/win32/api/netioapi/nf-netioapi-getiftable2, retrieved 2026-07-07. Confirmed via Stack Overflow / community practice that `GetIfEntry2` is the lighter-weight per-adapter path: https://stackoverflow.com/questions/5022757/ethernet-information, retrieved 2026-07-07.)
+**NFR-1 implementation note.** The current adapter uses `GetIfTable2`, filters live non-loopback rows, and calls `FreeMibTable` before returning. It emits raw cumulative counters; the accountant computes deltas and monthly totals. This remains `CostClass::Lightweight` at the configured tick. `GetIfEntry2` is retained only as the originally researched lighter alternative.
 
 **Persistence model (config vs. state).** The monthly bandwidth feature is the architectural reason a persistent store becomes necessary:
 - **Config** (`config.toml`) holds *preferences*: `cycle_start_day`, which NICs to track, whether to show the history table. Small, human-editable, TOML (unchanged from v1).
 - **Time-series state** (accumulated byte counts, rollover history) holds *data that grows over time and must survive crashes*. This goes to **SQLite** (`bandwidth.db` in `%APPDATA%\sidebar\`), NOT TOML. Rationale: TOML is a config format, not a database; appending to a TOML file requires full reparse + rewrite on every tick (expensive at 10s cadence over months), has no transactional safety against partial writes during crash/sleep, and cannot range-query history without loading the whole file. SQLite (via `rusqlite`, bundled, ~1 MB) gives append-friendly inserts, ACID durability, indexed date-range queries for the history table, and trivial schema migration. See architecture.md AD-11 for the formal decision. (Sources: SQLite time-series-in-Rust guide, https://medium.com/rustaceans/harnessing-the-power-of-sqlite-for-time-series-data-storage-in-rust-a-comprehensive-guide-321612470836, retrieved 2026-07-07; HN discussion of SQLite append-only audit-log suitability, https://news.ycombinator.com/item?id=17855045, retrieved 2026-07-07.)
+- **Current schema:** persistence is at schema version 2. The `current_cycle_metadata` table stores cycle identity and reset metadata alongside the current counters; migrations are registered as v0 → v1 → v2 and remain idempotent on reopen.
 
 ### UX features
 | Feature | In v1 |
 |---|---|
 | Transparent, borderless, always-on-top sidebar docked to screen edge | ✅ |
 | AppBar registration (reserve edge space, slide on hover off-screen) | ✅ |
-| DWM "exclude from peek" + cloaked-from-capture flags | ✅ (option toggle) |
+| DWM "exclude from peek" + capture exclusion via `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` | ✅ (option toggle) |
 | Click-through toggle (Ctrl+drag to reposition) | ✅ |
 | Configurable polling interval (1s–60s, default 10s) | ✅ |
 | Per-metric enable/disable + reorder via drag | ✅ |
@@ -164,24 +170,37 @@ Explicitly **deferred**. These are not "forgotten" — they are documented as fu
 
 ### 5.1 Definitions
 
+> **Current implementation:** Full mode uses bundled `LibreHardwareMonitor.exe`
+> and the local HTTP `GET http://127.0.0.1:<port>/data.json` bridge. The WMI
+> description retained in the original paragraph below is historical research
+> context only; it is not an implementation contract for LHM v0.9.6.
+
 - **Basic mode.** No administrator privileges required. Telemetry sourced from: `sysinfo`, `nvml-wrapper` (NVIDIA-only GPU), `starship-battery`, `windows` PDH counters, Win32 storage APIs. **No CPU package temperature, no fan speeds, no voltages, no non-NVIDIA GPU sensors, no SMART.** The sidebar runs as a standard user process.
-- **Full mode.** Bundled `OpenHardwareMonitor.exe` is launched as a hidden subprocess at sidebar startup (only when Full is active). OHM runs elevated and publishes sensors to the `root\LibreHardwareMonitor` WMI namespace. The sidebar host process remains **non-elevated** and reads WMI. This is the SidebarDiagnostics model. (Source: MetricsHub connector activation criteria, https://www.metricshub.com/docs/latest/connectors/librehardwaremonitor, retrieved 2026-07-07 — "The WMI query below to the managed host succeeds: Namespace `root\LibreHardwareMonitor`, WQL Query `SELECT Name FROM WMINET_InstrumentedAssembly`".)
+- **Full mode.** Bundled `LibreHardwareMonitor.exe` (LHM) is launched as a hidden elevated subprocess only after explicit user action. LHM serves the sensor tree at `http://127.0.0.1:<port>/data.json`; the sidebar host remains **non-elevated** and uses the local HTTP bridge. WMI is historical context only: LHM v0.9.5+ no longer publishes the WMI namespace.
 
 ### 5.2 Auto-detection (on every launch)
 
-There is **no Settings toggle** for tier selection. On every launch, sidebar performs a probe:
+**Implementation correction (2026-07-11):** the current LHM v0.9.6 bridge is
+HTTP-only: `GET http://127.0.0.1:<port>/data.json` with a 500 ms timeout and a
+JSON-signature check. The host never auto-elevates. On explicit launch, the
+supervisor patches `LibreHardwareMonitor.exe.config` (`runWebServerMenuItem`
+and lowercase `listenerPort`), starts `LibreHardwareMonitor.exe` with
+`ShellExecuteW("runas")`, and re-probes for up to 5 seconds. The WMI wording in
+the original table above is historical and must not be used for implementation.
 
-1. **WMI namespace reachability probe.** Attempt `SELECT Name FROM WMINET_InstrumentedAssembly` against `root\LibreHardwareMonitor` with a 500 ms timeout. (This is the canonical activation query used by every consumer of the OHM WMI namespace — see MetricsHub/Sentry docs above.)
-2. **Privilege context check.** If the probe fails, check whether the sidebar host is itself elevated (`OpenProcessToken` + `GetTokenInformation(TokenElevation)`). If the host is elevated and the probe still fails, the user has not launched OHM; we do **not** auto-elevate.
-3. **Subprocess launch decision.** If the namespace probe succeeds *and* the bundled OHM binary is present on disk and the host has a way to launch it (either the host is elevated, or OHM was previously granted elevation via a UAC consent that persists for the session — see §5.4), we ensure OHM is running, then re-probe. If the namespace becomes reachable, we are in Full mode.
+There is **no Settings toggle** for tier selection. On every launch, sidebar performs an HTTP probe:
+
+1. **HTTP reachability probe.** Attempt `GET http://127.0.0.1:<port>/data.json` with the 500 ms timeout. A valid LHM JSON signature resolves Full; refusal, timeout, or a non-LHM response resolves Basic. Ports 17127–17137 are tried for collisions.
+2. **No auto-elevation.** A failed probe leaves the host in Basic; the launch probe never calls `launch_elevated` and never prompts for UAC.
+3. **Explicit launch decision.** Only the status-pill action may call `ShellExecuteW("runas")` after patching `LibreHardwareMonitor.exe.config` (`runWebServerMenuItem=true`, `listenerPort=<port>`), then re-probe for up to 5 seconds. The current UI callback is a known integration gap (see §12).
 
 ### 5.3 Status pill UX
 
 - A small colored pill in the sidebar header reads **`BASIC`** (muted gray) or **`FULL`** (accent green).
 - Hovering the pill shows a tooltip:
-  - **Basic:** *"Basic mode. CPU temperature, fan speeds, voltages, and non-NVIDIA GPU sensors require OpenHardwareMonitor with administrator privileges. Click to learn how to enable Full mode."*
-  - **Full:** *"Full mode. OpenHardwareMonitor is running. All sensors active."*
-- Clicking the pill opens a short in-app explanation with a button to manually trigger an OHM launch (which will UAC-prompt if needed). This is the **only** elevation entry point.
+  - **Basic:** *"Basic mode. CPU temperature, fan speeds, voltages, and non-NVIDIA GPU sensors require LibreHardwareMonitor with administrator privileges. Click to learn how to enable Full mode."*
+  - **Full:** *"Full mode. LibreHardwareMonitor is running. All sensors active."*
+- Clicking the pill triggers the explicit LHM launch request (which UAC-prompts if needed); the supervisor-owner thread performs the launch. This remains the **only** elevation entry point. Real UAC/LHM behavior is still a manual §12 acceptance gate.
 
 ### 5.4 Privilege handling
 
@@ -191,7 +210,7 @@ There is **no Settings toggle** for tier selection. On every launch, sidebar per
 
 ### 5.5 Monthly Bandwidth Tracking *(v2 amendment — new section)*
 
-The bandwidth tracking feature is **tier-agnostic**: it works identically in Basic and Full mode because it reads from the `windows` crate (`GetIfEntry2`), not from OHM. It does not appear in the two-tier matrix in §7 as a Basic-vs-Full split; it is the same in both.
+The bandwidth tracking feature is **tier-agnostic**: it works identically in Basic and Full mode because it reads from the `windows` crate (`GetIfTable2`), not from LHM. It does not appear in the two-tier matrix in §7 as a Basic-vs-Full split; it is the same in both.
 
 **Behavioral contract.**
 
@@ -230,7 +249,7 @@ The bandwidth tracking feature is **tier-agnostic**: it works identically in Bas
 
 - `NtQuerySystemInformation(SystemProcessInformation)` full-process enumeration more frequently than the configured base tick (default 10s), or
 - `NtQuerySystemInformation(SystemPerformanceInformation)` more than once per tick, or
-- Polling any WMI namespace more frequently than the configured base tick, or
+- Polling the LHM HTTP endpoint more frequently than the configured base tick, or
 - Spawning more than one OHM subprocess instance, or
 - Issuing more than one WQL query per sensor category per tick.
 
@@ -249,7 +268,7 @@ The bandwidth tracking feature is **tier-agnostic**: it works identically in Bas
 ### NFR-3 — Cold-start latency
 
 - **< 2 seconds** from process start to first complete frame on the reference machine, Basic mode.
-- Full-mode cold start (including OHM subprocess launch + first WMI round-trip): **< 6 seconds**. OHM's own startup is the dominant cost; we do not control it.
+- Full-mode cold start (including LHM subprocess launch + first HTTP round-trip): **< 6 seconds**. LHM's own startup is the dominant cost; we do not control it.
 
 ### NFR-4 — Memory footprint
 
@@ -273,7 +292,7 @@ The bandwidth tracking feature is **tier-agnostic**: it works identically in Bas
 - **Transparent:** egui `ViewportBuilder::with_transparent(true)` + `clear_color([0,0,0,0])` + `Frame::none()`. Confirmed available in current egui (0.35.0 latest, retrieved 2026-07-07).
 - **Click-through-optional:** A hotkey (default `Ctrl+Shift+S`) toggles `WS_EX_TRANSPARENT` so clicks pass through to whatever is beneath. Off by default (sidebar is interactive).
 - **DWM peek exclusion:** `DwmSetWindowAttribute(DWMWA_EXCLUDED_FROM_PEEK, TRUE)` so the sidebar doesn't disappear during Aero Peek (`Win+Tab`, hover-show-desktop).
-- **Capture cloaking:** Optional `DwmSetWindowAttribute(DWMWA_CLOAKED_BY_CAPTURABLE_CONTENT, ...)` toggle for streamers who don't want sidebar in their capture. Off by default.
+- **Capture exclusion:** Optional `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` toggle for streamers who don't want sidebar in their capture. Off by default; DWM peek exclusion remains a separate `DwmSetWindowAttribute` call.
 
 ### NFR-8 — Human-readable output by default *(v2 amendment — NEW)*
 
@@ -311,31 +330,31 @@ Each sensor category × tier × source crate/API.
 |---|---|---|---|
 | CPU | utilization % | `sysinfo::System::cpus().cpu_usage()` | same |
 | CPU | per-core freq | `sysinfo::System::cpus().frequency()` | same |
-| CPU | package temp | — | OHM WMI `Sensor` (SensorType=Temperature, ParentType=CPU) |
-| CPU | per-core temp | — | OHM WMI |
-| CPU | package power | — | OHM WMI (`hw.power{hw.type="cpu"}`) |
-| CPU | fan RPM | — | OHM WMI (SensorType=Fan) |
-| CPU | voltages | — | OHM WMI (SensorType=Voltage) |
+| CPU | package temp | — | LHM HTTP `/data.json` sensor tree |
+| CPU | per-core temp | — | LHM HTTP `/data.json` |
+| CPU | package power | — | LHM HTTP `/data.json` (`hw.power{hw.type="cpu"}`) |
+| CPU | fan RPM | — | LHM HTTP `/data.json` |
+| CPU | voltages | — | LHM HTTP `/data.json` |
 | GPU (NVIDIA) | utilization % | `nvml-wrapper` `Device.utilization_rates()` | same |
 | GPU (NVIDIA) | temp | `nvml-wrapper` `Device.temperature(TemperatureSensor::Gpu)` | same |
 | GPU (NVIDIA) | VRAM used/total | `nvml-wrapper` `Device.memory_info()` | same |
 | GPU (NVIDIA) | power draw | `nvml-wrapper` `Device.power_usage()` | same |
-| GPU (AMD/Intel) | all metrics | — | OHM WMI (`hw.type="gpu"`) |
-| GPU | fan RPM | — | OHM WMI |
-| GPU | clocks | — | OHM WMI |
+| GPU (AMD/Intel) | all metrics | — | LHM HTTP `/data.json` (`hw.type="gpu"`) |
+| GPU | fan RPM | — | LHM HTTP `/data.json` |
+| GPU | clocks | — | LHM HTTP `/data.json` |
 | Memory | used/free/total | `sysinfo::System::used_memory()/total_memory()` | same |
 | Storage | per-drive capacity | `sysinfo::Disks` | same |
 | Storage | R/W throughput | PDH counter `\PhysicalDisk(*)\Disk Read/Write Bytes/sec` via `windows` crate | same |
-| Storage | SMART endurance | — | OHM WMI (`hw.physical_disk.endurance_utilization`) |
-| Storage | SSD temp | — | OHM WMI |
+| Storage | SMART endurance | — | LHM HTTP `/data.json` (`hw.physical_disk.endurance_utilization`) |
+| Storage | SSD temp | — | LHM HTTP `/data.json` |
 | Battery | state/percent/rate | `starship-battery` `Manager::batteries()` | same |
 | Process | top-N CPU | `sysinfo::System::processes()` (one enumeration per tick) | same |
 | Process | top-N RAM | `sysinfo::System::processes()` | same |
 | Process | top-N GPU | `nvml-wrapper` `running_processes()` + `process_utilization()` (NVIDIA-only, **Watch** cost class) | same |
-| Network *(v2)* | per-NIC bytes/sec RX | `GetIfEntry2` `MIB_IF_ROW2.InOctets` delta via `windows` crate (**Lightweight**) | same |
-| Network *(v2)* | per-NIC bytes/sec TX | `GetIfEntry2` `MIB_IF_ROW2.OutOctets` delta | same |
-| Network *(v2)* | per-NIC packets/sec | `GetIfEntry2` `InUcastPkts`+`InNUcastPkts` / `OutUcastPkts`+`OutNUcastPkts` deltas | same |
-| Network *(v2)* | per-NIC error count | `GetIfEntry2` `InErrors` / `OutErrors` (shown only if non-zero) | same |
+| Network *(v2)* | per-NIC bytes/sec RX | `GetIfTable2` `MIB_IF_ROW2.InOctets` raw counter via `windows` crate (**Lightweight**) | same |
+| Network *(v2)* | per-NIC bytes/sec TX | `GetIfTable2` `MIB_IF_ROW2.OutOctets` raw counter | same |
+| Network *(v2)* | per-NIC packets/sec | `GetIfTable2` row counters (future display extension) | same |
+| Network *(v2)* | per-NIC error count | `GetIfTable2` row error counters (future display extension) | same |
 | Bandwidth *(v2)* | monthly RX/TX/total bytes per-NIC | Accumulated from live deltas by `BandwidthAccountant`; persisted to SQLite `bandwidth.db` | same (tier-agnostic) |
 | Bandwidth *(v2)* | billing-cycle start day | Config TOML `[bandwidth] cycle_start_day` (UI day picker) | same (tier-agnostic) |
 | Bandwidth *(v2)* | cycle end date | Computed by `sidebar-domain::billing::cycle_end` (pure fn) | same (tier-agnostic) |
@@ -348,18 +367,18 @@ Each sensor category × tier × source crate/API.
 | ID | Risk | Severity | Mitigation |
 |---|---|---|---|
 | R1 | CPU/GPU package temperature requires OHM; no pure-Rust path exists on Windows | HIGH | Bundle OHM as documented. Do not pursue alternatives (e.g., ACPI thermal zones via WMI are unreliable; MSR access requires a kernel driver). This is the defining constraint, not a bug. |
-| R2 | `hw` crate (Rust WMI client) is niche with sparse maintenance | HIGH | Use `wmi` crate (0.18.4, retrieved 2026-07-07) which is more actively maintained and supports the WQL queries we need. Fallback: hand-rolled WMI COM via the `windows` crate. |
+| R2 | LHM integration depends on a local HTTP schema | HIGH | Pin LHM v0.9.6 and validate the `/data.json` signature + fixture; use a loopback-only client with redirects disabled. |
 | R3 | UAC prompt for OHM launch is friction | HIGH | Two-tier auto-detect means Basic mode works with zero prompts. OHM elevation is opt-in via the status-pill button, not auto-requested. Document the one-time consent clearly. |
 | R4 | egui transparent+borderless+topmost window on Win11 has thin precedent | MEDIUM | Validated via egui Discussion #2803 and #4228 (community precedent for transparent sidebars). SPIFF: `ViewportBuilder::with_transparent(true)` confirmed present in egui 0.35.0 docs. Manual smoke test on Win11 24H2 required in sdd-verify. |
 | R5 | Non-NVIDIA GPUs (AMD/Intel iGPUs) have no Rust-native metric path | MEDIUM | Full mode covers them via OHM. Basic mode explicitly does not. Document in tooltip. |
 | R6 | Per-process GPU polling may breach NFR-1 (NVML enumeration cost) | MEDIUM | Classified `Watch`. Profiling gate in CI (`cargo bench --bench poll_cost`). Auto-deferred if it breaches 0.5% CPU threshold. |
-| R7 | OHM WMI namespace drift across OHM versions | LOW | Probe on every launch. Pin OHM binary version in bundle. Treat namespace as `root\LibreHardwareMonitor` (canonical) with `root\OpenHardwareMonitor` as a fallback probe path. |
+| R7 | LHM HTTP schema/port drift across versions | LOW | Probe on every launch, pin the LHM binary, patch the HTTP config keys, and reject non-LHM JSON responses. |
 | R8 | TDD coverage illusion — heavy mock usage hides real adapter bugs | LOW | Strict TDD covers domain logic (~80% feasible). Adapters are integration-tested on a Windows CI runner, not mocked away. GUI E2E = manual smoke checklist. |
 | R9 | *(v2)* Bandwidth cycle-end date arithmetic wrong on edge cases (Feb 29, "last day of month", month boundaries) | MEDIUM | `cycle_end` is a pure function in `sidebar-domain::billing` with exhaustive unit tests covering every edge case (28/29/30/31-day months, leap years, "last day" selection, year boundary Dec→Jan). Property-based tests (`proptest`) generate random valid `(start_day, year, month)` triples and assert invariants. |
 | R10 | *(v2)* NIC identity drift across reboots/dock events makes per-NIC totals unreliable | MEDIUM | Track adapters by **LUID** (Locally Unique Identifier), not by name or index. Windows guarantees LUID stability across reboots per the IP Helper contract. If an adapter disappears (undocked), its accumulator is frozen and resumed on reappearance. Documented in §5.5. Fallback: if LUID proves unstable in sdd-verify profiling, fall back to MAC address (less stable across virtual adapters but acceptable). |
 | R11 | *(v2)* SQLite `bandwidth.db` corruption on crash / forced shutdown loses data | LOW | SQLite in WAL mode is ACID-durable; a clean close loses at most the last ~60s (debounced flush). A crash loses at most the last flush window — acceptable for a *consumption tracker*, not a billing system. SQLite's own crash-recovery (journal rollback) handles the common case. No mitigation needed beyond WAL + debounced flush. |
 | R12 | *(v2)* SignPath Foundation rejects the sidebar application (OSI license requirement, MFA requirement, "no hacking tools" clause) | LOW | sidebar is a clean telemetry tool, MPL-2.0 or MIT licensed (OSI-approved), no PUPs, no hacking-tool features. The OHM subprocess is MPL-2.0 (OSI-approved) — but note: SignPath's "sign your own binaries only" rule means we can sign our Rust binary but **OHM.exe remains unsigned** (it's upstream OSS, we redistribute it). This matches every other consumer of OHM. Documented in §9 OQ-1 resolution. |
-| R13 | *(v2)* Microsoft Store AppContainer sandboxing breaks the OHM subprocess bridge (UAC `runas` from sandboxed parent, or WMI namespace access blocked) | MEDIUM | Store-distributed MSIX runs sandboxed. The GitHub Releases / winget path is unsandboxed and has full feature parity. **Mitigation:** ship GitHub Releases + winget first (v1), add Store build as v1.1 milestone once sdd-verify confirms sandbox compatibility. If sandboxing proves incompatible, the Store build ships Basic-mode-only with a note directing Full-mode users to the GitHub build. Documented in §9 OQ-1. |
+| R13 | *(v2)* Microsoft Store AppContainer sandboxing breaks the LHM subprocess bridge (UAC `runas` from sandboxed parent, or local HTTP access blocked) | MEDIUM | Store-distributed MSIX runs sandboxed. The GitHub Releases / winget path is unsandboxed and has full feature parity. **Mitigation:** ship GitHub Releases + winget first (v1), add Store build as v1.1 milestone once sdd-verify confirms sandbox compatibility. If sandboxing proves incompatible, the Store build ships Basic-mode-only with a note directing Full-mode users to the GitHub build. Documented in §9 OQ-1. |
 
 ---
 
@@ -414,9 +433,9 @@ Each sensor category × tier × source crate/API.
 
 **Caveats and caveats-on-caveats:**
 
-1. **SignPath signs our Rust binary, NOT OHM.exe.** The bundled `OpenHardwareMonitor.exe` is upstream OSS (MPL-2.0); per SignPath's "sign your own binaries only" rule, we cannot re-sign it under our cert. It ships unsigned in every channel. This matches every other consumer of OHM (SidebarDiagnostics, MetricsHub integrations, etc.). OHM is launched with `ShellExecuteW("runas")` regardless, so signing status does not affect the elevation flow.
+1. **SignPath signs our Rust binary, NOT LHM.exe.** The bundled `LibreHardwareMonitor.exe` is upstream OSS (MPL-2.0); per SignPath's "sign your own binaries only" rule, we cannot re-sign it under our cert. It ships unsigned in every channel. LHM is launched with `ShellExecuteW("runas")` regardless, so signing status does not affect the elevation flow.
 2. **SignPath application can be rejected.** The Foundation reviews each application. sidebar's profile (clean telemetry tool, OSI license, no PUPs, no hacking features) is squarely within their scope, but approval is not guaranteed. **Fallback if rejected:** ship unsigned via GitHub Releases + winget (SmartScreen warnings for early users, reputation builds over time) and pursue the Microsoft Store path (which signs via Microsoft and sidesteps the cert question entirely).
-3. **Microsoft Store sandboxing.** Store-distributed MSIX apps run in an AppContainer sandbox. This *may* affect: (a) the bundled OHM subprocess launch (UAC `runas` from a sandboxed parent — needs sdd-verify testing), (b) WMI namespace access (should be fine — WMI is brokered), (c) file system writes to `%APPDATA%\sidebar\` (fine — AppData is in the sandbox's writable region). **Risk R13 (new):** if Store sandboxing breaks the OHM bridge, the Store build ships Basic-mode-only with a note, and Full-mode users are directed to the GitHub Releases build. Documented in §8 as R13.
+3. **Microsoft Store sandboxing.** Store-distributed MSIX apps run in an AppContainer sandbox. This *may* affect: (a) the bundled LHM subprocess launch (UAC `runas` from a sandboxed parent — needs sdd-verify testing), (b) local loopback HTTP access, (c) file system writes to `%APPDATA%\sidebar\` (fine — AppData is in the sandbox's writable region). **Risk R13 (new):** if Store sandboxing breaks the LHM bridge, the Store build ships Basic-mode-only with a note, and Full-mode users are directed to the GitHub Releases build. Documented in §8 as R13.
 4. **SmartScreen reputation is per-cert, per-filename.** SignPath's cert is shared across all their OSS projects, so reputation accrues faster than a brand-new solo cert — but a brand-new filename (`sidebar.exe`) still starts cold. Expect some SmartScreen warnings in the first weeks regardless of signing. The Microsoft Store path sidesteps this entirely (Store apps don't trigger SmartScreen).
 5. **Auto-update mechanism.** The Store path gives free auto-update. The GitHub Releases + winget path gives `winget upgrade sidebar` (manual or scriptable). The portable ZIP path has NO auto-update (user replaces files). For v1, this is acceptable; v1.1 can add an in-app "new version available" check that links to the GitHub Release.
 
@@ -453,7 +472,7 @@ sdd-init recorded edition 2021 (re-evaluate 2024 once MSRVs align). `sysinfo` 0.
 ## 10. Success Metrics
 
 **Quantitative (measured in sdd-verify):**
-- NFR-1: Poller CPU average ≤ 0.5% on reference hardware over a 5-minute window (Basic and Full). This now **includes the new network adapter poller** (`GetIfEntry2` per NIC) — the budget covers all four tiers.
+- NFR-1: Poller CPU average ≤ 0.5% on reference hardware over a 5-minute window (Basic and Full). This now **includes the network adapter poller** (`GetIfTable2` snapshot) — the budget covers all providers.
 - NFR-2: Default config ships with `poll_interval_seconds = 10`.
 - NFR-3: Cold start ≤ 2s (Basic) / ≤ 6s (Full) on reference hardware, p95 over 20 launches.
 - NFR-4: Steady-state RSS ≤ 80 MB (Basic) / ≤ 120 MB (Full). *(Note: the bundled SQLite for bandwidth tracking adds ~1 MB to the working set; the 80/120 budgets were set before this amendment and remain achievable. If profiling shows otherwise, raise to 82/122.)*
@@ -491,6 +510,37 @@ sdd-init recorded edition 2021 (re-evaluate 2024 once MSRVs align). `sysinfo` 0.
 
 ---
 
+## 12. Current implementation state and known gaps (2026-07-12)
+
+The integration slice is implemented and verified in the current worktree, but
+it is not release-complete until the changes are committed/reviewed and the
+manual Windows gates below pass:
+
+- **Runtime hook preservation:** `SidebarApp::run` rebinds the launch callback,
+  accountant `BandwidthView` receiver, and OHM liveness probe into the eframe
+  app instance created by the native runner.
+- **Status-pill launch:** BASIC clicks now send a non-blocking request to the
+  supervisor-owner thread, which invokes `launch_elevated` and preserves the
+  explicit-user-action/UAC boundary.
+- **Bandwidth view and history:** the accountant publishes snapshots through a
+  watch channel; each snapshot loads retained SQLite history rows before the
+  GUI drains it into `SidebarView`.
+- **OHM degradation:** child liveness is polled on the supervisor-owner thread
+  and degrades Full→Basic once only when the sidebar explicitly launched that
+  child. External LHM remains unowned and does not trigger degradation.
+- **Theme and header:** a missing or malformed `AppsUseLightTheme` registry
+  value defaults to Dark; the 12.1 header renders a locale-stable `HH:MM`
+  clock plus ISO date without network time.
+- **Verified evidence:** `cargo test --workspace --all-targets` reports 625
+  passed, 0 failed, 13 ignored; formatting and diff checks pass.
+- **Remaining delivery gates:** 6.6 Win32 hotkey/monitor/theme smoke, 9.x
+  SignPath/release/winget work, 10.1–10.2 NFR and smoke evidence, and 11.x
+  regression/coverage gates remain pending. Real UAC/LHM launch, Job Object,
+  capture, multi-monitor, and release-walker checks are manual HITL gates.
+
+These are release-verification and delivery gates, not changes to the
+Win11-only, Basic no-admin, per-NIC bandwidth product boundary.
+
 ## Appendix A — Deferred / Heavy Sources (NFR-1 audit)
 
 Sources evaluated and **excluded** from v1 under the lightweight mandate:
@@ -500,7 +550,7 @@ Sources evaluated and **excluded** from v1 under the lightweight mandate:
 | `NtQuerySystemInformation(SystemFullProcessInformation)` with full handle/thread enumeration | Disproportionate syscall churn per tick; `sysinfo` already enumerates processes at the level we need | Never — `sysinfo` is the lightweight proxy |
 | ETW real-time trace sessions for disk/network | ETW session setup is heavy; buffer management overhead | Post-v1, behind a feature flag |
 | Raw MSR reads for CPU temp (via kernel driver) | Requires shipping a kernel driver — completely out of scope | Never in v1.x |
-| ~~Per-network-adapter throughput via `GetIfTable2`/PDH `\Network Interface(*)\Bytes Total/sec`~~ | ~~Actually lightweight, but scope-deferred per locked decision (not heavy)~~ | ~~v1.1 candidate~~ — **PROMOTED to IN scope in the v2 amendment (§3 Tier 4).** Implementation uses `GetIfEntry2` (per-adapter single-row fill, lighter than `GetIfTable2`'s full-table allocation), confirmed Lightweight per NFR-1. Retained here as a struck-through record of the original deferral decision. |
+| ~~Per-network-adapter throughput via `GetIfTable2`/PDH `\Network Interface(*)\Bytes Total/sec`~~ | ~~Actually lightweight, but scope-deferred per locked decision (not heavy)~~ | ~~v1.1 candidate~~ — **PROMOTED to IN scope in the v2 amendment (§3 Tier 4).** The implementation uses `GetIfTable2` snapshots and downstream delta accounting. Retained here as a struck-through record of the original deferral decision. |
 | WMI `Win32_TemperatureProbe` (MBFM) | Almost universally returns zero/unimplemented on modern boards; unreliable | Never |
 | AMD ADX/xNVML wrappers for non-NVIDIA GPUs in-process | Vendor SDK licensing + per-process cost uncertain; OHM covers it | Post-v1 evaluation |
 

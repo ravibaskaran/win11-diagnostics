@@ -18,7 +18,7 @@
 ## G2 — `unsafe` Policy
 
 - No `unsafe` block without a `// SAFETY:` comment explaining the invariant being upheld.
-- `unsafe` blocks in adapter/platform crates (Win32 FFI, `ShellExecuteW`, `DwmSetWindowAttribute`, `GetIfEntry2`, etc.) require HITL sign-off per G19. The reviewer must confirm the invariant holds on Win11 24H2 and 25H2.
+- `unsafe` blocks in adapter/platform crates (Win32 FFI, `ShellExecuteW`, `DwmSetWindowAttribute`, `SetWindowDisplayAffinity`, `GetIfTable2`, etc.) require HITL sign-off per G19. The reviewer must confirm the invariant holds on Win11 24H2 and 25H2.
 - `unsafe` in pure-domain crates (`sidebar-domain`, `sidebar-sensor`) is FORBIDDEN. If you believe one is needed, escalate — it indicates an architecture leak.
 - **Audit hardening:** Every `unsafe` test must use fixture `F11` (unsafe FFI test with SAFETY contract). The CI clippy gate enables `clippy::undocumented_unsafe_blocks = "deny"`.
 
@@ -28,7 +28,7 @@
 - **Allowed licenses (T-32):** MIT, Apache-2.0, MPL-2.0, BSD-3-Clause, ISC, Zlib, Unicode-DFS-2016, CC0-1.0.
 - **Forbidden:** GPL/AGPL/LGPL/SSPL, proprietary, "unlicensed", unknown.
 - Every new `Cargo.toml` entry must reference the license in a comment: `sysinfo = "0.39.3"  # MIT`.
-- Bundled binary (`OpenHardwareMonitor.exe`) is MPL-2.0.
+- Bundled binary (`LibreHardwareMonitor.exe`) is MPL-2.0.
 - **Audit hardening:** Enforced by `cargo deny check bans licenses` in CI (Story 0.3). Manual audit is advisory; the tool is the gate.
 
 ## G4 — Chained-PR Strategy: Single-Trunk
@@ -115,7 +115,8 @@ The following stories require mandatory human sign-off before the swarm may mark
 - Each such function MUST have an idempotency test using fixture `F6`.
 - For SQLite: `CREATE TABLE IF NOT EXISTS` + `PRAGMA user_version` guard.
 - For tokio runtime: `tokio::runtime::Handle::try_current()` before constructing a new runtime.
-- For COM: `wmi::COMConnection::new()` is already idempotent per-thread; do NOT call `CoInitializeEx` directly.
+- The current LHM bridge is HTTP-only and requires no COM initialization. Any
+  legacy WMI/COM fixture is historical and must not be added to runtime code.
 
 ## G14 — Resource Bounds (Audit Pass 2)
 
@@ -144,14 +145,22 @@ The swarm MUST NOT introduce unbounded channels, unbounded retries, or unbounded
 
 ## G16 — Network Egress Allowlist (Audit Pass 2)
 
-- **Runtime application (sidebar.exe on a user's machine):** ZERO network egress. No telemetry, no auto-update check, no "phone home". The app reads `GetIfEntry2` and WMI namespaces; it does NOT open sockets.
+- **Runtime application (sidebar.exe on a user's machine):** ZERO *remote*
+  network egress. No telemetry, no auto-update check, no "phone home". The
+  only socket exception is the bundled LHM HTTP bridge on literal loopback
+  (`http://127.0.0.0/8` or `http://[::1]`); URLs are validated before transport
+  and redirects are disabled. The app reads `GetIfTable2` for NIC counters and
+  `/data.json` for local LHM sensors.
 - **CI environment:** Allowed egress limited to:
   - `static.crates.io`, `crates.io`, `index.crates.io`, `static.rust-lang.org` (cargo)
   - `github.com`, `*.githubusercontent.com`, `objects.githubusercontent.com` (actions, SignPath, winget)
   - `signpath.io`, `*.signpath.org`, `app.signpath.io`, `api.signpath.io` (signing)
   - `repo.rustsec.org` (cargo-audit DB)
 - The swarm MUST NOT add any other network dependency to either runtime or CI without HITL approval (G19).
-- A runtime-network-egress integration test (Story 10.1 extended) MUST verify sidebar.exe opens no outbound sockets during a 60-second smoke run (verified via `netstat` snapshot diff on Windows).
+- A runtime-network-egress integration test (Story 10.1 extended) MUST verify
+  sidebar.exe opens no non-loopback sockets during a 60-second smoke run
+  (verified via `netstat` snapshot diff on Windows); the expected LHM loopback
+  connection is allowlisted.
 
 ## G17 — Generation-Loop Bounds (Audit Pass 2)
 

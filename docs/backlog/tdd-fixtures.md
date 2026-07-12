@@ -98,22 +98,20 @@ fn mock_returning(readings: Vec<Reading>) -> MockSensorProvider {
 
 ---
 
-## F5 — COM init/uninit for WMI tests
-**Use:** Any test of `sidebar-adapter-ohm` or anything calling the `wmi` crate.
+## F5 — Mock LHM HTTP `/data.json` payload
+**Use:** Any test of `sidebar-adapter-ohm`, `OhmSupervisor`, or tier probing.
 
 ```rust
-#[cfg(target_os = "windows")]
 #[test]
-fn wmi_test() {
-    // wmi crate's COMConnection initializes COINIT_MULTITHREADED on drop-safe RAII.
-    let com = wmi::COMConnection::new().expect("com init");
-    let wmi_con = com.synchronous_namespace_connection("root\\LibreHardwareMonitor")
-        .expect("namespace");
-    // ... test ...
-    // com drops here -> CoUninitialize
+fn lhm_http_fixture_test() {
+    let body = include_str!("../crates/sidebar-adapter-ohm/tests/fixtures/lhm_data.json");
+    let client = MockHttpClient::returning(body);
+    assert_eq!(OhmSupervisor::new(client, tempdir()).probe(17_127), ProviderTier::Full);
 }
 ```
-**Rule:** One `COMConnection` per test thread. NEVER share across threads (COM apartment rules). Tests that need a missing namespace (e.g. on a non-OHM CI runner) MUST `#[ignore]` with a comment naming the prerequisite.
+**Rule:** Unit tests never hit the network. Include refusal, timeout, non-LHM body,
+loopback rejection, and redirect-regression cases; real Win11/UAC smoke remains
+`#[ignore]`/manual.
 **Cited by:** Story 3.6, Story 6.4.
 
 ---
@@ -235,21 +233,19 @@ async fn poller_survives_provider_panic() {
 ---
 
 ## F11 — `unsafe` FFI test with SAFETY contract
-**Use:** Every test exercising `unsafe` Win32 calls (`GetIfEntry2`, `ShellExecuteW`, `DwmSetWindowAttribute`, `SHAppBarMessage`).
+**Use:** Every test exercising `unsafe` Win32 calls (`GetIfTable2`/`FreeMibTable`, `ShellExecuteW`, `DwmSetWindowAttribute`, `SetWindowDisplayAffinity`, `SHAppBarMessage`).
 
 ```rust
 #[cfg(target_os = "windows")]
 #[test]
-fn getifentry2_returns_loopback() {
-    let luid = get_loopback_luid();  // test helper
-    // SAFETY: `row` is zero-initialized; InterfaceLuid is set to a known-valid
-    // value obtained from GetIfTable2 in the test setup. GetIfEntry2 writes
-    // only into the caller-provided struct; no aliasing.
-    let mut row: MIB_IF_ROW2 = unsafe { std::mem::zeroed() };
-    row.InterfaceLuid = luid;
-    let r = unsafe { windows::Win32::NetworkManagement::IpHelper::GetIfEntry2(&mut row) };
+fn getiftable2_returns_live_adapter() {
+    // SAFETY: the API allocates a table on success; the pointer is checked and
+    // released exactly once with the documented FreeMibTable deallocator.
+    let mut table = std::ptr::null_mut();
+    let r = unsafe { windows::Win32::NetworkManagement::IpHelper::GetIfTable2(&mut table) };
     assert_eq!(r, ERROR_SUCCESS);
-    assert!(row.InOctets > 0 || row.OutOctets > 0);
+    assert!(!table.is_null());
+    unsafe { windows::Win32::NetworkManagement::IpHelper::FreeMibTable(table.cast()) };
 }
 ```
 **Rule:** Every `unsafe` block has a `// SAFETY:` comment justifying the invariant. Tests verify the documented contract. See guardrails.md G2.
@@ -324,7 +320,7 @@ fn story_1_3_format_hz_ghz_unit() {
 // L1 — integration (Windows-only, depends on Story 3.x having merged)
 #[cfg(target_os = "windows")]
 #[test]
-fn story_3_5_getifentry2_smoke_integration() {
+fn story_3_5_getiftable2_smoke_integration() {
     // Verifies that the adapter (Story 3.5) STILL works after this story's changes.
     let adapter = NetAdapter::new();
     let readings = adapter.read_all();

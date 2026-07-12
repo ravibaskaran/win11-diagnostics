@@ -9,16 +9,16 @@
 - **Swarm Mapping:** Platform-Foundation Agent.
 
 ### STORY 0.1: Workspace Skeleton + Pinned Dependency Manifest
-- **User Story:** As the Architect, I want a Cargo workspace with all 10 library crates + 1 binary crate stubbed, dependencies split between `[workspace.dependencies]` (shared) and per-crate `[dependencies]`, so every subsequent story compiles in isolation without version drift.
+- **User Story:** As the Architect, I want a Cargo workspace with all 11 library crates + 1 binary crate stubbed (12 packages total), dependencies split between `[workspace.dependencies]` (shared) and per-crate `[dependencies]`, so every subsequent story compiles in isolation without version drift.
 - **Technical Context:** architecture.md §4. Crates: `sidebar-domain`, `sidebar-sensor`, `sidebar-adapter-{sysinfo,nvml,battery,ohm,pdh,net}`, `sidebar-persistence`, `sidebar-bandwidth`, `sidebar-platform`, `sidebar-app` (bin). Workspace-level pins (retrieved 2026-07-07; LHM HTTP migration 2026-07-08): `sysinfo = 0.39.3  # MIT`, `nvml-wrapper = 0.12.0  # MIT/Apache-2.0`, `ureq = 2.12  # MIT/Apache-2.0` (replaces `wmi = 0.18.4` — LHM dropped WMI in v0.9.5+, see AD-2 revised), `serde_json = 1  # MIT/Apache-2.0` (for LHM `/data.json` parsing), `starship-battery = 0.10  # MIT/Apache-2.0`, `windows = 0.62.2  # MIT/Apache-2.0`, `egui = 0.35  # MIT`, `eframe = 0.35  # MIT`, `tokio = 1  # MIT`, `rusqlite = 0.32  # MIT (bundled feature)`, `toml = 0.8  # MIT/Apache-2.0`, `serde = 1  # MIT/Apache-2.0`, `mockall = 0.12  # MIT/Apache-2.0`, `criterion = 0.5  # MIT/Apache-2.0`, `proptest = 1  # MIT/Apache-2.0`, `tracing = 0.1  # MIT`, `chrono = 0.4  # MIT/Apache-2.0`, `tempfile = 3  # MIT/Apache-2.0` (dev-dep). Edition 2021 (OQ-2/OQ-3). MSRV 1.95 (forced by sysinfo). Workspace `[lints]` workspace-wide clippy gates.
 - **Gentle-AI SDD Phase Checklist:**
-  1. [ ] **Plan:** Confirm crate list against architecture §4 (10 libs + 1 bin). Decide which deps are shared (workspace) vs local. Confirm `rust-toolchain.toml` channel matches MSRV.
-  2. [ ] **Implement:** Root `Cargo.toml` with `[workspace] members`, `[workspace.dependencies]` with commented licenses, 11 stub `Cargo.toml` + `src/lib.rs`/`src/main.rs` each containing a real smoke test (NOT an empty stub — see G17). Workspace `[lints.clippy]` with `undocumented_unsafe_blocks = "deny"`.
+  1. [ ] **Plan:** Confirm crate list against architecture §4 (11 libs + 1 bin, 12 packages). Decide which deps are shared (workspace) vs local. Confirm `rust-toolchain.toml` channel matches MSRV.
+  2. [ ] **Implement:** Root `Cargo.toml` with `[workspace] members`, `[workspace.dependencies]` with commented licenses, 12 stub `Cargo.toml` + `src/lib.rs`/`src/main.rs` each containing a real smoke test (NOT an empty stub — see G17). Workspace `[lints.clippy]` with `undocumented_unsafe_blocks = "deny"`.
   3. [ ] **Validate:** `cargo check --workspace` passes; `cargo test --workspace` runs all smokes green; `cargo fmt --check`; `cargo clippy --workspace -- -D warnings`. Use fixture F6 to verify each crate's `lib.rs` is loadable twice in one process (idempotency sanity).
 - **TDD Contract & Test Cases:**
   - **Unit Test Cases (Happy Path):**
     1. Each crate's `lib.rs` exposes `pub fn crate_present() -> bool { true }`; test asserts it returns `true`. (Real assertion, not `assert!(true)`.)
-    2. Workspace test asserts `cargo_metadata::MetadataCommand::new().exec()` returns exactly 11 packages with the expected names.
+    2. Workspace test asserts `cargo_metadata::MetadataCommand::new().exec()` returns exactly 12 packages with the expected names.
   - **Boundary & Edge Case Test Cases (cite T-* and F-*):**
     1. MSRV violation: set `rust-version = "99.0.0"` in one crate temporarily; `cargo build` must error with `rustc` MSRV diagnostic (not a generic compile error).
     2. Dependency conflict: introduce two crates pinning different major versions of `tokio`; `cargo tree --duplicates` MUST list the conflict (CI gate). Fixture F6.
@@ -114,7 +114,7 @@
 
 ### STORY 0.7: Dev Environment Scripts (activation + verification + OHM fetch)
 - **User Story:** As the Architect, I want `scripts/env.ps1`, `scripts/verify-dev-env.ps1`, and `scripts/fetch_ohm.ps1` so any contributor (human or agentic) can activate the relocatable dev env, verify all prerequisites are present, and acquire the bundled OHM binary deterministically (T-44, `docs/dev-env.md`).
-- **Technical Context:** T-44 + `docs/dev-env.md` + Story 6.5. Three PowerShell 7 scripts at `D:\dev\sidebar\scripts\`:
+- **Technical Context:** T-44 + `docs/dev-env.md` + Story 6.5. Three PowerShell 7 scripts at `C:\dev\hobby\sidebar\scripts\` in the current workspace:
   1. **`env.ps1`** — Prepends `tools/cargo-bin`, `tools/ci`, `tools/sqlite` to PATH. Verifies system prerequisites (Rust ≥1.95, MSVC linker reachable, PowerShell 7). Dot-source from `$PROFILE` or run per-session.
   2. **`verify-dev-env.ps1`** — Asserts every tool from `docs/dev-env.md` §1 is present and prints a green/red table. Exits non-zero on any failure. Used as a pre-flight by CI and by Story 11.2's regression gate. Checks: rustc ≥1.95, cargo, clippy, rustfmt, `llvm-tools-preview` component, cargo-deny, cargo-audit, cargo-llvm-cov, cargo-nextest, actionlint, sqlite3, gh, scoop, git, MSVC linker (via `cl` or rustc link test), LibreHardwareMonitor.exe + hash match in `resources/`.
   3. **`fetch_ohm.ps1`** — Story 6.5 implementation. Downloads pinned LHM GUI release, SHA-256 verifies against `resources/ohm.sha256`, extracts to `resources/`. Idempotent (skip if hash already matches).
@@ -378,7 +378,7 @@
 
 ## EPIC 3 — Adapter Implementations
 - **System Objective:** Implement every concrete `SensorProvider` adapter.
-- **Swarm Mapping:** Adapter Agent (per-crate), OHM-Network Agent for WMI.
+- **Swarm Mapping:** Adapter Agent (per-crate), LHM HTTP Agent for `/data.json`.
 
 ### STORY 3.1: `sidebar-adapter-sysinfo` (CPU/RAM/disk/processes/uptime)
 - **User Story:** As the Adapter Agent, I want a sysinfo-backed provider for CPU util, freq, RAM, disk capacity, processes, uptime.
@@ -467,9 +467,9 @@
     4. SAFETY: every `unsafe` block has `// SAFETY:` comment (CI lint G2).
 - **Explicit Swarm Guardrails:** Shell gate on Windows-only test. HITL on any new `unsafe`.
 
-### STORY 3.5: `sidebar-adapter-net` (Per-NIC via GetIfEntry2) — v2 MARQUEE
-- **User Story:** As the Adapter Agent, I want a per-NIC throughput provider using `GetIfEntry2` so live RX/TX/packets/errors are surfaced.
-- **Technical Context:** AD-12 + §5.2 + §7.2 + T-23/T-24. `windows` crate `GetIfEntry2` fills `MIB_IF_ROW2` per adapter. **Adapter emits RAW cumulative counters** (§5.2 v2 note, G9); delta-and-divide downstream. `Tier::Both`, `CostClass::Lightweight`. Tracked-NIC list source: config `[bandwidth] tracked_luids` OR all non-loopback.
+### STORY 3.5: `sidebar-adapter-net` (Per-NIC via GetIfTable2) — v2 MARQUEE
+- **User Story:** As the Adapter Agent, I want a per-NIC throughput provider using `GetIfTable2` so live RX/TX counters are surfaced.
+- **Technical Context:** AD-12 + §5.2 + §7.2 + T-23/T-24. `windows` crate `GetIfTable2` snapshots `MIB_IF_TABLE2`; implementation filters live non-loopback rows and frees the table. **Adapter emits RAW cumulative counters** (§5.2 v2 note, G9); delta-and-divide downstream. `Tier::Both`, `CostClass::Lightweight`.
 - **Gentle-AI SDD Phase Checklist:**
   1. [ ] **Plan:** Confirm LUID stability T-24. Decide tracked-NIC discovery.
   2. [ ] **Implement:** `crates/sidebar-adapter-net/src/lib.rs`. **All `unsafe` per F11 with SAFETY comments.**
@@ -517,15 +517,15 @@
 - **Swarm Mapping:** DB Agent.
 
 ### STORY 4.1: Schema Init + PRAGMAs
-- **User Story:** As the DB Agent, I want the `current_cycle`, `bandwidth_history` tables + WAL/`user_version` PRAGMAs.
-- **Technical Context:** AD-11 + T-6/T-12/T-17/T-26 + G21. Tables per architecture.md AD-11 SQL block. PRAGMAs: `user_version = 1`, `journal_mode = WAL`, `foreign_keys = ON`, default `wal_autocheckpoint`. `adapter_luid` stored as `INTEGER` (SQLite 64-bit signed; LUID is 64-bit — confirm no overflow, T-26 adjacent).
+- **User Story:** As the DB Agent, I want the `current_cycle`, `bandwidth_history`, and `current_cycle_metadata` tables + WAL/`user_version` PRAGMAs.
+- **Technical Context:** AD-11 + T-6/T-12/T-17/T-26 + G21. Tables per architecture.md AD-11 SQL block. PRAGMAs: `user_version = 2`, `journal_mode = WAL`, `foreign_keys = ON`, default `wal_autocheckpoint`. `adapter_luid` stored as `INTEGER` (SQLite 64-bit signed; LUID is 64-bit — confirm no overflow, T-26 adjacent).
 - **Gentle-AI SDD Phase Checklist:**
   1. [ ] **Plan:** Confirm `rusqlite` `bundled` feature compiles sqlite3 (~1 MB, T-6). Confirm INTEGER width.
   2. [ ] **Implement:** `crates/sidebar-persistence/src/schema.rs`. `init(conn: &Connection) -> Result<()>`. **Connection acquisition pattern:** prod opens `%APPDATA%\sidebar\bandwidth.db`; tests use TempDir (F1).
   3. [ ] **Validate:** Round-trip on TempDir SQLite (F1, F6).
 - **TDD Contract & Test Cases:**
   - **Unit Test Cases (Happy Path) — fixtures F1, F6:**
-    1. Fresh TempDir DB → `init()` → `PRAGMA user_version == 1`.
+    1. Fresh TempDir DB → `init()` → `PRAGMA user_version == 2`.
     2. `PRAGMA journal_mode == "wal"`.
     3. `init()` called twice → idempotent (F6).
   - **Boundary & Edge Case Test Cases:**
@@ -552,17 +552,18 @@
     4. Concurrent save (two threads) → SQLite busy; T-12 retry ceiling (5 attempts) respected, then Err if still busy.
 - **Explicit Swarm Guardrails:** G21.
 
-### STORY 4.3: Migration (`v0_to_v1`)
+### STORY 4.3: Migration (`v0_to_v2`)
 - **User Story:** As the DB Agent, I want a migration module tracking schema via `user_version`.
 - **Technical Context:** §7.1 + AD-11 + G21. `migrate(conn) -> Result<()>` reads `user_version`, applies sequential migrations in a single transaction each.
 - **Gentle-AI SDD Phase Checklist:**
   1. [ ] **Plan:** Migration registry pattern.
   2. [ ] **Implement:** `crates/sidebar-persistence/src/migrate.rs`.
-  3. [ ] **Validate:** v0→v1 test (F1, F6).
+  3. [ ] **Validate:** v0→v1→v2 and legacy-v1→v2 tests (F1, F6).
 - **TDD Contract & Test Cases:**
   - **Unit Test Cases (Happy Path):**
-    1. Empty DB (`user_version = 0`) → migrate → `user_version = 1`.
-    2. Already-v1 → migrate → no-op.
+    1. Empty DB (`user_version = 0`) → migrate → `user_version = 2`, including `current_cycle_metadata`.
+    2. Existing v1 DB → migrate → `user_version = 2`, creating `current_cycle_metadata`.
+    3. Already-v2 → migrate → no-op.
   - **Boundary & Edge Case Test Cases:**
     1. `user_version = 99` → Err "unknown future schema".
     2. Migration fails mid-way (inject fault) → txn rolls back, `user_version` unchanged.
@@ -635,29 +636,28 @@
 - **System Objective:** Win32 integration: transparent topmost window, AppBar, DWM, DPI v2, OhmSupervisor.
 - **Swarm Mapping:** Win32-Native Agent.
 
-### STORY 6.1: Transparent Borderless Topmost Viewport + Peek Exclusion + Capture Cloak
-- **User Story:** As the Win32 Agent, I want an egui/eframe viewport that is transparent, borderless, always-on-top, DWM-peek-excluded, AND optionally capture-cloaked for streamers (AD-1, NFR-7, R4).
-- **Technical Context:** AD-1 + NFR-7 + §7.4 + T-9 + T-31. `eframe::ViewportBuilder::with_transparent(true)`, `clear_color([0,0,0,0])`, `Frame::none()`. `SetWindowPos(HWND_TOPMOST)`. **Three DWM attributes** (per NFR-7):
+### STORY 6.1: Transparent Borderless Topmost Viewport + Peek Exclusion + Capture Exclusion
+- **User Story:** As the Win32 Agent, I want an egui/eframe viewport that is transparent, borderless, always-on-top, DWM-peek-excluded, and optionally excluded from supported capture APIs for streamers (AD-1, NFR-7, R4).
+- **Technical Context:** AD-1 + NFR-7 + §7.4 + T-9 + T-31. `eframe::ViewportBuilder::with_transparent(true)`, `clear_color([0,0,0,0])`, `Frame::none()`. `SetWindowPos(HWND_TOPMOST)`. **Two distinct APIs:**
   1. `DwmSetWindowAttribute(DWMWA_EXCLUDED_FROM_PEEK, TRUE)` — sidebar doesn't disappear during Aero Peek (Win+Tab, hover-show-desktop).
-  2. `DwmSetWindowAttribute(DWMWA_CLOAKED_BY_CAPTURABLE_CONTENT, ...)` — toggle for streamers; when enabled, the sidebar is hidden from screen-capture (OBS, Game Bar, Snipping Tool). **Default OFF** (most users want it captured). Exposed as `[display] hide_from_capture = false` in config.
-  3. (`DWMWA_CAPTION_COLOR` etc. reserved for future theming — not in v1.)
+  2. `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` — optional capture exclusion; **default OFF** (`[display] hide_from_capture = false`).
   egui 0.35 (OQ-3).
 - **Gentle-AI SDD Phase Checklist:**
-  1. [ ] **Plan:** Verify `ViewportBuilder::with_transparent` in 0.35. Verify `DWMWA_CLOAKED_BY_CAPTURABLE_CONTENT` exists on Win11 24H2 (introduced Win10 2004). Manual smoke on Win11 24H2 mandatory (R4).
+  1. [ ] **Plan:** Verify `ViewportBuilder::with_transparent` in 0.35 and `WDA_EXCLUDEFROMCAPTURE` on Win11 24H2. Manual smoke on Win11 24H2 mandatory (R4).
   2. [ ] **Implement:** `crates/sidebar-platform/src/window.rs` + `dwm.rs`. **All `unsafe` FFI per F11 with SAFETY comments.** `dwm::exclude_from_peek(hwnd)` + `dwm::set_capture_cloak(hwnd, bool)`.
-  3. [ ] **Validate:** Manual smoke items 1–4 + new item "capture cloak: verify sidebar NOT visible in OBS preview when toggle on".
+  3. [ ] **Validate:** Manual smoke items 1–4 + "capture exclusion: verify sidebar NOT visible in OBS preview when toggle on".
 - **TDD Contract & Test Cases:**
   - **Unit Test Cases (Happy Path):**
     1. `ViewportBuilder` construction returns `transparent == true` (mockable).
     2. `dwm::exclude_from_peek(hwnd)` calls `DwmSetWindowAttribute` with `DWMWA_EXCLUDED_FROM_PEEK` (mock verify).
-    3. `dwm::set_capture_cloak(hwnd, true)` calls `DwmSetWindowAttribute` with `DWMWA_CLOAKED_BY_CAPTURABLE_CONTENT` (mock verify).
+    3. `dwm::set_capture_cloak(hwnd, true)` calls `SetWindowDisplayAffinity` with `WDA_EXCLUDEFROMCAPTURE` (mock/shape verify).
   - **Boundary & Edge Case Test Cases:**
     1. DWM unavailable → graceful no-op, logged.
     2. `SetWindowPos` fails → logged, app continues (non-fatal per G15).
     3. Manual smoke: transparency fails on specific GPU driver → R4 materialized; document workaround.
     4. SAFETY comment presence (CI lint G2).
-    5. Capture-cloak attribute unsupported (older Windows) → no-op + `debug!` log (not an error).
-- **Explicit Swarm Guardrails:** HITL **mandatory** (G11) — manual smoke on real Win11, capture-cloak is a streamer-privacy feature that needs visual review. HITL on any `unsafe`. Shell gate on egui version.
+    5. Capture exclusion unsupported (older Windows/invalid HWND) → non-fatal warning and continue.
+- **Explicit Swarm Guardrails:** HITL **mandatory** (G11) — manual smoke on real Win11, capture exclusion is a streamer-privacy feature that needs visual review. HITL on any `unsafe`. Shell gate on egui version.
 
 ### STORY 6.2: AppBar Dock Registration (SHAppBarMessage)
 - **User Story:** As the Win32 Agent, I want AppBar registration so the sidebar reserves edge space.
@@ -695,10 +695,10 @@
 
 ### STORY 6.4: OhmSupervisor (subprocess launch + monitor + teardown) *(revised 2026-07-08 — was WMI)*
 - **User Story:** As the Win32 Agent, I want the `OhmSupervisor` (AD-8, §3 flow D/E, G10) — probe the LHM HTTP endpoint, write the resolved port into LHM config, launch bundled LibreHardwareMonitor via `ShellExecuteW("runas")` on user action, monitor, tear down.
-- **Technical Context:** AD-8 + §6 + AD-7 (revised) + T-10/T-11/T-45 + G10. **`OhmSupervisor::probe()` runs `GET http://127.0.0.1:17127/data.json` via `ureq` with 500ms timeout T-10.** If 200 + body looks like LHM JSON signature (top-level array, first element has `Text` and `Children`) → Full. If connection-refused/timeout → Basic. `launch_elevated()` does THREE things in order: (a) pick a free port per T-45 (probe 17127, fall back to 17128..17137), (b) **patch the LHM config file `resources/LibreHardwareMonitor.exe.config`** (XML format; LHM stores its settings next to the exe via `Path.ChangeExtension(Application.ExecutablePath, ".config")` per `MainForm.cs:75`) setting TWO keys: `<add key="runWebServerMenuItem" value="true" />` AND `<add key="listenerPort" value="<chosen>" />` — **the HTTP server is OFF by default in LHM v0.9.6** and MUST be explicitly enabled, (c) `ShellExecuteW("runas", "LibreHardwareMonitor.exe", SW_HIDE)` (5s launch timeout T-11), then re-probe. **`ShellExecuteW` returns HINSTANCE; error decoding: cast to `i32` via `PtrToUlong`-equivalent, compare to ≤32 for error codes (per Win32 docs).** Monitor task waits on child handle. **Job Object wrapping (G10):** sidebar-launched LHM placed in Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`; on host crash, kernel reaps LHM — no orphans (verified essential: launching LHM elevated via `ShellExecuteW("runas")` can leave elevated orphan processes if the parent dies, since `Stop-Process` returns Access Denied on elevated children of an unprivileged parent). On shutdown → kill child **only if sidebar launched it** (G10).
+- **Technical Context:** AD-8 + §6 + AD-7 (revised) + T-10/T-11/T-45 + G10. **`OhmSupervisor::probe()` runs `GET http://127.0.0.1:17127/data.json` via `ureq` with 500ms timeout T-10.** If 200 + body looks like LHM JSON signature (top-level array, first element has `Text` and `Children`) → Full. If connection-refused/timeout → Basic. `launch_elevated()` picks a free port (17127..17137), patches `LibreHardwareMonitor.exe.config` (`runWebServerMenuItem=true`, `listenerPort=<chosen>`), invokes `ShellExecuteW("runas")` (5s launch timeout T-11), then re-probes. Job Object wrapping (G10) reaps sidebar-launched LHM on host crash; shutdown kills only sidebar-owned children. **The current integration slice wires the app-level monitor/degrade task; it gates degradation to children explicitly launched by the sidebar. Real UAC/LHM smoke remains HITL.**
 - **⚠️ Verified-fact note (researched 2026-07-08 during dev-env certification):** LHM v0.9.6's HTTP server defaults to OFF (`runWebServerMenuItem=false` in `MainForm.cs`) and defaults to port 8085 (`_settings.GetValue("listenerPort", 8085)`). Both must be set in `LibreHardwareMonitor.exe.config`'s `<appSettings>`-equivalent section before launch. Without `runWebServerMenuItem=true`, LHM starts cleanly but listens on ZERO ports — the swarm WILL see connection-refused and conclude "Full mode unavailable" incorrectly. This is the #1 gotcha for Story 6.4.
 - **Gentle-AI SDD Phase Checklist:**
-  1. [ ] **Plan:** LHM binary path resolution. Child-handle ownership tracking (sidebar-owned vs user-owned). Job Object setup. **LHM config file format** (Story 6.5 must capture the actual `LibreHardwareMonitor.config` schema from v0.9.6 — currently unknown; verify before implementing port-write).
+  1. [ ] **Plan:** LHM binary path resolution. Child-handle ownership tracking (sidebar-owned vs user-owned). Job Object setup. Config keys are known and covered by patch tests; app-level child-monitor wiring is present in the current 12.8 worktree slice, with real UAC/LHM validation still pending.
   2. [ ] **Implement:** `crates/sidebar-platform/src/ohm_supervisor.rs`. **All `unsafe` per F11 with SAFETY comments.** No COM init needed (was required for WMI).
   3. [ ] **Validate:** Integration against bundled LHM v0.9.6 on this dev machine (LAPTOP-PLN56DNU, Ryzen AI 7 350 — LHM v0.9.6 has Ryzen AI 300-series support).
 - **TDD Contract & Test Cases:**
@@ -708,7 +708,7 @@
   - **Boundary & Edge Case Test Cases (cite T-10, T-11, T-45, G10):**
     1. User clicks "Enable Full mode" → `launch_elevated()` writes port to LHM config + invokes `ShellExecuteW("runas")` (mock; real UAC manual).
     2. `ShellExecuteW` returns HINSTANCE error code ≤32 (e.g. ERROR_ACCESS_DENIED) → decoded, logged, Basic retained.
-    3. LHM child exits mid-session → degraded, broadcast `Tier::Basic`, pill flips.
+    3. LHM child launched by the sidebar exits mid-session → app monitor degrades once, broadcasts `Tier::Basic`, and the pill flips; an externally running LHM is not treated as sidebar-owned.
     4. Shutdown: sidebar-launched LHM → terminated; user-launched LHM → left running (G10).
     5. LHM binary missing → `launch_elevated()` Err with clear message.
     6. UAC declined → `ShellExecuteW` error; Basic retained, no retry loop.
@@ -745,8 +745,8 @@
 - **Explicit Swarm Guardrails:** None.
 
 ### STORY 7.2: Poller Task (interval + broadcast publish)
-- **User Story:** As the Wiring Agent, I want the poller task (AD-6, §6 flow A/B/C) — fires every `poll_interval_seconds`, `tokio::join!` all providers, concatenates, timestamps, publishes via broadcast.
-- **Technical Context:** AD-6 + §6 + T-2/T-3/T-14/T-18 + G15. `tokio::time::interval`. Broadcast capacity 8 (T-14). 2 worker threads (T-18). **Panic-safety (G15):** each `provider.read_all()` wrapped in `std::panic::catch_unwind` — requires `Box<dyn SensorProvider + UnwindSafe>` OR a `AssertUnwindSafe` wrapper with documented justification. Panicking provider logged + skipped; others' readings still published.
+- **User Story:** As the Wiring Agent, I want the poller task (AD-6, §6 flow A/B/C) — fires every `poll_interval_seconds`, runs providers on the blocking pool with a shared deadline, concatenates, timestamps, and publishes via broadcast.
+- **Technical Context:** AD-6 + §6 + T-2/T-3/T-14/T-18 + G15. `tokio::time::interval` uses `MissedTickBehavior::Delay` to skip overlapping ticks. Each `provider.read_all()` runs in `spawn_blocking`, is wrapped in `catch_unwind(AssertUnwindSafe(...))`, and shares a 100 ms deadline; timed-out or panicking providers are skipped while survivors publish. Broadcast capacity 8 (T-14). 2 worker threads (T-18).
 - **Gentle-AI SDD Phase Checklist:**
   1. [ ] **Plan:** Broadcast capacity 8 (T-14). `catch_unwind` bounds (DECIDE: wrap each call in `AssertUnwindSafe` since `SensorProvider: Send + Sync` and we accept the unwind-safety caveat for poller resilience). Provider panic → log + skip (G15).
   2. [ ] **Implement:** `crates/sidebar-app/src/poller.rs`.
@@ -757,7 +757,7 @@
     2. Interval = 100ms (test); 3 ticks in 350ms → 3 messages.
   - **Boundary & Edge Case Test Cases (cite T-2, T-3, T-14, T-18, G15):**
     1. One provider panics (F10) → others' readings still published, panic logged (G15).
-    2. One provider slow (500ms) with interval 100ms → tokio::join! waits; document skip-vs-queue strategy (DECIDE: skip overlapping tick, log).
+    2. One provider slow (500ms) with interval 100ms → shared deadline skips the provider; `MissedTickBehavior::Delay` prevents overlapping fan-outs.
     3. Receiver lags → oldest dropped (T-14), `warn!`.
     4. Interval = 0 → clamped to 1s (T-3).
     5. Aggregate CPU% over 5-min simulated window across all providers ≤ T-2 (2%).
@@ -853,6 +853,7 @@
     2. `days_until_reset=0` → "Resets today" (document exact string).
     3. NIC in history not current → "(disconnected)" annotation.
 - **Explicit Swarm Guardrails:** HITL — marquee feature, visual review (G11).
+- **Integration note (2026-07-12):** the accountant now publishes `BandwidthView` snapshots over a watch channel, including retained SQLite history; the GUI bridge is tested, while visual Win11 review remains HITL.
 
 ### STORY 8.5: Settings Panel
 - **User Story:** As the UI Agent, I want settings to edit `cycle_start_day`, temp unit, raw toggle, decimal/binary, poll interval, docked edge, theme.
@@ -880,7 +881,7 @@
 
 ### STORY 9.1: SignPath Project Setup + Code Signing Policy
 - **User Story:** As the Release Agent, I want SignPath Foundation set up + `code-signing-policy.md` so sidebar.exe can be signed for free (AD-14, §11.2).
-- **Technical Context:** §11.2 + PRD OQ-1 + R12. SignPath eligibility: OSI license (Story 0.5), public repo, free downloads, MFA approvers, `code-signing-policy.md` linked from README. **OHM.exe acquisition strategy:** download from the OHM releases URL at build time (NOT committed to repo — too large + license-resale ambiguity), SHA-256 verified against a pinned hash in `resources/ohm.sha256`. CI downloads to `resources/OpenHardwareMonitor.exe` before packaging.
+- **Technical Context:** §11.2 + PRD OQ-1 + R12. SignPath eligibility: OSI license (Story 0.5), public repo, free downloads, MFA approvers, `code-signing-policy.md` linked from README. **LHM acquisition strategy:** download `LibreHardwareMonitor.exe` from the pinned LHM release at build time (NOT committed to repo — too large + license-resale ambiguity), SHA-256 verify against `resources/ohm.sha256`, and package the local HTTP sidecar.
 - **Gentle-AI SDD Phase Checklist:**
   1. [ ] **Plan:** Confirm LICENSE (Story 0.5). Draft policy. OHM acquisition URL + hash pinning.
   2. [ ] **Implement:** `signpath/code-signing-policy.md` + README link + `resources/ohm.sha256` + CI download step (gated behind SignPath-egress allowlist G16).
@@ -923,18 +924,18 @@
 
 ### STORY 10.1: `poll_cost` Criterion Bench + NFR-3/NFR-4 Executable Tests + Network Egress Assertion
 - **User Story:** As the QA Agent, I want the criterion bench enforcing T-1/T-2, plus executable tests for cold-start (T-7) and RSS (T-4/T-5/T-6), plus a runtime network-egress assertion (G16), so NFRs are verified in CI not just manually.
-- **Technical Context:** §7.3 + T-1/T-2/T-4/T-5/T-6/T-7 + T-31 + T-43 + G16. `benches/poll_cost.rs` (F9) per adapter + aggregate. **Reference hardware (T-31) is generalized** — the bench reports a calibration constant (idle baseline CPU% over 60s) and T-1/T-2 thresholds are evaluated as deltas from that baseline, so the bench is meaningful on any dev machine or CI runner. **Cold-start test** (T-7): subprocess spawns `sidebar.exe --bench-cold-start`, the binary writes `Instant::now()` at main and at first frame to a temp file, parent asserts ≤2000ms. **RSS test** (T-4/T-5): subprocess runs 5 min, samples `GetProcessMemoryInfo` 60× at 5s, asserts p95 ≤ 80/120 MiB. **Egress test** (G16): subprocess runs 60s, parent snapshots `netstat -ano` before/after, asserts sidebar.exe opens zero outbound sockets. Coverage via `cargo-llvm-cov` (T-43).
+- **Technical Context:** §7.3 + T-1/T-2/T-4/T-5/T-6/T-7 + T-31 + T-43 + G16. `benches/poll_cost.rs` (F9) per adapter + aggregate. **Reference hardware (T-31) is generalized** — the bench reports a calibration constant (idle baseline CPU% over 60s) and T-1/T-2 thresholds are evaluated as deltas from that baseline, so the bench is meaningful on any dev machine or CI runner. The current `--bench-cold-start` executable probe intentionally measures process-side egui setup without production config, sensor discovery, graphics, or LHM composition. It provides a deterministic host-probe smoke; full production cold-start/RSS/egress evidence remains a Windows CI/manual smoke gate. **Cold-start probe** (T-7): writes elapsed host-probe timing to a temp file. **RSS probe** (T-4/T-5): samples `GetProcessMemoryInfo` during the bounded host probe. **Egress probe** (G16): snapshots `netstat -ano` at startup and after 60s for the probe PID; short-lived sockets and production GUI/LHM behavior require the smoke gate. Coverage via `cargo-llvm-cov` (T-43).
 - **Gentle-AI SDD Phase Checklist:**
   1. [ ] **Plan:** Reference hardware T-31; CI normalization multiplier. Cold-start instrumentation hook (`--bench-cold-start` flag in `sidebar-app`). netstat parsing on Windows.
   2. [ ] **Implement:** `benches/poll_cost.rs` + `benches/parse_threshold.rs` + `tests/nfr_cold_start.rs` + `tests/nfr_rss.rs` + `tests/runtime_no_egress.rs`. **All `unsafe` (`GetProcessMemoryInfo`, `netstat` shell-out is safe via `Command`) per F11.**
-  3. [ ] **Validate:** Run on Windows CI; threshold logic verified.
+  3. [ ] **Validate:** Run the host-probe checks on Windows CI; full production cold-start/RSS/egress evidence remains a separate manual/HITL smoke gate.
 - **TDD Contract & Test Cases:**
   - **Unit Test Cases (Happy Path):**
     1. Bench all-Lightweight → green, prints report.
     2. `parse_threshold` identifies 0.6% provider as failure (T-1).
-    3. Cold-start test on a minimal `--bench-cold-start` path reports <2000ms (T-7).
-    4. RSS test on a 30-second shortened run (CI budget) reports <80 MiB Basic (T-4).
-    5. Egress test: sidebar.exe 60s smoke opens zero outbound sockets (G16).
+    3. Host-probe cold-start test on `--bench-cold-start` reports <2000ms (T-7); production startup remains manual evidence.
+    4. Host-probe RSS test on a 30-second shortened run (CI budget) reports <80 MiB (T-4); production RSS remains manual evidence.
+    5. Host-probe egress test checks startup and 60s snapshots for zero outbound sockets (G16); production egress remains manual evidence.
   - **Boundary & Edge Case Test Cases (cite T-1, T-2, T-4, T-5, T-6, T-7, T-31, G16):**
     1. proc-gpu (Watch) breaches T-1 → bench fails, feature auto-disabled (OQ-2).
     2. Aggregate CPU > T-2 (2%) → bench fails with aggregate report.
@@ -968,23 +969,23 @@ The stories below close the gaps found in audit pass 3. Each maps to a specific 
 
 ---
 
-### STORY 6.5: OHM Binary Acquisition + Version Pinning (R7)
+### STORY 6.5: LHM Binary Acquisition + Version Pinning (R7)
 - **Epic:** 6 (Platform)
-- **User Story:** As the Win32 Agent, I want a deterministic, hash-verified, version-pinned acquisition of the bundled `OpenHardwareMonitor.exe` so the WMI namespace contract (R7) is stable and the binary is not committed to the repo.
-- **Technical Context:** PRD §8 R7 + AD-2 + G18 + nfr-thresholds.md T-32. **Acquisition strategy:** A `resources/fetch_ohm.ps1` (or `.sh`) script invoked by CI before packaging. Downloads OHM from the upstream GitHub release URL (e.g. `github.com/ArcadeRenegade/SidebarDiagnostics/releases/...` — wait, OHM upstream is `github.com/ArcadeRenegade/SidebarDiagnostics` is the project we're cloning; LibreHardwareMonitor is at `github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases`). Pinned to a specific release tag (e.g. `v0.9.5-r3`). SHA-256 verified against `resources/ohm.sha256` (committed). Downloaded binary lands at `resources/OpenHardwareMonitor.exe` (git-ignored). On conflict (hash mismatch), script exits non-zero.
+- **User Story:** As the Win32 Agent, I want a deterministic, hash-verified, version-pinned acquisition of the bundled `LibreHardwareMonitor.exe` so the HTTP `/data.json` contract (R7) is stable and the binary is not committed to the repo.
+- **Technical Context:** PRD §8 R7 + AD-2 + G18 + nfr-thresholds.md T-32. **Acquisition strategy:** `scripts/fetch_ohm.ps1` downloads the pinned LHM v0.9.6 release from `github.com/LibreHardwareMonitor/LibreHardwareMonitor`, verifies `resources/ohm.sha256`, and places `LibreHardwareMonitor.exe` plus supporting files under `resources/`. The script and local hash/license are provisioned; release CI packaging remains pending. LHM serves HTTP `/data.json`; no WMI namespace is required.
 - **Gentle-AI SDD Phase Checklist:**
-  1. [ ] **Plan:** Pick the OHM version (recommend latest stable LibreHardwareMonitor CLI release). Document the namespace it publishes (`root\LibreHardwareMonitor` for LHM ≥0.10, `root\OpenHardwareMonitor` for older — cross-ref Story 3.6 probe order).
-  2. [ ] **Implement:** `resources/fetch_ohm.ps1` + `resources/ohm.sha256` + `.gitignore` entry for `resources/OpenHardwareMonitor.exe`. CI `release.yml` stage 0 invokes the fetch before build.
-  3. [ ] **Validate:** Run the fetch on Windows CI; verify hash. Negative test: corrupt `ohm.sha256`, fetch MUST fail.
+  1. [x] **Plan:** Pin LHM v0.9.6 and document the local HTTP `/data.json` endpoint plus config keys (`runWebServerMenuItem`, `listenerPort`).
+  2. [x] **Implement:** `scripts/fetch_ohm.ps1` + `resources/ohm.sha256` + ignored `resources/LibreHardwareMonitor.exe`. The script validates the committed pin before replacing resources and supports offline `-CheckOnly`; CI `release.yml` stage 0 remains pending.
+  3. [ ] **Validate:** Run the fetch on Windows CI; verify hash. `fetch_ohm.ps1 -CheckOnly` implements deterministic matching, malformed-pin, and corrupted-binary failure paths, but `crates/sidebar-app/tests/dev_env_scripts.rs` currently covers script presence/syntax and happy-path/idempotency only; add dedicated negative-path invocation coverage before marking validation complete. Full network fetch remains pending external egress and HITL approval.
 - **TDD Contract & Test Cases:**
   - **Unit Test Cases (Happy Path):**
-    1. `resources/ohm.sha256` format valid: 64-hex + two-spaces + filename.
-    2. Fetch script, when OHM version is available, downloads successfully; hash matches.
+    1. `resources/ohm.sha256` format valid: 64-hex + two-spaces + filename (checked by `-CheckOnly`).
+    2. Fetch script, when LHM v0.9.6 is available, downloads successfully; staged hash matches before extraction.
   - **Boundary & Edge Case Test Cases (cite R7, G18, T-32):**
-    1. Hash mismatch → script exits non-zero, no file left at destination.
+    1. Staged hash mismatch → script exits non-zero before replacing the destination; offline `-CheckOnly` proves the negative path deterministically.
     2. Upstream release retired (404) → script exits non-zero with actionable message naming the missing tag.
     3. Network egress blocked (CI sandbox) → script times out cleanly within 30s (not infinite).
-    4. License file alongside OHM (MPL-2.0) — fetched and placed at `resources/OpenHardwareMonitor.LICENSE.txt`; verify it exists post-fetch.
+    4. License file alongside LHM (MPL-2.0) — fetched and placed at `resources/LibreHardwareMonitor.LICENSE.txt`; verify it exists post-fetch.
 - **Explicit Swarm Guardrails:** HITL **mandatory** (G11/G19) — OHM version choice is an upstream-trust decision. Egress to `github.com/LibreHardwareMonitor` + `objects.githubusercontent.com` required in G16 allowlist.
 
 ---
@@ -995,7 +996,7 @@ The stories below close the gaps found in audit pass 3. Each maps to a specific 
 - **Technical Context:** NFR-7 + T-34/T-35/T-36 + PRD §3 UX rows.
   - **Hotkey:** `RegisterHotKey` per HWND OR `global-hotkey` crate (MIT/Apache-2.0, T-32-allowed). Parsed from `[hotkeys] click_through = "Ctrl+Shift+S"` string. Conflict handling per T-34: log `warn!`, no silent fallback.
   - **Monitor picker:** `EnumDisplayDevices` + `EnumDisplaySettingsEx` enumerate monitors; expose `MonitorInfo { id: DeviceID, friendly_name, x, y, width, height, dpi }`. `[dock] monitor_id = <DeviceID>` (or `"primary"` sentinel). Re-dock on monitor disconnect per T-36.
-  - **Theme bridge:** `RegQueryValueEx(HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize, AppsUseLightTheme)` for system theme. Listen for `WM_SETTINGCHANGE` with `lParam = "ImmersiveColorSet"` to detect live theme change → broadcast `Event::ThemeChanged(System)` on the Event channel (F12).
+  - **Theme bridge:** `RegQueryValueEx(HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize, AppsUseLightTheme)` for system theme. Listen for `WM_SETTINGCHANGE` with `lParam = "ImmersiveColorSet"` to detect live theme change → broadcast `Event::ThemeChanged("dark"|"light")` on the Event channel (F12). Missing or malformed registry values default to Dark. The current domain contract intentionally carries the resolved mode as a string; `"system"` is reserved for configuration, not runtime notifications.
 - **Gentle-AI SDD Phase Checklist:**
   1. [ ] **Plan:** Decide `global-hotkey` crate vs raw `RegisterHotKey` (recommend `global-hotkey` — cross-platform abstraction, less unsafe). Confirm `WM_SETTINGCHANGE` listening via eframe's `RawEvent` hook OR a custom `wndproc`.
   2. [ ] **Implement:** `crates/sidebar-platform/src/hotkey.rs` + `monitors.rs` + `theme_bridge.rs`. **All `unsafe` per F11.** Hotkey events broadcast as `Event::HotkeyPressed(name)`.
@@ -1004,13 +1005,13 @@ The stories below close the gaps found in audit pass 3. Each maps to a specific 
   - **Unit Test Cases (Happy Path) — fixtures F11, F12:**
     1. Parse `"Ctrl+Shift+S"` → `HotkeyCombo { ctrl: true, shift: true, key: S }`.
     2. `monitors::enumerate()` returns ≥1 monitor on Windows CI.
-    3. `theme_bridge::is_system_dark()` returns bool (mock the reg query).
+    3. `theme_bridge::is_system_dark()` returns bool (mock the reg query; missing value defaults Dark).
   - **Boundary & Edge Case Test Cases (cite T-34/T-35/T-36, G15):**
     1. Hotkey already registered by another app → `register()` returns Err; `warn!`; toggle unavailable until conflict resolves (T-34).
     2. Hotkey parse failure (`"Foo+Bar"`) → returns Err, config validation logs and treats as disabled.
     3. Configured `[dock] monitor_id` not present (unplugged) → re-dock to primary + `warn!` (T-36).
     4. System theme registry key missing → fallback to `Dark` default.
-    5. `WM_SETTINGCHANGE` broadcast → `Event::ThemeChanged(System)` published within 100ms.
+    5. `WM_SETTINGCHANGE` broadcast → `Event::ThemeChanged("dark"|"light")` published within 100ms.
 - **Explicit Swarm Guardrails:** HITL on `RegisterHotKey` invocation (G19). HITL on capture cloak behavior — needs streamer review. HITL on any `unsafe`.
 
 ---
@@ -1021,7 +1022,7 @@ The stories below close the gaps found in audit pass 3. Each maps to a specific 
 - **Technical Context:** architecture §6 + G23 + T-38 + F12. Two channels:
   1. `readings_tx: broadcast::Sender<Vec<Reading>>` (capacity 8, T-14).
   2. `event_tx: broadcast::Sender<Event>` (capacity 8, T-14).
-  `Event` enum: `TierChanged(Tier)`, `ThemeChanged(ThemeMode)`, `MonitorChanged(MonitorId)`, `HotkeyPressed(String)`, `Shutdown`. **Coalescing (T-38):** tier-change events emitted by `OhmSupervisor` pass through a 500ms coalescer task; only the latest within the window is published. Other event types are not coalesced.
+  `Event` enum: `TierChanged(Tier)`, `ThemeChanged(String)`, `MonitorChanged(String)`, `HotkeyPressed(String)`, `Shutdown`. `ThemeChanged` carries the resolved lowercase mode (`"dark"` or `"light"`). **Coalescing (T-38):** tier-change events emitted by `OhmSupervisor` pass through a 500ms coalescer task; only the latest within the window is published. Other event types are not coalesced.
 - **Gentle-AI SDD Phase Checklist:**
   1. [ ] **Plan:** Event enum location (`sidebar-domain::event`). Coalescer implementation (`tokio::select!` with a debounce timer).
   2. [ ] **Implement:** `crates/sidebar-app/src/event_channel.rs` + coalescer task.
@@ -1029,7 +1030,7 @@ The stories below close the gaps found in audit pass 3. Each maps to a specific 
 - **TDD Contract & Test Cases:**
   - **Unit Test Cases (Happy Path) — fixture F12:**
     1. Send `Event::TierChanged(Full)` then `Event::TierChanged(Basic)` within 500ms → subscribers receive only the latter (T-38 coalescing).
-    2. Send `Event::ThemeChanged(Dark)` → subscribers receive it (no coalescing for theme).
+    2. Send `Event::ThemeChanged("dark")` → subscribers receive it (no coalescing for theme).
   - **Boundary & Edge Case Test Cases (cite T-14, T-38, G15):**
     1. 100 tier-change events in 1s → at most 2 published (start + end of window).
     2. Channel overflow (T-14 cap 8) → oldest dropped + `warn!`.
@@ -1329,6 +1330,58 @@ Epic 10 (Verify)
 
 ---
 
+---
+
+## EPIC 12 — SidebarDiagnostics Parity & Integration Closure (post-Epic 11)
+
+- **System Objective:** Close the deliberate parity gaps that remain after the
+  Win11-native Epic 0–8 slice, without weakening the product boundary (Basic
+  mode remains no-admin; bandwidth remains per-NIC; LHM remains a local HTTP
+  sidecar).
+- **Status:** Planned. Stories are optional/deferred where the original
+  SidebarDiagnostics behavior conflicts with the lightweight/privacy mandate.
+- **Dependency convention:** Epic 12 is post-Epic 11. Unless a story is
+  explicitly marked optional/deferred, it has an implicit dependency on `11.4`
+  in addition to the dependencies listed below. Optional/deferred stories may
+  remain skipped; this convention prevents `12.8` from appearing ready before
+  the regression-harness terminal enabler is complete.
+
+### STORY 12.1: Clock/date header (optional UX parity)
+- **User Story:** As a user, I want a compact local clock/date header so the sidebar is glanceable without opening another app.
+- **Scope:** Add a locale-stable local-time display; no network time source. Depends on [8.1]. Optional polish. **Verified:** header renders `HH:MM` plus ISO date and formatter/render tests pass.
+
+### STORY 12.2: Per-metric graphs and history
+- **User Story:** As a power user, I want a short per-metric history graph (not only the current sparkline) so I can spot trends and throttling.
+- **Scope:** Reuse bounded `RollingWindow` state, cap memory/render cost, and keep the current sparkline as the default. Depends on [8.7, 11.3].
+
+### STORY 12.3: Complete hotkey and reposition actions
+- **User Story:** As a user, I want the configured hotkey to toggle click-through and repositioning reliably, including conflict feedback.
+- **Scope:** Finish `RegisterHotKey`/drag/reposition event wiring and monitor re-dock behavior. Depends on [6.6, 8.5].
+
+### STORY 12.4: Customization parity (deferred)
+- **User Story:** As a user, I want the original app's customization breadth (layout, metric presets, and theme details) without sacrificing startup/RSS budgets.
+- **Scope:** Audit each requested option against NFR-1/NFR-4; ship only low-cost settings. Plugin/scripting systems remain out of scope. Depends on [8.5, 8.6].
+
+### STORY 12.5: Battery health + adapter identity/IP (deferred)
+- **User Story:** As a laptop/network user, I want battery health and friendly adapter identity/IP context alongside current counters.
+- **Scope:** Add health only when a supported Windows source is available; surface adapter name/IP as metadata without changing LUID accounting. Depends on [3.3, 3.5, 8.4].
+
+### STORY 12.6: Alert scope and actions
+- **User Story:** As a user, I want alerts scoped per metric/device with an explicit action (acknowledge, snooze, or open settings), not only row coloring.
+- **Scope:** Preserve hysteresis and non-blocking rendering; no telemetry or notification egress. Depends on [1.2, 8.8].
+
+### STORY 12.7: Localization (optional/deferred)
+- **User Story:** As an international user, I want localized labels and number/date formats.
+- **Scope:** Keep v1 locale-stable (`.` decimal, no thousands separator) and add a locale parameter only after the format API is proven. Depends on [1.3, 12.1].
+
+### STORY 12.8: Epic 0–8 integration closure (status pill, BandwidthView, OHM monitor)
+- **User Story:** As the integration owner, I want the currently documented wiring contracts to be true in the production launch path.
+- **Scope:** Wire the status-pill callback to `OhmSupervisor::launch_elevated` and publish tier events; connect the accountant's `BandwidthView` to `AppState`/GUI; run an app-level child-liveness monitor that emits Full→Basic on unexpected exit of a sidebar-launched LHM child. Add integration tests for each path and preserve the 3 s shutdown/watchdog budget. Depends on [6.4, 7.2, 7.3, 7.4, 7.5, 8.2, 8.4].
+- **Current evidence (2026-07-12):** working-tree implementation covers all three paths; 625 workspace tests pass with 13 ignored and formatting/diff checks pass.
+- **Acceptance:** no-op callback removed; live bandwidth panel updates from persisted/accounted state; child exit degrades exactly once; all existing tests remain green. **Still pending:** commit/PR review and real UAC/LHM, Job Object, and Win11 smoke acceptance; do not mark this story merged before those gates.
+
+---
+
 ## APPENDIX: Story Wiring Matrix (Audit Pass 4)
 
 Every story's `Wiring:` block in a single lookup table. The swarm consults this appendix to compute the ready set and the critical-path next pickup. See `regression-harness.md` §3 for the schema and §4 for the critical path.
@@ -1395,6 +1448,14 @@ Every story's `Wiring:` block in a single lookup table. The swarm consults this 
 | 11.2 | integration + bench | [0.2, 11.1] | [every code story — the gate] | 11.3 | [11.4] |
 | 11.3 | ui | [0.1, 11.1] | [8.1, 8.2..8.10] | 8.1 | [11.4] |
 | 11.4 | unit + integration | [0.2, 11.2] | — (terminal enabler) | — | [11.3] |
+| 12.1 | ui | [8.1] | — (optional polish) | 12.2 | [12.2, 12.7] |
+| 12.2 | ui + unit | [8.7, 11.3, 11.4] | — | 12.3 | [12.4] |
+| 12.3 | integration + smoke | [6.6, 8.5, 11.4] | — | 12.4 | — |
+| 12.4 | ui + config | [8.5, 8.6] | — | 12.5 | — |
+| 12.5 | integration | [3.3, 3.5, 8.4] | — | 12.6 | — |
+| 12.6 | ui + unit | [1.2, 8.8, 11.4] | — | 12.7 | — |
+| 12.7 | ui + unit | [1.3, 12.1] | — | 12.8 | (optional/deferred) |
+| 12.8 | integration + smoke | [6.4, 7.2, 7.3, 7.4, 7.5, 8.2, 8.4, 11.4] | — (closure gate) | — | — |
 
 ### Reading the matrix
 
@@ -1418,9 +1479,13 @@ Every story's `Wiring:` block in a single lookup table. The swarm consults this 
   → 8.1 → 8.2 → 8.3 → 8.4 → 8.5 → 8.6 → 8.7 → 8.8 → 8.9 → 8.10
   → 9.1 → 9.2 → 9.3
   → 10.1 → 10.2
+  → 11.4 → 12.1 → 12.2 → 12.3 → 12.4 → 12.5 → 12.6 → 12.7 → 12.8 (post-release parity/closure; optional/deferred rows may be skipped)
 ```
 
-Length: 47 stories on the critical path (out of 59 total; the other 12 are parallel-burst-eligible per §5 of `regression-harness.md`).
+Length: 48 stories on the current delivery critical path (out of 60 current
+rows, including INT), plus the 8-story post-release parity/closure extension
+(68 total). The other current
+stories are parallel-burst-eligible per §5 of `regression-harness.md`.
 
 ### Parallel-burst optimization (multi-agent swarm, max 3 concurrent per G17)
 
@@ -1445,4 +1510,10 @@ A story is `merged` iff ALL of:
 
 ---
 
-**END OF EPICS & STORIES (AUDIT PASS 4 + dev-env + pass-5 agentic-readiness).** 12 Epics, 59 Stories. Companion: `README.md`, `guardrails.md` (G1–G27), `nfr-thresholds.md` (T-1–T-45), `tdd-fixtures.md` (F1–F14), `regression-harness.md`, `PROGRESS.md`, `docs/dev-env.md`. Source: `docs/PRD.md`, `docs/architecture.md`, `docs/grants.md`.
+**END OF EPICS & STORIES (AUDIT PASS 4 + current-state parity extension).** 13
+Epics, 68 Stories (60 current delivery rows including INT + 8 Epic 12
+parity/closure). Companion:
+`README.md`, `guardrails.md` (G1–G27), `nfr-thresholds.md` (T-1–T-45),
+`tdd-fixtures.md` (F1–F14), `regression-harness.md`, `PROGRESS.md`,
+`docs/dev-env.md`. Source: `docs/PRD.md`, `docs/architecture.md`,
+`docs/grants.md`.

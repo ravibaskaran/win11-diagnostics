@@ -1,6 +1,6 @@
 # Story Progress Tracker — sidebar-v1
 
-**Current implementation snapshot (2026-07-11).** CI will take over this
+**Current implementation snapshot (2026-07-12).** CI will take over this
 table when Story 11.4 lands; until then this file is the authoritative manual
 status for the current worktree.
 
@@ -51,18 +51,18 @@ The swarm reads this file at task-startup to identify the ready set (stories who
 | 6.1 | merged | 2026-07-10T06Z | #29 | L0:24 | Transparent/borderless/topmost viewport + DWM peek-exclude + live-HWND `WDA_EXCLUDEFROMCAPTURE`; `[display] hide_from_capture` defaults OFF. Real Win11 capture smoke remains manual. unsafe FFI (G2). |
 | 6.2 | merged | 2026-07-10T06Z | #29 | L0:24 | AppBar dock registration (SHAppBarMessage ABM_NEW/SETPOS/REMOVE). unsafe FFI. |
 | 6.3 | merged | 2026-07-10T06Z | #29 | L0:24 | Per-Monitor DPI Awareness v2 (SetProcessDpiAwarenessContext). unsafe FFI. |
-| 6.4 | merged | 2026-07-10T06Z | #30 | L0:23 | OhmSupervisor (probe + elevated launch via ShellExecuteExW + Job Object G10 + LHM config patch). Post-launch setup failures terminate/reap/close owned handles; real UAC/Job Object smoke remains manual. Dep-free config write (no XML parser). TierChangeCallback seam for 7.4; app child-monitor wiring remains pending. unsafe FFI. |
+| 6.4 | merged | 2026-07-10T06Z | #30 | L0:23 | OhmSupervisor (probe + elevated launch via ShellExecuteExW + Job Object G10 + LHM config patch). Post-launch setup failures terminate/reap/close owned handles; real UAC/Job Object smoke remains manual. Dep-free config write (no XML parser). TierChangeCallback seam for 7.4; app child-monitor wiring is covered by the current 12.8 working-tree slice. unsafe FFI. |
 | 6.5 | partial | 2026-07-11T00Z | story-6.5 | L1:2 | CI `lhm-hash` job runs `fetch_ohm.ps1 -CheckOnly` (offline, G16-compliant) on every PR + push; `fetch_ohm.ps1` rewrite + dev_env tests. Full network fetch on Windows CI + negative-path hash-mismatch tests remain HITL-gated (G16 egress + R7 trust). See verify/pending-HITL-gates.md. |
-| 6.6 | partial | 2026-07-11T00Z | story-6.6 | L1:6 | hotkey.rs + monitors.rs + theme_bridge.rs + GUI PlatformRuntime wiring (WM_HOTKEY/WM_SETTINGCHANGE/WM_DISPLAYCHANGE peek); 6 Win11 integration smoke tests (enumerate/primary/resolve_target/T-34 parse/T-35 registry). register/unregister HWND smoke + 100ms latency test remain HITL-gated. |
+| 6.6 | partial | 2026-07-11T00Z | story-6.6 | L1:6 | hotkey.rs + monitors.rs + theme_bridge.rs + GUI PlatformRuntime wiring (WM_HOTKEY/WM_SETTINGCHANGE/WM_DISPLAYCHANGE peek); missing/malformed AppsUseLightTheme defaults Dark. 6 Win11 integration smoke tests pass; register/unregister HWND + 100ms latency remain HITL-gated. |
 | 7.1 | merged | 2026-07-10T05Z | #28 | L0:8 | Provider registry (tier-filtered via classify_for_v1). All 6 adapters wired. |
 | 7.2 | merged | 2026-07-10T06Z | #31 | L0:7 | Poller task (interval + spawn_blocking + catch_unwind/AssertUnwindSafe + broadcast). G15 panic-skip. Injectable InstantClock. |
 | 7.3 | merged | 2026-07-10T06Z | #32 | L0:11 | Two-tier launch probe (no UAC — &OhmSupervisor borrow prevents launch_elevated; T-45 port fallback; tier-broadcast seam). Epic 7 COMPLETE. |
 | 7.4 | merged | 2026-07-10T13Z | #39 | L0:15 | EventChannel (broadcast + raw_tx seam) + spawn_coalescer 500ms tier-change debounce (T-38). Cross-thread TierChanged→GUI flip. |
 | 7.5 | merged | 2026-07-10T13Z | #38 | L0:18 | Graceful shutdown orchestrator (T-39 phases: cancel→force_flush→teardown_ohm; ShutdownTargets trait; cancellable via pending() not sleep). |
 | 8.1 | merged | 2026-07-10T06Z | #33 | L0:11 | AppState + egui::App (repaint on broadcast drain, G15 RwLock poison recovery, F8 egui_kittest). 3 egui transitive advisories muted in deny.toml (ttf-parser/quick-xml, build-time-only on Win11). |
-| 8.2 | merged | 2026-07-10T06Z | #34 | L0:8 | Status pill (Basic gray/Full green, tooltip). Production click→launch callback remains a no-op; closure tracked by 12.8. |
+| 8.2 | merged | 2026-07-10T06Z | #34 | L0:8 | Status pill (Basic gray/Full green, tooltip). The integration slice now preserves the production launch callback; explicit UAC smoke remains HITL-gated under 12.8. |
 | 8.3 | merged | 2026-07-10T06Z | #34 | L0:14 | Metric row (NFR-8 format dispatch: MetricKind×Unit→format_*; raw_values/temp_unit/decimal_base respect; T-20 NaN→"--"). |
-| 8.4 | merged | 2026-07-10T07Z | #35 | L0:13 | Bandwidth panel renderer (per-NIC rows, history table, empty/reset-today/disconnected states). Live accountant→BandwidthView bridge remains pending (12.8). |
+| 8.4 | merged | 2026-07-10T07Z | #35 | L0:13 | Bandwidth panel renderer (per-NIC rows, history table, empty/reset-today/disconnected states). The integration slice now feeds persisted/accounted BandwidthView snapshots through the watch bridge; visual Win11 smoke remains pending. |
 | 8.5 | merged | 2026-07-10T07Z | #35 | L0:9 | Settings panel (cycle_start_day/temp/raw/decimal/poll/dock/theme; no-retroactive-resplit tooltip; autosave debounced). |
 | 8.6 | merged | 2026-07-10T07Z | #36 | L0:13 | Theme + accent color UI (#RGB/#RRGGBB/#RRGGBBAA parser, fallback #4CAF50). |
 | 8.7 | merged | 2026-07-10T07Z | #36 | L0:7 | Sparkline widget (RollingWindow mini line chart, NaN→gap, overflow downsample). |
@@ -79,20 +79,20 @@ The swarm reads this file at task-startup to identify the ready set (stories who
 | 11.2 | partial | 2026-07-11T00Z | story-11.2 | L1:2 | CI 'regression' job (needs lint+unit+integration+bench) runs cargo-llvm-cov (T-43), builds regression-report.md, uploads regression-report + lcov artifacts per PR. Deliberate-regression injection proof + coverage-delta-vs-main comparison step remain HITL-gated. |
 | 11.3 | merged | 2026-07-11T00Z | story-11.3 | L2:2 | Bootstrap snapshot (story_11_3_harness_bootstrap.rs renders 'sidebar snapshot harness OK' via egui_kittest, breaks 8.1<->11.3 cycle) + L2 CI job (ui-snapshots on windows-latest). insta .snap format + per-panel snapshots land with their GUI stories. |
 | 11.4 | merged | 2026-07-11T00Z | story-11.4 | L0:7 | PR-title parser (progress_parser.rs, 7 unit tests) + track-progress.yml CI job (Python mirror, git-auto-commit-action commit-back). Runs on PR merge; handles reverts via merge-commit message. Schema-change detection + multi-story PR multi-row emission remain HITL-gated. |
-| 12.1 | merged | 2026-07-11T00Z | story-12.1 | L0:3 | format_clock(NaiveTime) -> 'HH:MM' (24h zero-padded) + format_clock_date(NaiveDate) -> ISO 8601 + header render via chrono::Local::now(). No network time. |
+| 12.1 | merged | 2026-07-11T00Z | story-12.1 | L0:3 | Header renders locale-stable local clock (`HH:MM`) and ISO date; formatter and egui render tests pass. No network time. |
 | 12.2 | partial | 2026-07-11T00Z | story-12.2 | L0:3 | MetricHistory per-metric rolling-window map (MetricKey + push/get, T-22 clamp 10-600). RollingWindow + sparkline renderer reused. GUI activation (push from poller + per-row render) is follow-up. |
 | 12.3 | partial | 2026-07-11T00Z | story-12.3 | L0:4 | compute_new_offset pure drag-math (clamps 0..=max(0, monitor-sidebar)). RegisterHotKey + set_click_through reused. WM_NCHITTEST/HTCAPTION handler is HITL-gated follow-up. |
 | 12.4 | deferred | 2026-07-11T00Z | story-12.4 | L1:1 | Customization parity audit (25-option IN/DEFERRED/OUT table + NFR-1/NFR-4 guardrail). Layout/metric presets + per-preset NFR measurement post-v1. |
 | 12.5 | deferred | 2026-07-11T00Z | story-12.5 | L0:3 | BatteryHealth + AdapterMetadata DTOs (display-only; LUID accounting identity unchanged). Win32/WinRT battery source + GetAdaptersAddresses IP lookup post-v1. |
 | 12.6 | partial | 2026-07-11T00Z | story-12.6 | L0:5 | AlertAck enum + displayed_state suppressor + ack_should_clear re-arm. check_threshold hysteresis reused. GUI action buttons (ack/snooze/open-settings) wiring is follow-up. |
 | 12.7 | deferred | 2026-07-11T00Z | story-12.7 | L0:3 | Locale enum + v1_default (LocaleStable) + decimal_separator/thousands_separator. v1 locale-stable per OQ-5; per-locale label tables + format_* Locale param post-v1. |
-| 12.8 | partial | 2026-07-11T00Z | story-12.8 | L0:2 | Gap 2 (BandwidthView -> GUI via watch channel + producer in accountant + drain in logic) + Gap 3 (OHM liveness probe seam + one-shot Full->Basic degradation with latch) wired + tested. Gap 1 (status-pill -> launch_elevated) + production supervisor Arc-Mutex/Monitor-thread wiring + UAC smoke remain. |
+| 12.8 | partial | 2026-07-12T00Z | story-12.8 | L0:2 | Working-tree integration slice wires all three gaps: status-pill launch callback, persisted BandwidthView watch bridge, and sidebar-launched-child liveness degradation (one-shot Full→Basic). 625 tests pass; commit/PR acceptance plus real UAC/LHM smoke remain. |
 
 ## Summary
 - Total stories: 68 (60 current delivery rows, including INT, + 8 Epic 12 parity/closure stories)
 - Merged: 48 / 68 (70.6%) — Stories 0.1-0.7, 1.1-1.6, 2.1-2.3, 3.1-3.6, 4.1-4.3, 5.1-5.3, 6.1-6.4, 7.1-7.5, 8.1-8.10 + INT (Epic 0–8 coding slice + main.rs integration)
 - Ready for pickup: {3.2b, 6.5, 6.6, 10.1, 11.1}. Epic 9 (9.1–9.3) is blocked by 6.5; 10.2 waits for 10.1; 11.2–11.4 wait on 11.1/11.2.
-- Workspace checks recorded for this snapshot: 528 passing, 0 failing, 11 ignored (hardware/UAC/capture smokes). `cargo fmt`, clippy, deny, Windows target check, and the release build pass as recorded in `docs/architecture.md` §13.
+- Workspace checks recorded for this snapshot: 625 passing, 0 failing, 13 ignored (hardware/UAC/capture smokes). `cargo fmt --all -- --check` and `git diff --check` pass; clippy, deny, Windows-target, release-build, and manual Win11 checks remain separate evidence gates.
 - Blocked on HITL: 0
 - Long-term blocked: 0
 
@@ -115,15 +115,17 @@ stories into `merged`:
   remote targets, and redirect escapes are rejected before transport.
 - PR4 integration added two non-duplicate tier-probe regressions for G16
   rejection classification and fallback to a Full port. Workspace checks on
-  2026-07-11: `cargo fmt --all -- --check` pass; `cargo test --workspace
-  --all-targets` 528 passed/11 ignored; clippy and `cargo deny check` pass
+  2026-07-11 historical snapshot: `cargo fmt --all -- --check` pass;
+  `cargo test --workspace --all-targets` 528 passed/11 ignored; clippy and `cargo deny check` pass
   (with existing warnings); Windows target check pass. The release `.exe`
   verified snapshot build (2026-07-11 16:14:09 +05:30): `target/x86_64-pc-windows-msvc/release/sidebar-app.exe` (17,512,960 bytes; SHA-256 `29D3D5322DCFD2F7653686B4FBD0EC1ED4E05369324877ABE599316336776870`). No runtime launch claim is made without the manual Win11 smoke.
 
-**Integration gaps intentionally not marked merged:** the production status-pill
-callback is currently a no-op (no UAC launch), the accountant has no live
-`BandwidthView`/GUI bridge, and no app task polls the OHM child to emit a
-Full→Basic degradation event. Epic 12.8 owns this closure work.
+**Integration closure status:** the current worktree implements the status-pill
+launch callback, the accountant→`BandwidthView` watch bridge (including
+persisted history), and the app-level OHM child-liveness gate. These changes are
+not marked `merged` until they are committed/reviewed and the real UAC/LHM and
+Win11 smoke checks pass. The liveness gate intentionally degrades only children
+that sidebar launched; externally running LHM is not treated as sidebar-owned.
 
 Deferred and still `pending`: **3.2b, 6.5, 6.6, 9.x, 10.1–10.2, 11.x, and all Epic 12 parity/closure stories**. Epic 10.1 is dependency-ready; Epic 9 remains blocked by 6.5 and 10.2 waits for 10.1.
 

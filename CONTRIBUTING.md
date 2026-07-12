@@ -11,6 +11,9 @@ development (SDD) workflow with strict TDD. Before contributing, please read:
 4. [`docs/backlog/README.md`](docs/backlog/README.md) — the audited backlog.
 5. [`docs/backlog/guardrails.md`](docs/backlog/guardrails.md) — the hard
    rules (G1..G27) every contribution must follow.
+6. [`docs/architecture.md` §14](docs/architecture.md#14-current-implementation-state-and-known-gaps)
+   — current integration gaps; do not claim the status-pill, live bandwidth
+   view, or OHM child monitor is wired until Story 12.8 lands.
 
 ## Getting started
 
@@ -24,18 +27,24 @@ cd win11-diagnostics
 # Activate the dev env in your session (PATH only — no system mutation).
 . .\scripts\env.ps1
 
-# Run the full regression matrix locally before opening a PR.
+# Run the workspace checks locally before opening a PR. Epic 10.1 owns the
+# full regression/coverage gate; release publishing is still Epic 9 work.
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --all-targets
-cargo deny --workspace check
+cargo deny check bans licenses advisories sources
 cargo audit
 ```
+
+The current raw `cargo audit` output is limited to the documented transitive
+`quick-xml`/`ttf-parser` advisory exceptions. Keep those ignores explicit and
+time-bounded in `deny.toml`; do not broaden the exception scope silently.
 
 ## Workflow
 
 1. **Pick a story** from [`docs/backlog/PROGRESS.md`](docs/backlog/PROGRESS.md).
-   The ready set is the stories whose `Depends-On` are all merged.
+   Current ready entries include 10.1 and 11.1; Epic 9 is blocked by 6.5 and
+   10.2 waits for 10.1. The parity/closure work is Epic 12.
 2. **Branch:** `story-X.Y-<short-slug>`.
 3. **RED commit:** write failing tests first. Commit
    `test(story-X.Y): RED — <fixture>`. (G1 — no exceptions.)
@@ -66,4 +75,5 @@ cargo audit
 ## Licensing
 
 By contributing, you agree that your contributions are licensed under the
-project's license (MPL-2.0; see [`LICENSE`](LICENSE)).
+project's MIT license (see [`LICENSE`](LICENSE)). The bundled
+`LibreHardwareMonitor.exe` remains MPL-2.0 and is upstream software.

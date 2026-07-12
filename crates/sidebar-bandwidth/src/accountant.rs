@@ -344,10 +344,6 @@ impl BandwidthAccountant {
     /// freshest totals. G15: errors (dropped receiver) are logged + swallowed
     /// — the accountant continues regardless.
     ///
-    /// History rows are omitted in this first cut (no `load_history` exists
-    /// in persistence yet); the GUI shows current-cycle totals only. A
-    /// follow-up Story 12.x can extend persistence with a history loader and
-    /// pass real history here.
     fn publish_view(&self) {
         let Some(tx) = &self.view_tx else {
             return; // No GUI consumer attached.
@@ -362,7 +358,22 @@ impl BandwidthAccountant {
             tracing::warn!("publish_view: cycle_end() returned None; skipping");
             return;
         };
-        let history: Vec<HistoryRow> = Vec::new(); // TODO Story 12.x: load persisted history.
+        let history: Vec<HistoryRow> = match sidebar_persistence::bandwidth_repo::load_history(
+            &self.conn,
+        ) {
+            Ok(rows) => rows
+                .into_iter()
+                .map(|row| HistoryRow {
+                    luid: row.adapter_luid.cast_unsigned(),
+                    rx_bytes: row.rx_bytes.cast_unsigned(),
+                    tx_bytes: row.tx_bytes.cast_unsigned(),
+                })
+                .collect(),
+            Err(error) => {
+                tracing::warn!(error = %error, "publish_view: history load failed; rendering current cycle only");
+                Vec::new()
+            }
+        };
         let view = build_view(
             &self.accumulator,
             &history,
@@ -858,6 +869,60 @@ mod tests {
                 .any(|nic| nic.luid == 100 && nic.rx_bytes == 500 && nic.tx_bytes == 200),
             "BandwidthView.current must contain luid 100 with rx=500 tx=200; got {:?}",
             view.current
+        );
+    }
+
+    #[tokio::test]
+    async fn accountant_view_includes_persisted_history_rows() {
+        let (conn, db_path, _dir) = open_temp_db();
+        conn.execute(
+            "INSERT INTO bandwidth_history
+                (adapter_luid, adapter_name, cycle_start, cycle_end,
+                 rx_bytes, tx_bytes, archived_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                99_i64,
+                "Ethernet",
+                "2026-06-01",
+                "2026-06-30",
+                500_i64,
+                200_i64,
+                "2026-07-01 00:00:00",
+            ],
+        )
+        .expect("seed archived history row");
+        drop(conn);
+
+        let account_conn = Connection::open(&db_path).expect("reopen history db");
+        schema::init(&account_conn).expect("schema remains initialized");
+        let (tx, rx) = broadcast::channel::<Vec<Reading>>(8);
+        let clock = FakeClock::new(t0_dt());
+        let config = AccountantConfig {
+            cycle_start_day: CycleStartDay::day(1),
+            flush_interval: Duration::from_millis(50),
+            history_keep: 1,
+        };
+        let (view_tx, view_rx) = tokio::sync::watch::channel(None);
+        let accountant = BandwidthAccountant::new(rx, account_conn, Box::new(clock), config)
+            .with_view_sender(view_tx);
+        drop(tx);
+
+        accountant
+            .run(CancellationToken::new())
+            .await
+            .expect("accountant exits after sender closes");
+        let view = view_rx
+            .borrow()
+            .clone()
+            .expect("view published on final flush");
+        assert_eq!(
+            view.history,
+            vec![crate::view::NICtotals {
+                luid: 99,
+                friendly_name: None,
+                rx_bytes: 500,
+                tx_bytes: 200,
+            }]
         );
     }
 

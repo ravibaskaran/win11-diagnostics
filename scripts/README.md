@@ -18,6 +18,8 @@ mutate persistent state (no `$PROFILE`, no registry, no `[Environment]
 
 # 3. (Re)download the bundled LibreHardwareMonitor binary (idempotent).
 .\scripts\fetch_ohm.ps1
+# Validate the local executable/pin without network access.
+.\scripts\fetch_ohm.ps1 -CheckOnly
 ```
 
 ## Files
@@ -26,7 +28,7 @@ mutate persistent state (no `$PROFILE`, no registry, no `[Environment]
 |---|---|
 | `env.ps1` | Prepends `tools/{cargo-bin,ci,sqlite}` to `$env:PATH` for the current session. |
 | `verify-dev-env.ps1` | 16-point verification gate; exits non-zero on any failure. CI pre-flight. |
-| `fetch_ohm.ps1` | Downloads pinned LHM release, SHA-256 verifies, extracts to `resources/`. Idempotent. |
+| `fetch_ohm.ps1` | Downloads pinned LHM release, verifies the committed SHA-256 pin, extracts to `resources/`, and supports offline `-CheckOnly` validation. |
 
 ## Reference
 

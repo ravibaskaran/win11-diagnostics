@@ -84,6 +84,17 @@ pub struct CurrentCycleRow {
     pub updated_at: String,
 }
 
+/// One retained archived cycle row, used by the bandwidth view bridge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryCycleRow {
+    /// LUID reinterpreted as i64 (T-26).
+    pub adapter_luid: i64,
+    /// Accumulated RX bytes for the archived cycle.
+    pub rx_bytes: i64,
+    /// Accumulated TX bytes for the archived cycle.
+    pub tx_bytes: i64,
+}
+
 /// Persisted billing-rule metadata for the active current cycle. This is
 /// separate from adapter rows so a cycle with no adapters can still carry its
 /// rule, and so fixed Day(28) remains distinguishable from month-end across a
@@ -212,6 +223,27 @@ pub fn load_current_cycle(conn: &Connection) -> Result<Vec<CurrentCycleRow>> {
                     rx_bytes: row.get(3)?,
                     tx_bytes: row.get(4)?,
                     updated_at: row.get(5)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    })
+}
+
+/// Load retained archived-cycle rows for the GUI history strip.
+pub fn load_history(conn: &Connection) -> Result<Vec<HistoryCycleRow>> {
+    with_busy_retry(conn, |c| {
+        let mut stmt = c.prepare(
+            "SELECT adapter_luid, rx_bytes, tx_bytes
+             FROM bandwidth_history
+             ORDER BY rowid ASC",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(HistoryCycleRow {
+                    adapter_luid: row.get(0)?,
+                    rx_bytes: row.get(1)?,
+                    tx_bytes: row.get(2)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;

@@ -1,16 +1,16 @@
 # Architecture — sidebar (sidebar-v1)
 
 **Change:** `sidebar-v1`
-**Phase:** sdd-design (design, **v2 amendment**)
-**Status:** Draft for orchestrator review
-**Date:** 2026-07-07 (v2 amendment, same date)
-**Workspace:** `D:\dev\sidebar` (greenfield)
+**Phase:** implementation snapshot (Epic 0–8 delivered; closure work pending)
+**Status:** Current architecture and known integration gaps (see §14)
+**Date:** 2026-07-11 (implementation reconciliation)
+**Workspace:** `C:\dev\hobby\sidebar` (12-package workspace: 11 libraries + 1 binary)
 **Engram artifact:** `sdd/sidebar-v1/design` (type: `architecture`, topic_key upsert)
 **Companion document:** `PRD.md` (Engram: `sdd/sidebar-v1/proposal`)
 **Research foundation:** Engram observations `sdd-init/sidebar/*`
 
 > **What changed in v2 (this amendment).** This is an UPDATE pass; all original architecture content is preserved and extended. Converges with PRD v2. Four amendments:
-> 1. **New `sidebar-adapter-net` provider crate** for per-NIC throughput via `GetIfEntry2` (now in scope).
+> 1. **New `sidebar-adapter-net` provider crate** for per-NIC throughput via `GetIfTable2` (now in scope; the implementation enumerates the table and frees it with `FreeMibTable`).
 > 2. **New `sidebar-bandwidth` crate** — the `BandwidthAccountant` component + SQLite persistence layer (`bandwidth.db`) + `sidebar-domain::billing` pure functions. This is the architectural reason SQLite enters the stack.
 > 3. **`format` module expanded** with explicit `format_bytes` / `format_hz` / `format_bps` / `format_temp` / `format_voltage` / `format_rpm` / `format_power` pure functions (NFR-8).
 > 4. **New §11 Build & Release Pipeline** — the zero-cost distribution stack (SignPath + GitHub Releases + winget + optional Microsoft Store). OQ-1 resolved.
@@ -22,7 +22,7 @@
 
 ## 1. Technical Approach
 
-sidebar is a single-binary Windows 11 desktop application structured as a Cargo workspace with one binary crate and **nine library crates** *(v2: was five; +network adapter, +persistence, +bandwidth accountant)*. The binary (`sidebar-app`) owns the GUI thread, spawns the tokio runtime, drives the sensor poller, bridges to the bundled **LibreHardwareMonitor (LHM)** subprocess when Full mode is active (via its HTTP `/data.json` endpoint on `127.0.0.1:17127` — AD-2, revised 2026-07-08), and *(v2)* hosts the `BandwidthAccountant` task that accumulates monthly per-NIC byte counts to SQLite.
+sidebar is a single-binary Windows 11 desktop application structured as a Cargo workspace with one binary crate and **11 library crates** (12 workspace packages total). The binary (`sidebar-app`) owns the GUI thread, spawns the tokio runtime, drives the sensor poller, bridges to the bundled **LibreHardwareMonitor (LHM)** subprocess when Full mode is active (via its HTTP `/data.json` endpoint on `127.0.0.1:17127` — AD-2, revised 2026-07-08), and *(v2)* hosts the `BandwidthAccountant` task that accumulates monthly per-NIC byte counts to SQLite.
 
 The defining architectural choices are:
 
@@ -32,7 +32,7 @@ The defining architectural choices are:
 4. **Two-tier auto-detect** at every launch via an HTTP probe to LHM's `/data.json` endpoint (AD-7). The host process is never auto-elevated; LHM elevation is opt-in via the status-pill button.
 5. **Bundled LHM subprocess** for Full mode. The host queries LHM's HTTP endpoint at `http://127.0.0.1:17127/data.json` (default port; T-45); it does not load LHM as a library or reimplement its drivers.
 6. **tokio** for async polling. One interval, one tick, all sources polled in parallel within the tick. Results published to GUI via `tokio::sync::broadcast`.
-7. ***(v2)* Per-NIC network adapter poller** via `GetIfEntry2` (single-row fill per adapter) — Lightweight cost class. Tier-agnostic (Basic + Full). See `sidebar-adapter-net`.
+7. ***(v2)* Per-NIC network adapter poller** via `GetIfTable2` (full table snapshot per tick, freed with `FreeMibTable`) — Lightweight cost class. Tier-agnostic (Basic + Full). See `sidebar-adapter-net`.
 8. ***(v2)* `BandwidthAccountant`** — a component that subscribes to live network readings, accumulates per-NIC byte deltas into a monthly total, persists to SQLite (`bandwidth.db`), and auto-rolls over at the user-configured billing-cycle boundary. The marquee new feature. See `sidebar-bandwidth`.
 9. ***(v2)* SQLite for time-series state, TOML for config** — config stays in `config.toml` (human-editable preferences); accumulated bandwidth state goes to `bandwidth.db` (SQLite, WAL mode, append-friendly, ACID). Two distinct persistence layers with two distinct purposes. See AD-11.
 10. ***(v2)* `format` module (NFR-8)** — pure functions `format_bytes` / `format_hz` / `format_bps` / `format_temp` / `format_voltage` / `format_rpm` / `format_power` that default to human-readable output (GHz, GB, Mbps, °C, V, RPM, W). Raw-value display is a toggle. See AD-13.
@@ -123,7 +123,7 @@ Each decision follows Choice / Alternatives / Rationale.
   3. Monitors the child handle; on LHM crash, marks Full mode degraded, falls back to Basic for the remainder of the session, surfaces in the status pill.
   4. On sidebar shutdown, terminates LHM **only if sidebar launched it** (don't kill a user-started LHM).
 - **Alternatives:** Let LHM auto-start via a Windows service (out of scope; adds service-install complexity); require the user to start LHM manually (rejected — too much friction).
-- **Rationale:** Subprocess isolation + clear ownership semantics + graceful degradation. The "don't kill user-started LHM" rule prevents us from interfering with power users who run LHM separately. Writing the port into config before launch is what makes the port-collision fallback (T-45) deterministic.
+- **Rationale:** Subprocess isolation + clear ownership semantics + graceful degradation. The "don't kill user-started LHM" rule prevents us from interfering with power users who run LHM separately. Writing the port into config before launch is what makes the port-collision fallback (T-45) deterministic. Child-exit monitoring is an exposed callback seam; the app-level monitor/degrade loop remains a wiring task (see §14).
 
 ### AD-9 — Config format: TOML
 
@@ -167,7 +167,12 @@ See §4.
       archived_at    TEXT NOT NULL
   );
   CREATE INDEX idx_history_luid_cycle ON bandwidth_history(adapter_luid, cycle_start);
-  PRAGMA user_version = 1;   -- schema version, migrate via PRAGMA
+  CREATE TABLE current_cycle_metadata (
+      id               INTEGER PRIMARY KEY CHECK (id = 1),
+      cycle_start      TEXT NOT NULL,
+      cycle_start_rule TEXT NOT NULL
+  );
+  PRAGMA user_version = 2;   -- schema version, migrate via PRAGMA
   PRAGMA journal_mode = WAL;
   ```
   *(v1 retention: history pruned to current + previous cycle on each rollover. Older rows are deleted; v1.1 may extend retention.)*
@@ -260,21 +265,21 @@ See §4.
 ```
 
 **Key flows:**
-- **A.** Poller task fires every 10s (configurable). Calls `provider.read_all()` which fans out to all registered adapters in parallel (`tokio::join!`).
+- **A.** Poller task fires every 10s (configurable). It runs each provider on Tokio's blocking pool, waits on a shared 100 ms deadline, skips timed-out/panicking providers, and never queues overlapping ticks (`MissedTickBehavior::Delay`).
 - **B.** Each adapter returns `Vec<Reading>`. The poller concatenates into a single `Vec<Reading>`, stamps a timestamp, and publishes via `broadcast`.
 - **C.** GUI thread drains its receiver on each egui repaint request. Updates `AppState.readings` (behind `Arc<RwLock<Snapshot>>`). egui re-renders.
 - **D.** On launch, `OhmSupervisor::probe()` runs the HTTP `/data.json` reachability check on port 17127 (AD-7). Sets `AppState.tier`. If Full mode desired but LHM not running and user has not consented, tier = Basic with pill tooltip explaining why.
-- **E.** User clicks status pill → `OhmSupervisor::launch_elevated()` writes port to LHM config → `ShellExecuteW("runas")` → LHM starts → wait up to T-11 (5s) → re-probe HTTP → tier = Full.
+- **E.** User flow: status-pill click → supervisor-owner request → `OhmSupervisor::launch_elevated()` writes port to LHM config → `ShellExecuteW("runas")` → LHM starts → wait up to T-11 (5s) → re-probe HTTP → tier = Full. The callback is preserved through eframe app creation; real UAC/LHM behavior remains a §14 manual gate.
 - **F. *(v2)*** The `BandwidthAccountant` holds its own `broadcast::Receiver<Vec<Reading>>`. On each tick, it filters for `MetricKind::NetRxBytes` / `NetTxBytes` readings, computes per-LUID deltas from the previous tick, and adds them to the in-memory `MonthlyAccumulator`. Every ~60s (debounced), on graceful shutdown, and on rollover, it flushes to `bandwidth.db` (SQLite WAL).
-- **G. *(v2)*** On each tick, `BandwidthAccountant` also checks `Local::today() >= current_cycle_end`. When true: archive the current `current_cycle` rows into `bandwidth_history`, create new rows with the next `cycle_start`, force-flush. This is the rollover.
-- **H. *(v2)*** GUI reads bandwidth state (current cycle totals + history) from a separate `Arc<RwLock<BandwidthView>>` updated by the accountant (not from the sensor broadcast — bandwidth is derived state, not raw sensor data). The GUI's Bandwidth panel renders this view, formatting bytes via `format::format_bytes(..., Base::Decimal)` per NFR-8.
-- **I. *(v2)*** The `sidebar-adapter-net` provider calls `GetIfEntry2` per tracked NIC (Lightweight cost class). It reads raw `InOctets`/`OutOctets` counters; the *delta* (bytes/sec) is computed by the accountant / domain layer, not the adapter, keeping the adapter a thin syscall wrapper.
+- **G. *(v2)*** On each tick, `BandwidthAccountant` checks `Local::today() >= current_cycle_end`. Rollover flushes the old in-memory tail, archives `current_cycle` transactionally, prunes history, resets the accumulator, advances `cycle_start`, and persists the new-cycle state.
+- **H. *(v2)*** The GUI bridge is a separate `BandwidthView` payload (derived state, not raw readings). The current worktree publishes live snapshots, including retained history, over a watch channel; native visual acceptance remains a §14 manual gate.
+- **I. *(v2)*** The `sidebar-adapter-net` provider snapshots `GetIfTable2` rows and emits raw `InOctets`/`OutOctets` counters; the accountant computes deltas and monthly totals, keeping the adapter stateless.
 
 ---
 
 ## 4. Crate / Module Structure
 
-Cargo workspace, **nine crates** *(v2: was six; +sidebar-adapter-net, +sidebar-bandwidth, +sidebar-persistence)*. Greenfield — all files below are to-be-created in sdd-apply, none exist yet.
+Cargo workspace, **12 packages (11 libraries + 1 binary)**. The tree below is the intended module map; implementation status is recorded in §13–§14.
 
 ```
 sidebar/                                    # workspace root
@@ -317,8 +322,8 @@ sidebar/                                    # workspace root
 │   ├── sidebar-adapter-pdh/                # Per-drive throughput via PDH
 │   │   ├── Cargo.toml
 │   │   └── src/lib.rs
-│   ├── sidebar-adapter-net/                # *(v2)* Per-NIC throughput via GetIfEntry2
-│   │   ├── Cargo.toml                      #   windows crate, MIB_IF_ROW2 per adapter
+│   ├── sidebar-adapter-net/                # *(v2)* Per-NIC throughput via GetIfTable2
+│   │   ├── Cargo.toml                      #   windows crate, MIB_IF_TABLE2 snapshot
 │   │   └── src/lib.rs                      #   emits NetRxBytes/NetTxBytes/NetRxPps/...
 │   ├── sidebar-persistence/                # *(v2)* SQLite bandwidth state store
 │   │   ├── Cargo.toml                      #   rusqlite (bundled), WAL mode
@@ -339,7 +344,7 @@ sidebar/                                    # workspace root
 │   │   └── src/
 │   │       ├── lib.rs
 │   │       ├── appbar.rs                   # SHAppBarMessage
-│   │       ├── dwm.rs                      # DwmSetWindowAttribute (peek excl, cloak)
+│   │       ├── dwm.rs                      # DWM peek exclusion + SetWindowDisplayAffinity capture exclusion
 │   │       ├── window.rs                   # HWND_TOPMOST, WS_EX_TRANSPARENT toggle
 │   │       ├── dpi.rs                      # SetProcessDpiAwarenessContext
 │   │       └── ohm_supervisor.rs           # launch/monitor bundled LibreHardwareMonitor.exe (HTTP, port 17127)
@@ -500,7 +505,7 @@ pub enum CostClass {
 
 #[derive(Debug, Clone)]
 pub struct SensorDescriptor {
-    pub name:          &'static str,             // "sysinfo-cpu", "ohm-cpu-temp", "net-getifentry2", etc.
+pub name:          &'static str,             // "sysinfo-cpu", "ohm-cpu-temp", "net-getiftable2", etc.
     pub cost_class:    CostClass,
     pub metrics:       &'static [MetricKind],    // what this provider emits
     pub requires_tier: Tier,                     // Basic, Full, or Both (v2: network + bandwidth are tier-agnostic)
@@ -537,7 +542,7 @@ pub fn classify_for_v1(descriptors: &[SensorDescriptor], active_tier: Tier) -> V
 }
 ```
 
-The classifier is intentionally trivial — the discipline is in the **adapter authors** being required to assign a `CostClass` with profiling evidence (a comment pointing to the bench result). *(v2)* The tier-filtering step was added to express that `sidebar-adapter-net` is tier-agnostic (`Tier::Both`) — it runs in Basic and Full because `GetIfEntry2` is a user-mode API with no elevation requirement.
+The classifier is intentionally trivial — the discipline is in the **adapter authors** being required to assign a `CostClass` with profiling evidence (a comment pointing to the bench result). *(v2)* The tier-filtering step was added to express that `sidebar-adapter-net` is tier-agnostic (`Tier::Both`) — it runs in Basic and Full because the IpHelper `GetIfTable2` snapshot is a user-mode API with no elevation requirement.
 
 ---
 
@@ -549,36 +554,36 @@ Process boundary
 ├── Main thread ─────────── eframe event loop (egui immediate-mode)
 │                            owns AppState (Arc<RwLock<Snapshot>>)
 │                            owns broadcast::Receiver<Vec<Reading>>
-│                            *(v2)* owns Arc<RwLock<BandwidthView>> (separate from sensor snapshot)
+│                            owns the optional BandwidthView payload (watch bridge from accountant)
 │                            repaints on egui's vsync + on broadcast recv
 │
 ├── tokio worker 1 ──────── Poller task
 │                            interval tick every config.poll_interval_seconds
-│                            tokio::join! across all providers (incl. *(v2)* sidebar-adapter-net)
+│                            spawn_blocking per provider + shared 100ms deadline
 │                            publishes Vec<Reading> via broadcast::Sender
 │
 ├── tokio worker 2 ──────── IO-heavy adapters can spawn_blocking here
 │                            (HTTP/ureq calls, nvml calls)
 │                            *(v2)* sidebar-persistence SQLite flushes (debounced, non-blocking in WAL)
 │
-├── (spawned) OhmSupervisor monitor task (Full mode only)
-│                             waits on OHM child handle
-│                             on exit: marks tier degraded, broadcasts tier change
+├── OhmSupervisor child handles (Full mode only)
+│                             Job Object reaps owned LHM on crash/shutdown
+│                             app-level child monitor/degrade callback (only for sidebar-owned child)
 │
 └── (spawned, *(v2)*) BandwidthAccountant task
                              holds broadcast::Receiver<Vec<Reading>>
                              on each tick: filter NetRxBytes/NetTxBytes, delta vs prev, accumulate per-LUID
                              every ~60s (debounced): flush to SQLite (spawn_blocking on worker 2)
-                             on rollover (Local::today() >= cycle_end): archive + reset + force-flush
+                             on rollover (Local::today() >= cycle_end): flush + archive + reset + persist
                              on shutdown signal: force-flush
-                             publishes BandwidthView via separate channel (or shared RwLock updated + notify)
+                             publishes BandwidthView snapshots (including retained history) via watch
 ```
 
 - **Single source of truth for "current readings":** `AppState.readings` behind `Arc<RwLock<Snapshot>>`. Only the GUI thread writes; the poller publishes via broadcast, GUI drains into the RwLock.
-- ***(v2)* Single source of truth for "bandwidth state":** `AppState.bandwidth` behind `Arc<RwLock<BandwidthView>>`. Only the BandwidthAccountant task writes; the GUI thread reads. Kept separate from the sensor snapshot because bandwidth is *derived* state (accumulated over time), not a per-tick gauge — mixing them would confuse the GUI's repaint logic.
+- ***(v2)* Bandwidth state boundary:** `BandwidthAccountant` owns the SQLite-backed accumulator and publishes a derived `BandwidthView` over a watch channel; the GUI drains it without touching SQLite.
 - **Tier changes** (Basic↔Full mid-session) are broadcast on the same channel as a special `Event::TierChanged(Tier)` variant. GUI updates the status pill atomically. *(Network + bandwidth providers are `Tier::Both` — unaffected by tier changes.)*
 - **No blocking calls on the GUI thread.** egui repaint is ~16ms; we never call `sysinfo`/`nvml`/HTTP/SQLite from the render path.
-- **Shutdown:** `Ctrl+C` → tokio `shutdown_signal()` → cancel token → poller stops → *(v2)* BandwidthAccountant force-flushes to SQLite → OHM supervisor terminates child if sidebar-owned → eframe exits. SQLite's WAL ensures the flush is durable even if the process is killed immediately after.
+- **Shutdown:** `Ctrl+C`/GUI close → shared `ShutdownSignal` cancels workers and emits one `Event::Shutdown` → bounded force-flush (≤500 ms) → owned-LHM teardown (≤2 s cumulative) → bounded joins. Production starts a 3 s watchdog that force-exits if the total budget is exceeded; SQLite WAL makes completed flushes durable.
 
 ---
 
@@ -606,11 +611,11 @@ Strict TDD is **ENABLED** (per sdd-init observation `sdd-init/sidebar/testing`).
   - `accountant::tick` — feed readings including non-network metrics; assert only `NetRxBytes`/`NetTxBytes` are consumed.
   - `view::build` — accumulator + history → `BandwidthView` DTO for GUI.
 - **`sidebar-persistence` *(v2, NEW)*** — tested against a temp-file SQLite (not the real `%APPDATA%` path):
-  - `schema::init` — fresh DB creates tables + PRAGMAs (`user_version=1`, `journal_mode=WAL`).
+  - `schema::init` — fresh DB creates tables (including `current_cycle_metadata`) + PRAGMAs (`user_version=2`, `journal_mode=WAL`).
   - `bandwidth_repo::save_and_load` — round-trip accumulator state.
   - `bandwidth_repo::archive_cycle` — current cycle row → history table; current cycle row reset.
   - `bandwidth_repo::prune_history` — keeps only current + previous cycle; older rows deleted.
-  - `migrate::v0_to_v1` — empty DB → v1 schema.
+  - `migrate::v0_to_v1` + `migrate::v1_to_v2` — empty DB → v2 schema; legacy v1 DB → v2 metadata addition.
 
 ### 7.2 Integration tests (Windows CI runner only, `#[cfg(target_os = "windows")]`)
 
@@ -619,7 +624,7 @@ Strict TDD is **ENABLED** (per sdd-init observation `sdd-init/sidebar/testing`).
   - `sidebar-adapter-nvml` — skipped if no NVIDIA GPU (CI runner may lack one; mark `#[ignore]`).
   - `sidebar-adapter-ohm` — gated on OHM being installed on the CI runner; otherwise `#[ignore]`.
   - `sidebar-adapter-pdh` — PDH counter returns non-zero R/W bytes/sec under a synthetic disk load.
-  - **`sidebar-adapter-net` *(v2, NEW)*** — `GetIfEntry2` returns non-zero `InOctets`/`OutOctets` for the loopback or primary adapter; counters are monotonically non-decreasing across two ticks; LUID is stable across two reads within one process.
+- **`sidebar-adapter-net` *(v2, NEW)*** — `GetIfTable2` returns non-zero `InOctets`/`OutOctets` for the primary adapter; counters are monotonically non-decreasing across two ticks; LUID is stable across two reads within one process.
 - **OHM supervisor:** round-trip launch/probe/terminate against the bundled OHM binary.
 - **`sidebar-bandwidth` end-to-end *(v2, NEW)*** — spawn the accountant against a real (temp-file) SQLite, feed synthetic network readings simulating 2 ticks + a rollover, assert the DB has the expected current_cycle + history rows. Verifies the full accumulate→flush→archive→reset→flush cycle.
 
@@ -653,9 +658,12 @@ egui immediate-mode is awkward to drive programmatically; egui_kittest exists (2
 
 ---
 
-## 8. File Changes (forward-looking, greenfield)
+## 8. File Changes (implementation snapshot and planned deliverables)
 
-All files below are **to be created** in sdd-apply. None exist yet except `PRD.md` and `architecture.md` (this phase) and the `.atl/` + `.engram/` tooling directories.
+The workspace now contains the implementation files listed below. The table
+retains `sdd-apply` labels for deliverables that were planned in the original
+design; entries marked `implemented` or `provisioned locally` reflect the
+current worktree, while release artifacts remain pending.
 
 | Path | Purpose | Created in phase |
 |---|---|---|
@@ -667,19 +675,22 @@ All files below are **to be created** in sdd-apply. None exist yet except `PRD.m
 | `crates/sidebar-adapter-battery/...` | starship-battery adapter | sdd-apply |
 | `crates/sidebar-adapter-ohm/...` | LHM HTTP adapter (was WMI; revised 2026-07-08) | sdd-apply |
 | `crates/sidebar-adapter-pdh/...` | PDH disk throughput adapter | sdd-apply |
-| `crates/sidebar-adapter-net/...` *(v2)* | Per-NIC throughput via `GetIfEntry2` (windows crate) | sdd-apply |
+| `crates/sidebar-adapter-net/...` *(v2)* | Per-NIC throughput via `GetIfTable2` (windows crate) | implemented |
 | `crates/sidebar-persistence/...` *(v2)* | SQLite bandwidth state store (rusqlite, WAL) | sdd-apply |
 | `crates/sidebar-bandwidth/...` *(v2)* | BandwidthAccountant: subscribe, accumulate, flush, rollover | sdd-apply |
 | `crates/sidebar-platform/...` | Win32 (AppBar, DWM, DPI, OhmSupervisor) | sdd-apply |
 | `crates/sidebar-app/...` | binary: gui + poller + wiring (incl. *(v2)* `bandwidth_panel.rs`) | sdd-apply |
 | `benches/poll_cost.rs` | NFR-1 perf gate (now incl. *(v2)* network adapter poller in the measured set) | sdd-apply |
-| `resources/OpenHardwareMonitor.exe` | bundled OHM (MPL-2.0, **unsigned** — see AD-14) | sdd-apply (acquired from OHM releases) |
+| `resources/LibreHardwareMonitor.exe` | bundled LHM (MPL-2.0, **unsigned** — see AD-14) | provisioned locally; release packaging pending |
 | `.github/workflows/ci.yml` | Windows-latest runner, cargo test + bench + clippy + fmt | sdd-apply |
 | `.github/workflows/release.yml` *(v2)* | Build → SignPath sign → publish GitHub Release + winget manifest PR (+ optional Store MSIX) | sdd-apply |
 | `winget/manifest.yaml` *(v2)* | winget manifest template for `winget-create` submission | sdd-apply |
 | `signpath/code-signing-policy.md` *(v2)* | SignPath-required code signing policy doc (linked from README/homepage) | sdd-apply |
 
-**Migration:** N/A — greenfield, no existing data to migrate. Config schema starts at `config_version = 1` (now includes `[bandwidth]` section); future migrations handled in `sidebar-domain::config::migrate`. *(v2)* SQLite schema starts at `user_version = 1`; future migrations handled in `sidebar-persistence::migrate`.
+**Migration:** The current workspace is no longer greenfield. Config schema
+starts at `config_version = 1` (now includes `[bandwidth]`); SQLite schema is
+`user_version = 2`, and `sidebar-persistence::migrate` applies the additive
+v0→v1→v2 chain (including `current_cycle_metadata`) for existing databases.
 
 ---
 
@@ -687,7 +698,7 @@ All files below are **to be created** in sdd-apply. None exist yet except `PRD.m
 
 ### OQ-1 — Distribution format — **RESOLVED (v2 amendment)** *(cross-ref PRD §9)*
 
-**Previously:** architecture was distribution-agnostic; the only distribution-coupled artifact was `resources/OpenHardwareMonitor.exe`. **Now resolved.** The zero-cost-first stack is SignPath (free OSS signing) + GitHub Releases + winget + optional Microsoft Store. See AD-14 and the new §11 Build & Release Pipeline. The architecture is **no longer fully distribution-agnostic** — §11 introduces distribution-specific build/release machinery (SignPath signing step, winget manifest, optional MSIX packaging). The crate structure, OHM bundling, and config/state story remain unchanged.
+**Previously:** architecture was distribution-agnostic; the only distribution-coupled artifact was the bundled LHM binary. **Plan resolved, implementation pending.** The zero-cost-first stack is SignPath (free OSS signing) + GitHub Releases + winget + optional Microsoft Store. See AD-14 and §11; the workflow and policy files are still release-story deliverables.
 
 ### OQ-2 — Rust edition (cross-ref PRD §9)
 
@@ -699,7 +710,7 @@ egui 0.34 (Mar 2026) introduced the "More Ui less Context" refactor where `App::
 
 ### OQ-4 — "Per port" interpretation *(v2, cross-ref PRD §9)*
 
-Architecture implements "per port" as per-NIC (network interface), keyed on LUID. If the user meant TCP port, the `sidebar-adapter-net` crate and `BandwidthAccountant` design would need significant rework (ETW packet capture instead of `GetIfEntry2`). Current implementation assumes per-NIC.
+Architecture implements "per port" as per-NIC (network interface), keyed on LUID. If the user meant TCP port, the `sidebar-adapter-net` crate and `BandwidthAccountant` design would need significant rework (ETW packet capture instead of `GetIfTable2`). Current implementation assumes per-NIC.
 
 ### OQ-5 — Locale-aware number formatting *(v2, cross-ref PRD §9)*
 
@@ -713,9 +724,12 @@ The `sdd-design` SKILL.md includes a default "Design artifact MUST be under 800 
 
 ---
 
-## 11. Build & Release Pipeline *(v2 amendment — NEW)*
+## 11. Build & Release Pipeline *(v2 amendment — planned; Epic 9 pending)*
 
-Implements AD-14 (zero-cost distribution). Triggered on git tag `v*` (semantic version) or manual workflow dispatch.
+The target pipeline implements AD-14 (zero-cost distribution) and will be
+triggered on git tag `v*` (semantic version) or manual workflow dispatch. The
+`release.yml`, SignPath policy, and package manifests are not in the current
+tree; Epic 9 owns those deliverables.
 
 ### 11.1 Pipeline stages
 
@@ -727,7 +741,7 @@ git tag v1.0.0  ──▶  .github/workflows/release.yml
    │  STAGE 1 — Build (Windows runner, windows-latest)                │
    │   cargo build --release --target x86_64-pc-windows-msvc          │
    │   → target/release/sidebar.exe (unsigned Rust binary)            │
-   │   + resources/OpenHardwareMonitor.exe (bundled, upstream-signed  │
+   │   + resources/LibreHardwareMonitor.exe (bundled, upstream build)  │
    │     by its own maintainers; we do NOT re-sign it)                │
    └─────────────────────────────────────────────────────────────────┘
                           │
@@ -746,7 +760,7 @@ git tag v1.0.0  ──▶  .github/workflows/release.yml
                           ▼
    ┌─────────────────────────────────────────────────────────────────┐
    │  STAGE 3 — Package (matrix of artifacts)                         │
-   │   (a) Portable ZIP:  signed-sidebar.exe + OHM.exe + config.toml  │
+   │   (a) Portable ZIP:  signed-sidebar.exe + LibreHardwareMonitor.exe │
    │                        example → sidebar-v1.0.0-portable.zip     │
    │   (b) MSIX (optional, for Store): makeappx pack from layout      │
    │                        → sidebar-v1.0.0.msix (signed by Microsoft│
@@ -770,7 +784,7 @@ git tag v1.0.0  ──▶  .github/workflows/release.yml
 
 - **Project setup (one-time).** Apply at signpath.org; submit the sidebar repo (OSI license, public, free downloads). Foundation issues a free cert in their name; our GitHub Actions is registered as a trusted build system. Approvers (team members) must use MFA.
 - **Code signing policy (one-time, in-repo).** `signpath/code-signing-policy.md` — SignPath requires this document, linked from the README, describing what we sign, who approves, how releases are tagged. Required for OSS subscription.
-- **Per-release flow.** Tag → Stage 1 builds → Stage 2 submits `sidebar.exe` to SignPath via the GitHub Action → an Approver clicks "Approve" in the SignPath dashboard (or auto-approve if policy permits) → SignPath returns the signed binary. The bundled `OHM.exe` is **not** submitted (it's upstream OSS; we redistribute the maintainer's own build).
+- **Per-release flow.** Tag → Stage 1 builds → Stage 2 submits `sidebar.exe` to SignPath via the GitHub Action → an Approver clicks "Approve" in the SignPath dashboard (or auto-approve if policy permits) → SignPath returns the signed binary. The bundled `LibreHardwareMonitor.exe` is **not** submitted (it's upstream OSS; we redistribute the maintainer's own build).
 - **What gets signed.** Only `sidebar.exe` (our Rust binary). The OHM subprocess, any DLLs we ship, and the config files remain unsigned. This matches every other OHM consumer.
 - **SmartScreen.** SignPath's cert is shared across their OSS projects, so reputation accrues faster than a brand-new cert. Expect diminishing SmartScreen warnings over the first weeks. The Microsoft Store path (if taken) sidesteps SmartScreen entirely.
 
@@ -778,8 +792,8 @@ git tag v1.0.0  ──▶  .github/workflows/release.yml
 
 | Channel | Signing | Auto-update | Cost | v1 status |
 |---|---|---|---|---|
-| **GitHub Releases (portable ZIP)** | SignPath (our binary); OHM unsigned | None (user replaces files; future: in-app "new version" link) | $0 | **v1 primary** |
-| **winget** | Uses the GitHub Release binary (SignPath-signed) | `winget upgrade sidebar` (manual/scriptable) | $0 | **v1 primary** |
+| **GitHub Releases (portable ZIP)** | SignPath (our binary); LHM unsigned | None (user replaces files; future: in-app "new version" link) | $0 | **v1 primary (planned)** |
+| **winget** | Uses the GitHub Release binary (SignPath-signed) | `winget upgrade sidebar` (manual/scriptable) | $0 | **v1 primary (planned)** |
 | **Scoop / Chocolatey** | Community manifests; uses our signed binary | Package-manager-native | $0 | v1 best-effort |
 | **Microsoft Store (MSIX)** | Signed by Microsoft on submission | Store-native auto-update | $0 (Partner Center new flow) | **v1.1** (pending sandbox-compat sdd-verify, see R13) |
 
@@ -801,11 +815,14 @@ git tag v1.0.0  ──▶  .github/workflows/release.yml
 
 **Authoritative reference:** `docs/dev-env.md` (inventoried on the primary dev machine on 2026-07-07). This section is a brief summary; the dev-env doc is the source of truth.
 
-The dev environment is intentionally **relocatable** — most tooling lives under `D:\dev\sidebar\tools\` so the folder can be moved between Win11 machines. The exceptions (system prerequisites that cannot usefully be relocated) are documented in `docs/dev-env.md` §5.
+The dev environment is intentionally **relocatable** — most tooling lives under
+`C:\dev\hobby\sidebar\tools\` in the current workspace, so the folder can be
+moved between Win11 machines. The exceptions (system prerequisites that cannot
+usefully be relocated) are documented in `docs/dev-env.md` §5.
 
 **System prerequisites** (pre-existing, not folder-relocatable): Rust ≥1.95, `llvm-tools-preview` rustup component, MSVC Build Tools + Windows SDK, PowerShell 7+, Git.
 
-**Project-local tooling** (under `D:\dev\sidebar\tools\`, relocatable): `cargo-deny`, `cargo-audit`, **`cargo-llvm-cov`** (Windows-native coverage; NOT `cargo-tarpaulin` which is Linux-only — see T-43), `cargo-nextest`, `actionlint`, `winget-create`, `sqlite3`.
+**Project-local tooling** (under `C:\dev\hobby\sidebar\tools\`, relocatable): `cargo-deny`, `cargo-audit`, **`cargo-llvm-cov`** (Windows-native coverage; NOT `cargo-tarpaulin` which is Linux-only — see T-43), `cargo-nextest`, `actionlint`, `winget-create`, `sqlite3`.
 
 **Activation & verification scripts** (Story 0.7): `scripts/env.ps1` (PATH prepend), `scripts/verify-dev-env.ps1` (prerequisite assertion, CI pre-flight), `scripts/fetch_ohm.ps1` (Story 6.5 LHM binary acquisition, SHA-256-verified).
 
@@ -828,6 +845,11 @@ remains explicitly manual.
   the poller, accountant, event-coalescer, and Ctrl+C signal handler
   idempotently. Poller, event-channel, GUI-close, and shutdown tests cover the
   transition and join paths.
+- **System-theme bridge:** the runtime `Event::ThemeChanged(String)` contract
+  carries the resolved lowercase mode (`"dark"` or `"light"`); `"system"` is
+  configuration-only. The Win32 bridge reads `AppsUseLightTheme`, publishes
+  the resolved event on `WM_SETTINGCHANGE/ImmersiveColorSet`, and the GUI
+  repaints so `ThemePreference::System` applies the live OS palette.
 - **Capture exclusion:** `[display] hide_from_capture = false` is the default
   and leaves capture enabled. When explicitly enabled, the GUI obtains the live
   eframe root HWND and calls `SetWindowDisplayAffinity` with
@@ -848,19 +870,50 @@ remains explicitly manual.
 
 The following remain pending and must not be described as completed by this
 remediation: **3.2b acquisition/benchmark decision, 6.5 LHM acquisition,
-6.6 capture-cloak visual validation, and all 9.x, 10.x, and 11.x release/CI
-stories**. Their existing backlog entries remain `pending`.
+6.6 capture-cloak visual validation, and the uncompleted portions of the 9.x,
+10.x, and 11.x release/CI stories**. Use `docs/backlog/PROGRESS.md` for the
+authoritative per-story status; merged 11.x stories remain merged.
 
 ### Validation recorded for this slice
 
 | Command | Result |
 |---|---|
 | `cargo fmt --all -- --check` | pass |
-| `cargo test --workspace --all-targets` | 491 passed, 11 ignored, 0 failed |
+| `cargo test --workspace --all-targets` | 625 passed, 13 ignored, 0 failed |
 | `cargo clippy --workspace --all-targets -- -D warnings` | pass |
-| `cargo deny check` | pass; existing duplicate-dependency and unmatched-license warnings remain |
+| `cargo deny check` | pass (Windows QA, 2026-07-12); existing duplicate-dependency and unmatched-license warnings remain |
 | `cargo check --workspace --target x86_64-pc-windows-msvc` | pass |
-| `cargo build -p sidebar-app --release --target x86_64-pc-windows-msvc` | pass after verification remediation; `target/x86_64-pc-windows-msvc/release/sidebar-app.exe` (17,422,848 bytes, SHA-256 `6CC648EEDA4DFC7E10A22757D32ED6133C5E9998F662D447987B175FE13A91DB`, timestamp `2026-07-11T11:02:49+05:30`) |
+| `cargo build -p sidebar-app --release --target x86_64-pc-windows-msvc` | verified snapshot (2026-07-12T02:26:38Z); `target/x86_64-pc-windows-msvc/release/sidebar-app.exe` (17,688,064 bytes, SHA-256 `68B9F8AC43F56DC789D3C9DAD7A1BA87055B675889262A2C202A049C049FA087`) |
+
+---
+
+## 14. Current implementation state and known gaps (2026-07-12)
+
+The current worktree closes the previously documented integration wiring gaps;
+release acceptance is still partial until commit/review and manual Windows
+gates complete:
+
+- **Runtime hooks:** `SidebarApp::run` preserves the launch callback,
+  `BandwidthView` receiver, and child-liveness probe when eframe creates the
+  native app instance.
+- **Full-mode launch:** BASIC clicks send a request to the supervisor-owner
+  thread, which invokes `OhmSupervisor::launch_elevated`; UAC remains explicit.
+- **Bandwidth bridge:** `BandwidthAccountant` publishes snapshots over a watch
+  channel after loading retained `bandwidth_history` rows; the GUI drains this
+  derived DTO and never opens SQLite.
+- **OHM monitoring:** the supervisor-owner thread polls child liveness. The GUI
+  emits one Full→Basic degradation event only for a child the sidebar launched;
+  externally running LHM is intentionally not owned or degraded.
+- **Theme/header:** missing `AppsUseLightTheme` defaults to Dark, and the 12.1
+  header renders the local `HH:MM` clock and ISO date.
+- **Remaining gates:** 6.6 manual Win32 smoke, 9.x SignPath/release/winget,
+  10.1–10.2 NFR/smoke, 11.x regression/coverage, and real UAC/LHM, Job Object,
+  capture, multi-monitor, and release-walker checks remain pending. The §13
+  test command is current evidence only; it is not a substitute for HITL.
+
+These are wiring/closure gaps, not a change to the product boundary: the
+project remains Win11-only, Basic mode remains no-admin, LHM remains a local
+HTTP sidecar, and monthly bandwidth remains per-NIC (not per TCP port).
 
 ---
 

@@ -46,7 +46,7 @@ The config file format is XML (LHM's `PersistentSettings` class). sidebar will l
 | Component | Detected | Project relevance |
 |---|---|---|
 | **CPU** | AMD Ryzen AI 7 350 (8+8 cores) @ 2.00 GHz | ⚠️ Reference hardware T-31 specifies Intel i5-1240P. See §6 below — T-31 has been generalized. |
-| **GPU** | AMD Radeon 860M iGPU (459 MiB) | ⚠️ **NO NVIDIA GPU.** Story 3.2 (nvml-wrapper) cannot run on this machine. Only Story 3.6 (OHM WMI bridge) covers AMD GPUs locally. NVIDIA testing requires a different machine or CI runner with NVIDIA hardware. |
+| **GPU** | AMD Radeon 860M iGPU (459 MiB) | ⚠️ **NO NVIDIA GPU.** Story 3.2 (nvml-wrapper) cannot run on this machine. Only Story 3.6 (LHM HTTP bridge) covers AMD GPUs locally. NVIDIA testing requires a different machine or CI runner with NVIDIA hardware. |
 | **RAM** | 24 GB (23.29 GiB visible) | Exceeds NFR-4 baseline. |
 | **Storage** | C: 951 GB (291 used), D: 466 GB external exFAT, G: 951 GB FAT32 | Project lives on D:. |
 | **Battery** | L24B3PK2, 98% | Story 3.3 testable locally. |
@@ -93,12 +93,12 @@ The user performed the two system-level actions (Rust bump + llvm-tools componen
 | **wingetcreate** | 1.12.8.0 | `D:\dev\sidebar\tools\ci\wingetcreate.exe` | ✅ Direct download from microsoft/winget-create releases (not in scoop main bucket) |
 | **sqlite3** | 3.53.3 | `D:\dev\sidebar\tools\sqlite\sqlite3.exe` | ✅ Downloaded via scoop, copied to tools/ |
 | **LibreHardwareMonitor** | v0.9.6 (.NET 10 build) | `D:\dev\sidebar\resources\LibreHardwareMonitor.exe` + 28 supporting DLLs + LICENSE | ✅ Downloaded via `scripts/fetch_ohm.ps1` |
-| **LHM SHA-256 pin** | fe216a48...1ba22 | `D:\dev\sidebar\resources\ohm.sha256` | ✅ Computed + verified |
+| **LHM SHA-256 pin** | fe216a48...1ba22 | `D:\dev\sidebar\resources\ohm.sha256` | ✅ Committed pin + verified by `fetch_ohm.ps1 -CheckOnly` |
 | **LHM LICENSE** | MPL-2.0 | `D:\dev\sidebar\resources\LibreHardwareMonitor.LICENSE.txt` | ✅ Fetched from LHM master |
 | **SignPath CLI** / **dotnet sign** | — | — | N/A — CI-only per architecture §11.2; not installed locally |
 | **.NET SDK 8+** | — | — | N/A — only needed for local signing, which we don't do |
 
-**Verification:** `scripts/verify-dev-env.ps1` reports 15/15 green on this machine.
+**Verification:** `scripts/verify-dev-env.ps1` reports 16/16 checks (15 OK + expected NVIDIA-absent warning) on this machine.
 
 ---
 
@@ -197,6 +197,8 @@ curl -sL "https://github.com/microsoft/winget-create/releases/download/v1.12.8.0
 # LibreHardwareMonitor v0.9.6 (.NET 10 build — the HTTP-endpoint build, NOT the legacy WMI build).
 # Done via scripts/fetch_ohm.ps1 (idempotent — re-running is safe).
 .\scripts\fetch_ohm.ps1
+# Offline deterministic check (no network, validates the committed pin + license).
+.\scripts\fetch_ohm.ps1 -CheckOnly
 ```
 
 ### 3.3 SignPath / dotnet sign — deliberately NOT installed locally
@@ -209,7 +211,7 @@ Per architecture.md §11.2, code signing is **CI-only** (runs in GitHub Actions 
 
 ---
 
-## 4. Verification — current state (15/15 green)
+## 4. Verification — current state (16/16 checks; expected NVIDIA warning)
 
 ```pwsh
 .\scripts\verify-dev-env.ps1
@@ -272,7 +274,7 @@ The replacement is LHM's **HTTP endpoint**: `GET http://127.0.0.1:<port>/data.js
 **Changes applied:**
 - Architecture **AD-2**: `wmi` crate → `ureq` (sync HTTP). Bundled binary is `LibreHardwareMonitor.exe` v0.9.6, not `OpenHardwareMonitor.exe`.
 - Architecture **AD-7**: WMI namespace probe → HTTP `/data.json` probe with JSON-signature discrimination.
-- Architecture **AD-8**: `OhmSupervisor` writes `ListenerPort` into `LibreHardwareMonitor.config` before launching.
+- Architecture **AD-8**: `OhmSupervisor` writes `runWebServerMenuItem=true` and lowercase `listenerPort` into `LibreHardwareMonitor.exe.config` before launching.
 - **Story 3.6**: rewrite from WMI/WQL to `ureq` GET + `serde_json` parse of `/data.json` (test fixture: saved `lhm_data.json`).
 - **Story 6.4**: rewrite probe to HTTP, add port-write-to-LHM-config step, add port-fallback test cases.
 - **Story 7.3**: tier probe becomes HTTP reachability.
