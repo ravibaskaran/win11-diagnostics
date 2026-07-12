@@ -1088,6 +1088,13 @@ pub struct SidebarView {
     /// in v1). The host pushes one f64 per poll tick; `None` (or empty) skips
     /// the sparkline widget. NaN values render as gaps (Story 1.6 contract).
     pub sparkline: Option<Vec<f64>>,
+    /// Story 12.6 — per-metric alert ack/snooze state. When the user clicks
+    /// Ack on a Warning/Critical row, the metric key is inserted here; the
+    /// `displayed_state` pure fn suppresses the color until recovery.
+    pub alert_acks: std::collections::HashMap<
+        sidebar_domain::graph::MetricKey,
+        sidebar_domain::alert::AlertAck,
+    >,
 }
 
 /// Composed top-level render wiring together: status pill + gear toggle +
@@ -1832,6 +1839,7 @@ mod tests {
             bandwidth: None,
             settings_open: true,
             sparkline: None,
+            alert_acks: std::collections::HashMap::new(),
         };
         let mut harness = Harness::new_ui(|ui| {
             render_sidebar(
@@ -1865,6 +1873,7 @@ mod tests {
             bandwidth: None,
             settings_open: false,
             sparkline: None,
+            alert_acks: std::collections::HashMap::new(),
         };
         let mut harness = Harness::new_ui(|ui| {
             render_sidebar(
@@ -1931,6 +1940,7 @@ mod tests {
             bandwidth: None,
             settings_open: false,
             sparkline: Some(vec![10.0, 20.0, 30.0]),
+            alert_acks: std::collections::HashMap::new(),
         };
         let mut harness = Harness::new_ui(|ui| {
             render_sidebar(

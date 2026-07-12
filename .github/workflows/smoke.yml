@@ -1,0 +1,40 @@
+# Story 10.2 — Scriptable smoke-checklist runner (manual dispatch).
+#
+# Runs the automatable subset of verify/smoke-checklist.md on demand via
+# workflow_dispatch. NOT triggered on PR (the #[ignore] smokes take ~90s;
+# they'd blow the T-41 aggregate budget). Use this for pre-release
+# verification on a Windows CI runner.
+#
+# Cited: Story 10.2 DoD, nfr-thresholds.md T-40/T-41.
+
+name: smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      skip_ignored:
+        description: 'Skip #[ignore]-gated 30s/60s smokes'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+jobs:
+  scriptable-smoke:
+    name: "Scriptable smoke checklist (Story 10.2)"
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build release
+        run: cargo build --release
+      - name: Run scriptable smoke checklist
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $skipIgnored = '${{ inputs.skip_ignored }}' -eq 'true'
+          ./verify/smoke-checklist.ps1 $(if ($skipIgnored) { '-SkipIgnored' })
