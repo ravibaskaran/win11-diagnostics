@@ -112,3 +112,37 @@ fn ci_yaml_uploads_regression_report_artifact() {
         "ci.yml must upload a regression-report artifact (Story 11.2 DoD). snippet:\n{ci}"
     );
 }
+
+/// Story 11.2 / T-42 — the CI regression job MUST enforce the absolute
+/// coverage floors (the delta-vs-main comparison is HITL-gated, but the
+/// absolute floor gate is enforceable from the lcov we already generate).
+/// Floors per nfr-thresholds.md T-42:
+///   domain / sensor ≥ 80% ; adapter / platform ≥ 60% ; app ≥ 40%.
+#[test]
+fn ci_yaml_enforces_t42_coverage_floors() {
+    let ci = read_workspace_file(".github/workflows/ci.yml");
+    assert!(
+        ci.contains("T-42 coverage floor gate"),
+        "ci.yml regression job must include the T-42 absolute coverage-floor gate step. snippet:\n{ci}"
+    );
+    // Each floor category must be named in the awk floor map so a crate
+    // cannot silently slip past the gate.
+    for floor in [
+        "sidebar-domain",
+        "sidebar-sensor",
+        "sidebar-adapter",
+        "sidebar-platform",
+        "sidebar-app",
+    ] {
+        assert!(
+            ci.contains(floor),
+            "ci.yml T-42 gate must name the {floor} crate in its floor map. snippet:\n{ci}"
+        );
+    }
+    assert!(ci.contains("return 80"), "domain/sensor floor must be 80%");
+    assert!(
+        ci.contains("return 60"),
+        "adapter/platform floor must be 60%"
+    );
+    assert!(ci.contains("return 40"), "app floor must be 40%");
+}

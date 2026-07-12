@@ -179,6 +179,65 @@ jobs:
         run: |
           cargo llvm-cov --workspace --all-targets --lcov --output-path target/coverage.lcov
           cargo llvm-cov --workspace --all-targets --text 2>&1 | tee target/coverage-summary.txt
+      # Story 11.2 / T-42 — Coverage absolute-floor gate. Catches the
+      # "coverage dropped below minimum" case even without a main-branch
+      # baseline lcov (the delta-vs-main comparison remains HITL-gated per
+      # Story 11.2). Floors per nfr-thresholds.md T-42:
+      #   domain / sensor ≥ 80% ; adapter / platform ≥ 60% ; app ≥ 40%.
+      # We aggregate per-crate line coverage from the lcov file (SF: path,
+      # LF: total lines, LH: hit lines) and assert each crate's floor.
+      - name: T-42 coverage floor gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          awk '
+            function floor_for(crate,    prefix) {
+              if (crate == "sidebar-domain" || crate == "sidebar-sensor") return 80
+              if (crate ~ /^sidebar-adapter/) return 60
+              if (crate == "sidebar-platform") return 60
+              if (crate == "sidebar-app") return 40
+              # Crates not named in T-42 (bandwidth, persistence) are reported
+              # but not gated — keeping the floor map aligned to the spec.
+              return -1
+            }
+            /^SF:/ {
+              # lcov SF: paths look like .../crates/<crate>/src/...
+              path = substr($0, 4)
+              n = split(path, parts, "/")
+              crate = ""
+              for (i = 1; i <= n; i++) {
+                if (parts[i] == "crates" && i < n) { crate = parts[i+1]; break }
+              }
+              # Strip any trailing segment that is not the crate dir name
+              # (crate is the directory immediately under crates/).
+              cur_crate = crate
+              lf = 0; lh = 0
+              next
+            }
+            /^LF:/ { lf += substr($0, 4); next }
+            /^LH:/ { lh += substr($0, 4); next }
+            /^end_of_record$/ {
+              if (cur_crate != "" && lf > 0) {
+                total_lf[cur_crate] += lf
+                total_lh[cur_crate] += lh
+              }
+              cur_crate = ""
+              lf = 0; lh = 0
+              next
+            }
+            END {
+              failed = 0
+              print "Crate coverage (T-42 absolute floors):"
+              for (c in total_lf) {
+                pct = (total_lh[c] * 100.0) / total_lf[c]
+                floor = floor_for(c)
+                status = "PASS"
+                if (floor >= 0 && pct + 0.000001 < floor) { status = "FAIL"; failed = 1 }
+                printf "  %-28s %6.2f%%  (floor %d%%)  %s\n", c, pct, (floor >= 0 ? floor : 0), status
+              }
+              exit (failed ? 1 : 0)
+            }
+          ' target/coverage.lcov
       - name: Build regression-report.md
         shell: bash
         run: |
