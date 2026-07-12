@@ -138,6 +138,10 @@ pub struct AppState {
     /// update `self.tier`.
     event_rx: RwLock<Option<broadcast::Receiver<Event>>>,
     shutdown: RwLock<Option<ShutdownSignal>>,
+    /// Story 12.2 — per-metric rolling-history map for sparkline graphs.
+    /// Each `replace_readings` call pushes every reading's value into the
+    /// corresponding MetricKey window.
+    history: RwLock<sidebar_domain::graph::MetricHistory>,
 }
 
 impl AppState {
@@ -170,6 +174,7 @@ impl AppState {
             view: RwLock::new(view),
             event_rx: RwLock::new(event_rx),
             shutdown: RwLock::new(None),
+            history: RwLock::new(sidebar_domain::graph::MetricHistory::new(60)),
         })
     }
 
@@ -280,7 +285,27 @@ impl AppState {
     /// Replace the readings snapshot (called by [`SidebarApp::logic`] after a
     /// broadcast drain).
     pub(crate) fn replace_readings(&self, new_readings: Vec<Reading>) {
+        // Story 12.2 — push each reading into the per-metric history map so
+        // the GUI can render sparkline graphs (T-22 default 60 samples).
+        if let Ok(mut history) = self.history.write() {
+            for r in &new_readings {
+                let key = sidebar_domain::graph::MetricKey {
+                    category: r.sensor.category.to_string(),
+                    instance: r.sensor.instance.clone(),
+                    kind: format!("{:?}", r.kind),
+                };
+                let value = r.value;
+                history.push(key, value);
+            }
+        }
         *recover_write(&self.readings) = new_readings;
+    }
+
+    /// Story 12.2 — borrow the per-metric history map (for sparkline rendering).
+    /// Returns a cloned snapshot to avoid holding the lock across egui render.
+    #[cfg(test)]
+    fn history_snapshot(&self) -> sidebar_domain::graph::MetricHistory {
+        recover_read(&self.history).clone()
     }
 
     /// Non-blocking drain of the broadcast receiver. Returns `Some(readings)`
@@ -2093,6 +2118,32 @@ mod tests {
             !monitor_id_is_real_fallback("MONITOR\\LEN88AE\\0001", "MONITOR\\LEN88AE\\0001"),
             "matching device-id is not a fallback"
         );
+    }
+
+    // =================================================================
+    // Story 12.2 — MetricHistory populated on replace_readings.
+    // =================================================================
+
+    #[test]
+    fn replace_readings_populates_metric_history() {
+        let state = AppState::new(ProviderTier::Basic, None);
+        // Push 3 readings for CPU utilization.
+        for i in 0..3 {
+            state.replace_readings(vec![Reading::gauge(
+                SensorId::new("cpu", "package"),
+                MetricKind::CpuUtilization,
+                f64::from(i) * 10.0,
+                Unit::Percent,
+            )]);
+        }
+        let history = state.history_snapshot();
+        let key = sidebar_domain::graph::MetricKey {
+            category: "cpu".to_string(),
+            instance: "package".to_string(),
+            kind: "CpuUtilization".to_string(),
+        };
+        let window = history.get(&key).expect("CPU history window must exist");
+        assert_eq!(window.len(), 3, "3 pushes -> 3 values in the window");
     }
 
     // =================================================================
