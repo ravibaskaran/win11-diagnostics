@@ -580,6 +580,13 @@ struct PlatformRuntime {
     hotkey_id: Option<i32>,
     click_through: bool,
     monitor_id: Option<String>,
+    /// Channel receiver for hotkey events from the dedicated hotkey thread.
+    /// The hotkey thread registers RegisterHotKey + GetMessageW on its OWN
+    /// thread, so WM_HOTKEY messages are NOT consumed by egui's event loop.
+    hotkey_rx: Option<std::sync::mpsc::Receiver<()>>,
+    /// Handle to the dedicated hotkey thread (for cleanup on unregister).
+    #[allow(clippy::used_underscore_binding)]
+    hotkey_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 #[cfg(windows)]
@@ -590,32 +597,21 @@ impl PlatformRuntime {
             hotkey_id: None,
             click_through: false,
             monitor_id: None,
+            hotkey_rx: None,
+            hotkey_thread: None,
         }
     }
 
     fn poll(&mut self, config: &mut Config, ctx: &egui::Context) -> Vec<Event> {
         use windows::Win32::UI::WindowsAndMessaging::{
-            PeekMessageW, MSG, PM_REMOVE, WM_DISPLAYCHANGE, WM_HOTKEY, WM_SETTINGCHANGE,
+            PeekMessageW, MSG, PM_REMOVE, WM_DISPLAYCHANGE, WM_SETTINGCHANGE,
         };
 
         let mut events = Vec::new();
-        loop {
-            let mut message = MSG::default();
-            // SAFETY: `self.hwnd` is the live eframe HWND retained from the
-            // CreationContext; the message is a stack-owned output buffer.
-            let present = unsafe {
-                PeekMessageW(
-                    &raw mut message,
-                    Some(self.hwnd),
-                    WM_HOTKEY,
-                    WM_HOTKEY,
-                    PM_REMOVE,
-                )
-            };
-            if !present.as_bool() {
-                break;
-            }
-            if hotkey::hotkey_id_from_message(message.message, message.wParam.0) == self.hotkey_id {
+
+        // Drain hotkey events from the dedicated thread's channel.
+        if let Some(rx) = &self.hotkey_rx {
+            while let Ok(()) = rx.try_recv() {
                 let enabled = !self.click_through;
                 if let Err(error) = hotkey::set_click_through(self.hwnd, enabled) {
                     tracing::warn!(?error, "click-through toggle unavailable");
@@ -787,11 +783,71 @@ fn configure_platform(cc: &eframe::CreationContext<'_>, app: &mut SidebarApp) {
         return;
     };
     let mut platform = PlatformRuntime::new(hwnd);
+    // Register the global hotkey on a DEDICATED thread. RegisterHotKey posts
+    // WM_HOTKEY to the thread that registered it. By using a separate thread
+    // (not the egui event loop thread), we avoid the winit/glutin event loop
+    // consuming the WM_HOTKEY message before our code sees it.
     match hotkey::HotkeyCombo::parse(&app.config.hotkeys.click_through) {
-        Ok(combo) => match hotkey::register(hwnd, CLICK_THROUGH_HOTKEY_ID, combo) {
-            Ok(()) => platform.hotkey_id = Some(CLICK_THROUGH_HOTKEY_ID),
-            Err(error) => tracing::warn!(?error, "click-through hotkey disabled"),
-        },
+        Ok(combo) => {
+            let (tx, rx) = std::sync::mpsc::channel::<()>();
+            let hotkey_id = CLICK_THROUGH_HOTKEY_ID;
+            let ctrl = combo.ctrl;
+            let shift = combo.shift;
+            let alt = combo.alt;
+            let win = combo.win;
+            let key = combo.key;
+            let thread = std::thread::Builder::new()
+                .name("sidebar-hotkey".to_string())
+                .spawn(move || {
+                    use windows::Win32::UI::Input::KeyboardAndMouse::{
+                        HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN,
+                        RegisterHotKey, UnregisterHotKey,
+                    };
+                    use windows::Win32::UI::WindowsAndMessaging::{GetMessageW, WM_HOTKEY};
+                    // Register the hotkey on THIS thread (not the GUI thread).
+                    let mut modifiers = HOT_KEY_MODIFIERS::default();
+                    if ctrl { modifiers |= MOD_CONTROL; }
+                    if shift { modifiers |= MOD_SHIFT; }
+                    if alt { modifiers |= MOD_ALT; }
+                    if win { modifiers |= MOD_WIN; }
+                    modifiers |= MOD_NOREPEAT;
+                    // SAFETY: RegisterHotKey on thread 0 (this thread) is safe;
+                    // the hotkey ID + modifiers are constant values from config.
+                    let registered = unsafe {
+                        RegisterHotKey(None, hotkey_id, modifiers, key)
+                    };
+                    if registered.is_err() {
+                        tracing::warn!(
+                            "dedicated hotkey thread: RegisterHotKey failed (another app may own this combo)"
+                        );
+                        return;
+                    }
+                    tracing::info!("dedicated hotkey thread: registered Ctrl+Shift+S on thread");
+                    // Block on GetMessageW — only WM_HOTKEY messages arrive on
+                    // this thread (no window, so no other messages).
+                    let mut msg = windows::Win32::UI::WindowsAndMessaging::MSG::default();
+                    loop {
+                        // SAFETY: GetMessageW on this thread with no window filter
+                        // blocks until a thread-message arrives (WM_HOTKEY).
+                        let ret = unsafe { GetMessageW(&raw mut msg, None, 0, 0) };
+                        if ret.0 == 0 || ret.0 == -1 {
+                            break; // WM_QUIT or error
+                        }
+                        if msg.message == WM_HOTKEY && i32::try_from(msg.wParam.0).unwrap_or(-1) == hotkey_id {
+                            // Signal the GUI thread via channel (non-blocking).
+                            let _ = tx.send(());
+                        }
+                    }
+                    // SAFETY: unregister on the same thread that registered.
+                    unsafe {
+                        let _ = UnregisterHotKey(None, hotkey_id);
+                    }
+                })
+                .expect("failed to spawn hotkey thread");
+            platform.hotkey_id = Some(CLICK_THROUGH_HOTKEY_ID);
+            platform.hotkey_rx = Some(rx);
+            platform.hotkey_thread = Some(thread);
+        }
         Err(error) => tracing::warn!(?error, "invalid click-through hotkey; disabled"),
     }
     if let Ok(displays) = monitors::enumerate() {
