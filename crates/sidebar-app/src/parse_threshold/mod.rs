@@ -227,7 +227,7 @@ fn walk_for_estimates(
         if path.is_dir() {
             // Recurse into subdirectories.
             walk_for_estimates(base, &path, tick_seconds, calibration_percent, out)?;
-        } else if path.file_name().is_some_and(|n| n == "estimate.json") {
+        } else if path.file_name().is_some_and(|n| n == "estimates.json") {
             // Found an estimate.json — parse and evaluate it.
             // The "group name" is the relative path from `base` to the
             // directory containing this estimate.json, minus the trailing
@@ -520,7 +520,7 @@ mod tests {
             "calibration_idle_cpu_percent=0\nexpected_group=poll_cost/provider/sysinfo\nexpected_group=poll_cost/aggregate\n",
         )
         .expect("calibration");
-        std::fs::write(estimate.join("estimate.json"), "not json").expect("write");
+        std::fs::write(estimate.join("estimates.json"), "not json").expect("write");
         let result = evaluate_directory(tmp.path().join("criterion").as_path(), 10.0);
         assert!(matches!(result, Err(ParseError::Json(_))));
     }
@@ -572,7 +572,7 @@ mod tests {
             .join("new");
         std::fs::create_dir_all(&provider_dir).expect("mkdir provider");
         std::fs::write(
-            provider_dir.join("estimate.json"),
+            provider_dir.join("estimates.json"),
             serde_json::to_string(&make_estimate(10_000_000)).expect("estimate"),
         )
         .expect("write estimate");
@@ -649,11 +649,11 @@ mod tests {
         .expect("calibration");
         let estimate = make_estimate(60_000_000); // 0.6% — exceeds
         let json = serde_json::to_string(&estimate).expect("serialize");
-        std::fs::write(group_dir.join("estimate.json"), json).expect("write");
+        std::fs::write(group_dir.join("estimates.json"), json).expect("write");
         let aggregate_dir = root.join("poll_cost").join("aggregate").join("new");
         std::fs::create_dir_all(&aggregate_dir).expect("mkdir aggregate");
         std::fs::write(
-            aggregate_dir.join("estimate.json"),
+            aggregate_dir.join("estimates.json"),
             serde_json::to_string(&make_estimate(100_000_000)).expect("serialize aggregate"),
         )
         .expect("write aggregate");

@@ -68,5 +68,9 @@ sysinfo = { workspace = true }           # MIT — real T-31 idle CPU calibratio
 name = "layer_smoke"
 harness = false
 
+[[bench]]
+name = "poll_cost"
+harness = false
+
 [lints]
 workspace = true
