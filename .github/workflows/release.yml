@@ -11,7 +11,8 @@
 #   3. Sign: SignPath API call (sidebar project, release policy). Falls back
 #      to unsigned on rejection/downtime.
 #   4. Package: ZIP signed-sidebar.exe + ohm.exe + config.toml.example.
-#   5. Publish: GitHub Release + winget PR submission.
+#   5. Publish: GitHub Release (draft). winget PR submission is a manual
+#      post-release step (rate-limited external service per Story 9.2 HITL).
 #
 # Cited: Story 9.2 DoD, guardrails.md G18/G19, signpath/code-signing-policy.md.
 
@@ -94,7 +95,9 @@ jobs:
           path: staging/
 
   publish:
-    name: "Publish (GitHub Release + winget)"
+    name: "Publish (GitHub Release)"
+    # winget PR submission is a manual post-release step — rate-limited
+    # external service per Story 9.2 HITL; not automated here.
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: sign
