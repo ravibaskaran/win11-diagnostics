@@ -231,6 +231,10 @@ pub struct OhmSupervisor<C: HttpClient> {
     client: C,
     lhm_exe: PathBuf,
     lhm_config: PathBuf,
+    /// Path to `LibreHardwareMonitor.config` (LHM's PersistentSettings file).
+    /// LHM's `PersistentSettings` reads from THIS file (not the .exe.config),
+    /// so `runWebServerMenuItem` and `listenerPort` MUST be patched here too.
+    lhm_user_config: PathBuf,
     child_handle: Option<isize>,
     job_handle: Option<isize>,
     sidebar_launched: bool,
@@ -248,10 +252,12 @@ impl<C: HttpClient> OhmSupervisor<C> {
         let dir = lhm_dir.as_ref().to_path_buf();
         let lhm_exe = dir.join("LibreHardwareMonitor.exe");
         let lhm_config = dir.join("LibreHardwareMonitor.exe.config");
+        let lhm_user_config = dir.join("LibreHardwareMonitor.config");
         Self {
             client,
             lhm_exe,
             lhm_config,
+            lhm_user_config,
             child_handle: None,
             job_handle: None,
             sidebar_launched: false,
@@ -397,8 +403,14 @@ impl<C: HttpClient> OhmSupervisor<C> {
             }
         };
 
-        // Boundary #11 — patch BOTH keys before launch (the #1 gotcha).
+        // Boundary #11 — patch BOTH config files before launch (the #1 gotcha).
+        // 1. LibreHardwareMonitor.exe.config — .NET runtime config (startup, assembly redirects).
+        // 2. LibreHardwareMonitor.config — LHM PersistentSettings file (where the web server
+        //    actually reads runWebServerMenuItem + listenerPort at startup).
+        // Without patching the user config, LHM starts but its HTTP server stays OFF because
+        // PersistentSettings defaults runWebServerMenuItem to false when the key is absent.
         patch_lhm_config(&self.lhm_config, port)?;
+        patch_lhm_user_config(&self.lhm_user_config, port)?;
 
         // Launch + Job Object wrap. The ShellExecuteW + Job Object wiring is
         // windows-only; the non-windows path returns Err (sidebar ships on
@@ -980,6 +992,89 @@ fn patch_app_settings(original: &str, canonical_block: &str) -> String {
     }
 }
 
+/// Patch LHM's PersistentSettings file (`LibreHardwareMonitor.config`).
+/// Unlike the .exe.config (which is small + managed by us), this file is
+/// 100KB+ with sensor plot data that MUST be preserved. We surgically
+/// update/add the two web server keys within the existing `<appSettings>`
+/// section without touching any other entries.
+///
+/// If the file doesn't exist yet (first launch), we create it with just the
+/// two required keys. LHM will populate the rest on its first run.
+fn patch_lhm_user_config(config_path: &Path, port: u16) -> Result<()> {
+    if !config_path.exists() {
+        // First launch: create minimal config with both keys.
+        let content = format!(
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
+             <configuration>\n  <appSettings>\n    \
+             <add key=\"{CONFIG_KEY_WEB_SERVER}\" value=\"true\" />\n    \
+             <add key=\"{CONFIG_KEY_LISTENER_PORT}\" value=\"{port}\" />\n  \
+             </appSettings>\n</configuration>\n"
+        );
+        std::fs::write(config_path, content).map_err(|e| {
+            Error::Platform(format!(
+                "failed to write LHM user config {}: {e}",
+                config_path.display()
+            ))
+        })?;
+        return Ok(());
+    }
+
+    let original = std::fs::read_to_string(config_path).map_err(|e| {
+        Error::Platform(format!(
+            "failed to read LHM user config {}: {e}",
+            config_path.display()
+        ))
+    })?;
+
+    // Surgically update/add keys without touching the rest of the file.
+    let mut patched = original.clone();
+
+    // Update or add runWebServerMenuItem.
+    patched = update_app_setting_key(&patched, CONFIG_KEY_WEB_SERVER, "true");
+    // Update or add listenerPort.
+    patched = update_app_setting_key(&patched, CONFIG_KEY_LISTENER_PORT, &port.to_string());
+
+    if patched != original {
+        std::fs::write(config_path, patched).map_err(|e| {
+            Error::Platform(format!(
+                "failed to write patched LHM user config {}: {e}",
+                config_path.display()
+            ))
+        })?;
+    }
+    Ok(())
+}
+
+/// Update or add a single `<add key="..." value="..." />` entry within an
+/// existing `<appSettings>` section. If the key already exists, its value is
+/// replaced in-place. If it doesn't exist, it's inserted right after the
+/// opening `<appSettings>` tag.
+fn update_app_setting_key(xml: &str, key: &str, value: &str) -> String {
+    // Pattern: <add key="KEY" value="OLD_VALUE" />
+    let search = format!(r#"key="{key}""#);
+    if let Some(key_pos) = xml.find(&search) {
+        // Key exists — find the enclosing <add ... /> and replace the value.
+        // Walk backwards to find "<add " before this key.
+        let add_start = xml[..key_pos].rfind("<add ").map_or(0, |i| i);
+        // Walk forward to find " />" after this key.
+        let add_end_rel = xml[key_pos..]
+            .find("/>")
+            .map_or(xml.len(), |i| key_pos + i + 2);
+        let old_entry = &xml[add_start..add_end_rel];
+        let new_entry = format!(r#"<add key="{key}" value="{value}" />"#);
+        xml.replace(old_entry, &new_entry)
+    } else if let Some(appsettings_open) = xml.find("<appSettings>") {
+        // Key doesn't exist but appSettings section does — insert after opening tag.
+        let insert_at = appsettings_open + "<appSettings>".len();
+        let (before, after) = xml.split_at(insert_at);
+        format!("{before}\n    <add key=\"{key}\" value=\"{value}\" />{after}")
+    } else {
+        // No appSettings section at all — this shouldn't happen for the user
+        // config (LHM always creates one), but handle it gracefully.
+        xml.to_string()
+    }
+}
+
 /// Decode a `ShellExecuteW` HINSTANCE return value. Win32 docs: a value `<=32`
 /// is an error code; `>32` is a success HINSTANCE. This helper centralizes the
 /// i32-cast + threshold check so call sites stay clean.
@@ -1267,6 +1362,96 @@ mod tests {
         patch_lhm_config(&path, 17_127).expect("patch 2");
         let after_second = fs::read_to_string(&path).expect("read 2");
         assert_eq!(after_first, after_second, "patch must be idempotent");
+    }
+
+    // ==========================================================
+    // LHM user-config patching (LibreHardwareMonitor.config)
+    // ==========================================================
+
+    /// patch_lhm_user_config creates the file if it doesn't exist.
+    #[test]
+    fn user_config_patch_creates_file_when_absent() {
+        let dir = TempDir::new().expect("TempDir");
+        let path = dir.path().join("LibreHardwareMonitor.config");
+        patch_lhm_user_config(&path, 17_127).expect("patch");
+        let content = fs::read_to_string(&path).expect("read");
+        assert!(
+            content.contains(r#"key="runWebServerMenuItem" value="true""#),
+            "must set runWebServerMenuItem=true"
+        );
+        assert!(
+            content.contains(r#"key="listenerPort" value="17127""#),
+            "must set listenerPort=17127"
+        );
+    }
+
+    /// patch_lhm_user_config preserves existing sensor data and only updates the web server keys.
+    #[test]
+    fn user_config_patch_preserves_existing_data_and_updates_keys() {
+        let dir = TempDir::new().expect("TempDir");
+        let path = dir.path().join("LibreHardwareMonitor.config");
+        // Simulate a real LHM user config with sensor data + old web server settings.
+        let existing = r#"<?xml version="1.0"?>
+<configuration>
+  <appSettings>
+    <add key="listenerPort" value="8085" />
+    <add key="/amdcpu/0/load/0/plot" value="false" />
+    <add key="/amdcpu/0/load/1/plot" value="false" />
+    <add key="startMinimized" value="false" />
+  </appSettings>
+</configuration>"#;
+        fs::write(&path, existing).expect("write");
+
+        patch_lhm_user_config(&path, 17_127).expect("patch");
+        let patched = fs::read_to_string(&path).expect("read");
+
+        // Web server keys must be correct.
+        assert!(
+            patched.contains(r#"key="runWebServerMenuItem" value="true""#),
+            "runWebServerMenuItem must be added"
+        );
+        assert!(
+            patched.contains(r#"key="listenerPort" value="17127""#),
+            "listenerPort must be updated to 17127"
+        );
+        assert!(
+            !patched.contains("8085"),
+            "old listenerPort 8085 must be replaced"
+        );
+        // Sensor data must be preserved.
+        assert!(
+            patched.contains("/amdcpu/0/load/0/plot"),
+            "sensor plot data must survive"
+        );
+        assert!(
+            patched.contains("/amdcpu/0/load/1/plot"),
+            "sensor plot data must survive"
+        );
+        assert!(
+            patched.contains("startMinimized"),
+            "other settings must survive"
+        );
+    }
+
+    /// update_app_setting_key replaces value when key exists.
+    #[test]
+    fn update_app_setting_key_replaces_existing() {
+        let xml = r#"<appSettings><add key="foo" value="old" /></appSettings>"#;
+        let patched = update_app_setting_key(xml, "foo", "new");
+        assert!(patched.contains(r#"value="new""#));
+        assert!(!patched.contains(r#"value="old""#));
+    }
+
+    /// update_app_setting_key inserts when key doesn't exist.
+    #[test]
+    fn update_app_setting_key_inserts_new() {
+        let xml = r#"<appSettings><add key="other" value="1" /></appSettings>"#;
+        let patched = update_app_setting_key(xml, "foo", "bar");
+        assert!(patched.contains(r#"key="foo" value="bar""#));
+        assert!(
+            patched.contains(r#"key="other" value="1""#),
+            "existing keys must survive"
+        );
     }
 
     // ==========================================================
