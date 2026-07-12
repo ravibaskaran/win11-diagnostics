@@ -85,6 +85,13 @@ impl RollingWindow {
         self.values.make_contiguous();
         self.values.as_slices().0
     }
+
+    /// Immutable view of the current values as a Vec. Allocates; use for
+    /// rendering where a contiguous borrow isn't possible (e.g. egui render).
+    #[must_use]
+    pub fn to_vec(&self) -> Vec<f64> {
+        self.values.iter().copied().collect()
+    }
 }
 
 // ===========================================================================

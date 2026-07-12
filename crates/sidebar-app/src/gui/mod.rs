@@ -303,7 +303,6 @@ impl AppState {
 
     /// Story 12.2 — borrow the per-metric history map (for sparkline rendering).
     /// Returns a cloned snapshot to avoid holding the lock across egui render.
-    #[cfg(test)]
     fn history_snapshot(&self) -> sidebar_domain::graph::MetricHistory {
         recover_read(&self.history).clone()
     }
@@ -993,6 +992,7 @@ impl eframe::App for SidebarApp {
         // borrowed.
         let on_change_noop: &dyn Fn() = &|| {};
         let on_launch: &dyn Fn() = self.launch_fn.as_ref().map_or(&|| {}, |f| f.as_ref());
+        let hist = self.state.history_snapshot();
         render_sidebar(
             ui,
             &snapshot,
@@ -1001,6 +1001,7 @@ impl eframe::App for SidebarApp {
             &self.view,
             on_change_noop,
             on_launch,
+            Some(&hist),
         );
 
         // After the render: mirror the (possibly-mutated) config + view into
@@ -1131,6 +1132,7 @@ pub struct SidebarView {
 /// remains for the Story 8.1 tests; the production render path
 /// ([`SidebarApp::ui`]) will switch to this function once AppState owns the
 /// Config + BandwidthView handles (Story 8.5 launch sequence).
+#[allow(clippy::too_many_arguments)]
 pub fn render_sidebar(
     ui: &mut Ui,
     readings: &[Reading],
@@ -1139,6 +1141,7 @@ pub fn render_sidebar(
     view: &SidebarView,
     on_change: &dyn Fn(),
     on_launch: &dyn Fn(),
+    history: Option<&sidebar_domain::graph::MetricHistory>,
 ) {
     // Story 8.6: apply theme + accent to the egui context for this frame.
     // Done unconditionally each frame — `set_theme` is idempotent when the
@@ -1228,6 +1231,19 @@ pub fn render_sidebar(
                 default,
             );
             metric_row::render_with_color(ui, reading, &display, color);
+            // Story 12.2 — per-row sparkline from MetricHistory.
+            if let Some(hist) = history {
+                let mkey = sidebar_domain::graph::MetricKey {
+                    category: reading.sensor.category.to_string(),
+                    instance: reading.sensor.instance.clone(),
+                    kind: format!("{:?}", reading.kind),
+                };
+                if let Some(window) = hist.get(&mkey) {
+                    if window.len() >= 2 {
+                        sparkline::render_snapshot(ui, &window.to_vec(), 60.0);
+                    }
+                }
+            }
         }
         if readings.len() > MAX_ROWS && config.metrics.order.is_empty() {
             let omitted = readings.len() - MAX_ROWS;
@@ -1878,6 +1894,7 @@ mod tests {
                 &view,
                 &|| {},
                 &|| {},
+                None,
             );
         });
         harness.run();
@@ -1912,6 +1929,7 @@ mod tests {
                 &view,
                 &|| {},
                 &|| {},
+                None,
             );
         });
         harness.run();
@@ -1947,6 +1965,7 @@ mod tests {
                 &view,
                 &|| {},
                 &|| {},
+                None,
             );
             *ctx_holder.borrow_mut() = Some(ui.ctx().clone());
         });
@@ -1979,6 +1998,7 @@ mod tests {
                 &view,
                 &|| {},
                 &|| {},
+                None,
             );
         });
         harness.run();
@@ -2007,6 +2027,7 @@ mod tests {
                 &view,
                 &|| {},
                 &|| {},
+                None,
             );
         });
         harness.run();
@@ -2037,6 +2058,7 @@ mod tests {
                 &view,
                 &|| {},
                 &|| {},
+                None,
             );
         });
         harness.run();
@@ -2071,6 +2093,7 @@ mod tests {
                 &view,
                 &|| {},
                 &|| {},
+                None,
             );
         });
         harness.run();
@@ -2235,6 +2258,7 @@ mod tests {
                 &view,
                 &|| {},
                 &on_launch,
+                None,
             );
         });
         harness.run();
