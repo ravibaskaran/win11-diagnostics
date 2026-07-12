@@ -100,5 +100,17 @@ Format: `[STORY] gate description — command/submission — blocked-on`.
   real LHM binary.
   - Job Object cleanup (Basic mode): **PASS 2026-07-12** — no orphan LHM
     after sidebar exit. Sidebar-owned LHM cleanup requires UAC launch first.
+  - G10 external LHM ownership: **PASS 2026-07-12** — external LHM survived
+    sidebar exit (sidebar correctly did NOT kill external LHM).
   - DPI: System DPI = 96 (100% scaling) — **PASS 2026-07-12**.
   - LHM hash pin: **PASS 2026-07-12** — SHA-256 matches ohm.sha256 pin.
+  - UAC elevation: **PASS 2026-07-12** — Start-Process -Verb RunAs successfully
+    elevated LHM to admin (UAC accepted on this machine).
+  - LHM HTTP server auto-start: **FAIL 2026-07-12** — LHM v0.9.6 .NET 4.7.2
+    binary's `runWebServerMenuItem=true` config key does NOT auto-start the
+    HTTP server; the server requires GUI interaction (View → Web Server menu
+    item click) to start. The sidebar's `launch_elevated` path patches the
+    config + launches LHM as a hidden subprocess; whether the HTTP server
+    auto-starts in that configuration needs interactive verification.
+    **Remaining:** Click BASIC pill in sidebar → verify LHM subprocess launches
+    → verify HTTP server responds on 17127 → verify sensor data appears.
