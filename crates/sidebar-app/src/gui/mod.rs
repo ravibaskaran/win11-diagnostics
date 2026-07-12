@@ -866,7 +866,7 @@ fn send_dock_position(
 }
 
 impl eframe::App for SidebarApp {
-    fn on_exit(&mut self) {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         #[cfg(windows)]
         if let Some(platform) = self.platform.take() {
             platform.unregister();
@@ -1483,7 +1483,7 @@ mod tests {
         state.set_shutdown_signal(signal);
         let mut app = SidebarApp::new(state);
 
-        <SidebarApp as eframe::App>::on_exit(&mut app);
+        <SidebarApp as eframe::App>::on_exit(&mut app, None);
 
         assert!(cancel.is_cancelled());
         assert_eq!(rx.try_recv(), Ok(Event::Shutdown));
