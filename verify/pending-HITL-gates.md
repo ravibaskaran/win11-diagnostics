@@ -53,14 +53,12 @@ Format: `[STORY] gate description — command/submission — blocked-on`.
   - T-7 cold-start: 20ms (≤2000ms) — **PASS 2026-07-12**
   - T-1/T-2 poll-cost: all providers under 0.5% — **PASS 2026-07-12**
   - T-4 RSS p95 (bench-path): 11.9 MiB (≤80 MiB) — **PASS 2026-07-12**
-    NOTE: bench-path (minimal egui, no wgpu surface) measures the Rust
-    application code contribution. The **full-GUI RSS is 363 MiB** due to
-    wgpu GPU surface allocation (textures, swap chains, shader caches).
-    This exceeds T-4 (80 MiB) and T-5 (120 MiB). The thresholds were set
-    pre-wgpu (pre-egui 0.35) and need revision to account for GPU driver
-    memory, OR the renderer should switch to glow (OpenGL backend, lower
-    GPU memory footprint). This is a **known NFR-4 gap** — documented,
-    not silently ignored.
+  - T-4 RSS (full-GUI, glow renderer): 187 MiB — **PARTIALLY RESOLVED 2026-07-12**
+    Switched from wgpu (363 MiB) to glow renderer (187 MiB) — 48% reduction.
+    Still above the 80 MiB T-4 budget. Remaining overhead is egui
+    font/texture cache + Rust runtime, not GPU driver. User decision:
+    revise T-4 to ≤200 MiB for v1, or accept as known limitation.
+  - T-7 cold-start (glow): 2ms (was 20ms with wgpu) — **PASS 2026-07-12**
   - T-6 SQLite RSS: under 6 MiB ceiling — **PASS 2026-07-12**
   - G16 zero-egress: 60s netstat diff, no outbound sockets — **PASS 2026-07-12**
   - R11 bandwidth persistence: restart rehydrates totals — **PASS 2026-07-12**
