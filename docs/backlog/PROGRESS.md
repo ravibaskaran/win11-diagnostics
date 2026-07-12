@@ -90,8 +90,11 @@ The swarm reads this file at task-startup to identify the ready set (stories who
 
 ## Summary
 - Total stories: 68 (60 current delivery rows, including INT, + 8 Epic 12 parity/closure stories)
-- Merged: 48 / 68 (70.6%) — Stories 0.1-0.7, 1.1-1.6, 2.1-2.3, 3.1-3.6, 4.1-4.3, 5.1-5.3, 6.1-6.4, 7.1-7.5, 8.1-8.10 + INT (Epic 0–8 coding slice + main.rs integration)
-- Ready for pickup: {3.2b, 6.5, 6.6, 10.1, 11.1}. Epic 9 (9.1–9.3) is blocked by 6.5; 10.2 waits for 10.1; 11.2–11.4 wait on 11.1/11.2.
+- Merged: 52 / 68 (76.5%) — Stories 0.1-0.7, 1.1-1.6, 2.1-2.3, 3.1-3.6, 4.1-4.3, 5.1-5.3, 6.1-6.4, 7.1-7.5, 8.1-8.10, 11.1, 11.3, 11.4, 12.1 + INT (Epic 0–8 coding slice + main.rs integration + Epic 11/12 closure slices)
+- Partial: 11 — 6.5, 6.6, 9.1, 9.2, 10.1, 10.2, 11.2, 12.2, 12.3, 12.6, 12.8
+- Deferred: 4 — 9.3, 12.4, 12.5, 12.7
+- Pending: 1 — 3.2b
+- Ready for pickup: {3.2b}. 6.5/6.6/9.x/10.1/10.2/11.2/Epic 12 partials are in-progress (PRs open, HITL-gated); Epic 9 (9.1–9.3) is blocked by 6.5; 10.2 waits for 10.1.
 - Workspace checks recorded for this snapshot: 625 passing, 0 failing, 13 ignored (hardware/UAC/capture smokes). `cargo fmt --all -- --check` and `git diff --check` pass; clippy, deny, Windows-target, release-build, and manual Win11 checks remain separate evidence gates.
 - Blocked on HITL: 0
 - Long-term blocked: 0
@@ -127,17 +130,19 @@ not marked `merged` until they are committed/reviewed and the real UAC/LHM and
 Win11 smoke checks pass. The liveness gate intentionally degrades only children
 that sidebar launched; externally running LHM is not treated as sidebar-owned.
 
-Deferred and still `pending`: **3.2b, 6.5, 6.6, 9.x, 10.1–10.2, 11.x, and all Epic 12 parity/closure stories**. Epic 10.1 is dependency-ready; Epic 9 remains blocked by 6.5 and 10.2 waits for 10.1.
+Still open: **3.2b (`pending`); 6.5, 6.6, 9.1, 9.2, 10.1, 10.2, 11.2, 12.2, 12.3, 12.6, 12.8 (`partial`, PRs open and HITL-gated); 9.3, 12.4, 12.5, 12.7 (`deferred`)**. Merged: 11.1, 11.3, 11.4, 12.1 + the Epic 0–8 coding slice + INT. Epic 9 remains blocked by 6.5 and 10.2 waits for 10.1.
 
 ## Critical path remaining
-48 current-delivery stories on the critical path (out of 60 current rows), plus
-8 Epic 12 parity/closure stories (68 total). See `regression-harness.md` §4.
+64 of 68 stories are on the active critical path (52 `merged` + 11 `partial` + 1
+`pending`); the 4 `deferred` stories (9.3, 12.4, 12.5, 12.7) are scoped post-v1.
+See `regression-harness.md` §4.
 
 ## Start here
 
-**Current entry points: Stories 10.1 and 11.1** (plus the explicitly deferred
-3.2b/6.5/6.6 work). Story 10.1 can begin now; Story 10.2 waits for it. Epic 9
-cannot begin until 6.5 (LHM acquisition) is complete. The 0.1 entry point
-above applies only to a fresh clone before the current Epic 0–8 merge history.
+**Current entry points: 3.2b (the only `pending` story)** — plus the in-progress
+`partial` stories (10.1, 11.2, Epic 12 partials) whose PRs are open and
+HITL-gated. Story 10.2 waits for 10.1. Epic 9 cannot begin until 6.5 (LHM
+acquisition) is complete. The 0.1 entry point above applies only to a fresh
+clone before the current Epic 0–8 merge history.
 
 For the full per-story loop (RED → GREEN → full regression matrix → PR → HITL → merge → PROGRESS update), see `regression-harness.md` §7.
