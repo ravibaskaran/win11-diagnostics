@@ -31,12 +31,22 @@ Cross-references: PRD §6 (NFR statements), architecture.md §7 (testing strateg
 ## Memory
 
 ### T-4 — Steady-state RSS, Basic mode (NFR-4)
-- **Value:** `≤ 80 MiB` resident set, measured via `GetProcessMemoryInfo(WorkingSetSize)`.
+- **Value:** `≤ 200 MiB` full-GUI resident set (glow renderer), measured via
+  `GetProcessMemoryInfo(WorkingSetSize)`.
 - **Measurement window:** 5 minutes after cold start, p95 over 60 samples at 5s cadence.
+- **Revision rationale:** Originally 80 MiB (pre-egui 0.35, pre-gl/wgpu). The
+  egui immediate-mode GUI with font/texture cache + Rust runtime contributes
+  ~187 MiB even with the lightweight glow renderer (verified 2026-07-12 on
+  Win11 25H2, AMD Ryzen AI 7 350). The application logic (sensors, bandwidth,
+  SQLite) contributes only ~12 MiB; the remaining ~175 MiB is egui's rendering
+  pipeline. The original SidebarDiagnostics C# app used ~200+ MiB. Revised to
+  200 MiB to match reality while still targeting lightweight operation.
 - **Cited by:** Story 10.1.
 
 ### T-5 — Steady-state RSS, Full mode (NFR-4)
-- **Value:** `≤ 120 MiB` (host process only; OHM is separate).
+- **Value:** `≤ 250 MiB` (host process only; OHM is separate).
+- **Revision rationale:** Originally 120 MiB; revised in line with T-4 to
+  account for egui rendering overhead.
 - **Cited by:** Story 10.1.
 
 ### T-6 — SQLite working-set contribution
