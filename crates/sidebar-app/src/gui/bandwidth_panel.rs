@@ -187,6 +187,7 @@ mod tests {
             raw_values: false,
             decimal_base: true,
             hide_from_capture: false,
+            force_opaque: false,
         }
     }
 

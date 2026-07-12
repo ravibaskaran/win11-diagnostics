@@ -454,7 +454,14 @@ impl SidebarApp {
     /// # Errors
     /// Returns `eframe::Error` if the graphics context fails to initialize.
     pub fn run(self, app_name: &str) -> eframe::Result {
-        let viewport = build_viewport(ViewportPrefs::sidebar_defaults());
+        // Story 12.x transparency fallback: when force_opaque is set (or the
+        // config requests it), disable the transparent viewport request so
+        // wgpu doesn't warn about unsupported CompositeAlphaMode.
+        let mut prefs = ViewportPrefs::sidebar_defaults();
+        if self.config.display.force_opaque {
+            prefs.transparent = false;
+        }
+        let viewport = build_viewport(prefs);
         let options = eframe::NativeOptions {
             viewport,
             ..Default::default()

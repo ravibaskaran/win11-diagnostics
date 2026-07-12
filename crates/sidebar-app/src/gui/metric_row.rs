@@ -261,6 +261,7 @@ pub(crate) fn is_known_combination(kind: MetricKind, unit: Unit) -> bool {
         raw_values: false,
         decimal_base: true,
         hide_from_capture: false,
+        force_opaque: false,
     };
     format_reading_with_config(&sentinel, &display) != "unknown"
 }
@@ -371,6 +372,7 @@ mod tests {
             raw_values: false,
             decimal_base: true,
             hide_from_capture: false,
+            force_opaque: false,
         }
     }
 

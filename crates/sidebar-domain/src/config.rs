@@ -74,6 +74,7 @@ pub struct Config {
 
 /// Display settings (NFR-8).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct DisplayConfig {
     /// Temperature unit (T-29: Celsius default).
     #[serde(default = "default_temp_unit")]
@@ -90,6 +91,14 @@ pub struct DisplayConfig {
     /// Exclude the sidebar from supported screen-capture APIs (default OFF).
     #[serde(default)]
     pub hide_from_capture: bool,
+
+    /// Force opaque window background (default OFF). Set to true when the
+    /// wgpu surface doesn't support CompositeAlphaMode transparency (some
+    /// GPU/driver combos on Win11 log a warning + render opaque anyway).
+    /// This flag explicitly disables the transparent request so the warning
+    /// is suppressed and the window renders cleanly as borderless-opaque.
+    #[serde(default)]
+    pub force_opaque: bool,
 }
 
 /// Bandwidth tracking settings.
@@ -323,6 +332,7 @@ impl Default for DisplayConfig {
             raw_values: false,
             decimal_base: default_decimal_base(),
             hide_from_capture: false,
+            force_opaque: false,
         }
     }
 }
