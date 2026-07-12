@@ -83,7 +83,6 @@
 - **Technical Context:** `LICENSE` = MPL-2.0 text (matches OHM, compatibility with citation 3 in PRD). `README.md` = project description, build instructions, link to `docs/`. `SECURITY.md` = responsible disclosure + the G16 no-runtime-egress policy. `.gitignore` = `/target/`, `/Cargo.lock` is NOT ignored (binary workspace, G18). `Cargo.lock` committed.
 - **Gentle-AI SDD Phase Checklist:**
   1. [ ] **Plan:** Confirm MPL-2.0 choice vs MIT (PRD says either; MPL-2.0 matches OHM for symbolic alignment but MIT is more permissive — flag as decision).
-  2. [ ] **Implement:** Four files. `README.md` links to `docs/PRD.md`, `docs/architecture.md`, `docs/grants.md`, `docs/backlog/`.
   3. [ ] **Validate:** Markdown lint clean. SignPath eligibility self-check passes.
 - **TDD Contract & Test Cases:**
   - **Unit Test Cases (Happy Path):**
@@ -1222,7 +1221,6 @@ Epic 10 (Verify)
 
 ---
 
-**END OF EPICS & STORIES (AUDIT PASS 3).** 11 Epics, 54 Stories. Companion: `README.md`, `guardrails.md` (G1–G24), `nfr-thresholds.md` (T-1–T-39), `tdd-fixtures.md` (F1–F13). Source: `docs/PRD.md`, `docs/architecture.md`, `docs/grants.md`.
 
 ---
 
@@ -1516,4 +1514,3 @@ parity/closure). Companion:
 `README.md`, `guardrails.md` (G1–G27), `nfr-thresholds.md` (T-1–T-45),
 `tdd-fixtures.md` (F1–F14), `regression-harness.md`, `PROGRESS.md`,
 `docs/dev-env.md`. Source: `docs/PRD.md`, `docs/architecture.md`,
-`docs/grants.md`.

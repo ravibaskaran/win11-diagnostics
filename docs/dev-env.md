@@ -107,7 +107,6 @@ The user performed the two system-level actions (Rust bump + llvm-tools componen
 ```
 D:\dev\sidebar\
 ├── docs/                          ← design + backlog
-│   ├── PRD.md, architecture.md, grants.md, dev-env.md (this file)
 │   └── backlog/                   ← README, guardrails, nfr-thresholds, tdd-fixtures,
 │                                    regression-harness, PROGRESS, epics-and-stories
 ├── tools/                         ← ✅ populated 2026-07-08 — relocatable dev tooling

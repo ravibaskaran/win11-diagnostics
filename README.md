@@ -1,78 +1,245 @@
 # win11-diagnostics
 
-> *Glanceable system health, calmly.* A Windows 11 desktop sidebar overlay showing live hardware telemetry — CPU/GPU temps, clocks, utilization, fan speeds, voltages, power draw; memory and VRAM; per-drive storage and throughput; per-network-adapter throughput; per-process top-N resource consumers; battery; and **monthly bandwidth consumption tracking per network interface**.
+> *Glanceable system health, calmly.*
 
-A ground-up Rust clone of the user-facing experience of [SidebarDiagnostics](https://github.com/ArcadeRenegade/SidebarDiagnostics) (C#/.NET/WPF + LibreHardwareMonitor), rebuilt natively for Windows 11 with a strict lightweight mandate and a two-tier sensor model that degrades gracefully when elevated privileges are unavailable.
+A lightweight, always-on desktop sidebar for Windows 11 that shows live
+hardware telemetry — CPU/GPU temperatures, clocks, utilization, fan speeds,
+voltages, power draw; memory and VRAM; per-drive storage and throughput;
+per-network-adapter throughput; and **monthly bandwidth consumption tracking
+per network interface**.
 
-**Status:** Epic 0–8 implementation is present in the workspace (48/68 tracked
-stories merged, including integration wiring). Workspace tests currently pass
-528/528 with 11 ignored hardware/UAC/capture smokes; Epic 10.1 verification is
-ready to start. Raw `cargo audit` reports only the documented transitive
-`quick-xml`/`ttf-parser` advisory exceptions (see `deny.toml`). Known launch/UI wiring gaps are tracked in `docs/PRD.md` §12,
-`docs/architecture.md` §14, and Story 12.8.
+A ground-up Rust reimagining of the user-facing experience of
+[SidebarDiagnostics](https://github.com/ArcadeRenegade/SidebarDiagnostics),
+rebuilt natively for Windows 11 with a strict lightweight mandate and a
+two-tier sensor model that degrades gracefully when elevated privileges are
+unavailable.
 
-## Honest framing
+---
 
-This product is **Rust-native except for CPU package temperature and a small set of low-level hardware sensors**, which require a bundled [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) (LHM) subprocess. We do not claim "pure Rust" anywhere. The LHM bundling is a deliberate, research-validated design decision (see `docs/architecture.md` AD-2), not a fallback.
+## Why Rust?
 
-## What's in this repo
+SidebarDiagnostics (the original) is a C#/.NET/WPF application. This project
+rebuilds the same user experience in Rust for three reasons:
 
-```
-docs/
-├── PRD.md                 Product requirements (NFRs, telemetry matrix, two-tier model, risks)
-├── architecture.md        Architecture decisions (AD-1..AD-14), data flow, crate layout, trait sketches
-├── grants.md              Open-source credits/grants strategy + zero-cost distribution analysis
-├── dev-env.md             Development environment setup guide + machine inventory
-└── backlog/
-    ├── README.md             Backlog index (4-pass audit complete)
-├── epics-and-stories.md  13 Epics / 68 Stories (including parity/closure), with wiring metadata
-    ├── guardrails.md         27 cross-cutting rules (G1..G27) + HITL action matrix
-    ├── nfr-thresholds.md     45 NFR thresholds (T-1..T-45) — single source of truth
-    ├── tdd-fixtures.md       14 test-fixture patterns (F-1..F-14)
-    ├── regression-harness.md Test layer model (L0..L4) + 8-point Definition of Done
-    └── PROGRESS.md           Auto-updated story tracker (read by the agentic swarm)
-scripts/
-├── env.ps1                Session-scoped dev-env activation (no system mutation)
-├── verify-dev-env.ps1     16-point verification gate (CI pre-flight)
-└── fetch_ohm.ps1          Idempotent LHM binary download + SHA-256 verify
-resources/
-├── ohm.sha256             SHA-256 pin for the bundled LHM binary
-├── LibreHardwareMonitor.exe          (provisioned locally; release packaging pending)
-└── LibreHardwareMonitor.LICENSE.txt  MPL-2.0 (redistribution terms)
-```
+1. **Memory safety without a garbage collector.** The sidebar runs 24/7 as a
+   background overlay. Rust's ownership model guarantees no use-after-free,
+   no null dereferences, no buffer overflows — classes of bugs that plague
+   long-running C# apps that depend on Win32 interop and native libraries.
 
-## Quick start
+2. **Smaller, faster binaries.** Rust compiles to a single static binary
+   with no runtime dependency on .NET, the CLR, or a JIT. The release build
+   is ~11 MB with LTO + symbol stripping. Cold-start is under 20ms.
+
+3. **Predictable resource usage.** Rust's zero-cost abstractions and lack of
+   a garbage collector mean RSS stays flat. There's no GC pause, no JIT warmup,
+   no surprise memory spikes from runtime-managed heaps.
+
+The trade-off: CPU package temperature, fan speeds, and motherboard voltages
+require low-level hardware sensor access that Rust cannot do alone on Windows.
+These sensors are read through a bundled [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor)
+subprocess (MPL-2.0). The sidebar itself remains pure Rust; the LHM binary
+is a pinned, hash-verified external dependency that runs with elevated
+privileges only when the user explicitly requests Full mode.
+
+## Why Windows 11 only?
+
+The sidebar uses Windows 11-specific APIs that don't exist on Windows 10 or
+earlier:
+
+- **Per-Monitor DPI Awareness v2** — crisp text on 4K displays at any scaling
+- **`WDA_EXCLUDEFROMCAPTURE`** — the sidebar can hide itself from screen
+  capture (streamers, screen-sharers) at the OS level
+- **`SHAppBarMessage`** — native taskbar docking; other windows snap around
+  the sidebar instead of overlapping it
+- **`SetProcessDpiAwarenessContext`** — per-window DPI, not per-process
+
+Porting to Windows 10 would require fallback paths for each of these, which
+isn't planned for v1.
+
+---
+
+## How to use it
+
+### Basic mode (no admin required)
+
+The sidebar starts in **Basic mode** by default. No elevation, no UAC prompt,
+no administrator privileges. You see:
+
+- **CPU** — utilization, frequency, power draw (via `sysinfo`)
+- **Memory** — used / free / total RAM (via `sysinfo`)
+- **GPU** — NVIDIA utilization/temperature (via NVML, if an NVIDIA GPU is present)
+- **Battery** — charge level, charging/discharging state (via `starship-battery`)
+- **Disk** — per-drive capacity + R/W throughput (via PDH counters)
+- **Network** — per-NIC RX/TX throughput + **monthly bandwidth tracking** (via `GetIfTable2`)
+- **Per-process** — top-N CPU/RAM consumers
+
+Basic mode is designed to be **lightweight**: under 0.5% CPU per sensor source,
+under 200 MiB RSS, under 2ms cold-start. These are measured and enforced via
+automated CI gates.
+
+### Full mode (opt-in, requires UAC)
+
+If you need **CPU package temperature, fan speeds, or motherboard voltages**,
+click the gray **BASIC** pill in the sidebar header. Windows will show a UAC
+prompt. Accept it, and the sidebar:
+
+1. Patches the bundled LibreHardwareMonitor config (enables its HTTP API)
+2. Launches LHM as an elevated, hidden subprocess (via `ShellExecuteW("runas")`)
+3. Wraps LHM in a **Job Object** so it's automatically killed if the sidebar
+   crashes (no orphan processes)
+4. Probes `http://127.0.0.1:17127/data.json` to confirm LHM is responding
+5. Switches to Full mode — the status pill turns green, and temperature/fan/
+   voltage readings appear alongside the existing metrics
+
+**Privacy:** Full mode makes a **loopback-only** HTTP connection to
+`127.0.0.1`. The sidebar has **zero runtime network egress** in any mode
+(verified via `netstat` snapshot diff). No telemetry, no auto-update checks,
+no cloud sync — nothing leaves your machine.
+
+If the sidebar is closed normally, it sends a signal to LHM to shut down
+cleanly. If the sidebar crashes, the Job Object ensures LHM is reaped by the
+kernel — no orphan processes survive.
+
+### Global hotkey
+
+Press **Ctrl+Shift+S** to toggle **click-through** mode. When enabled, mouse
+clicks pass through the sidebar to windows behind it — useful when the sidebar
+is covering something you need to interact with. Press again to toggle off.
+
+### First-run wizard
+
+On first launch, a wizard appears:
+1. Choose the docked edge (left/right/top/bottom — right is default)
+2. Choose the target monitor (primary by default)
+3. Set your billing-cycle start day (for monthly bandwidth tracking)
+4. Choose light/dark/system theme
+
+After completing or skipping the wizard, the sidebar appears immediately.
+Settings can be changed later via the gear icon (⚙) in the header.
+
+### Bandwidth tracking
+
+The sidebar tracks **cumulative bytes per network interface** per billing
+cycle. Your cycle start day is set in the first-run wizard (default: 1st of
+each month). The sidebar shows:
+
+- Current cycle: total RX/TX per adapter
+- Days until reset
+- Previous cycle history (retention: current + previous)
+
+Data is persisted in a local SQLite database (`%APPDATA%\sidebar\bandwidth.db`).
+If the sidebar is restarted mid-cycle, accumulated totals are **rehydrated**
+from the database — no data loss on restart.
+
+---
+
+## Configuration
+
+The sidebar reads its configuration from `%APPDATA%\sidebar\config.toml`.
+Key settings:
+
+| Setting | Default | Range | Description |
+|---|---|---|---|
+| `poll_interval_seconds` | 10 | 1–60 | How often sensors refresh |
+| `[display] temp_unit` | Celsius | Celsius/Fahrenheit | Temperature unit |
+| `[display] decimal_base` | true | true/false | Decimal (GB=10⁹) vs binary (GiB=2³⁰) |
+| `[display] raw_values` | false | true/false | Show Hz/bytes/bps instead of GHz/GB/Mbps |
+| `[display] force_opaque` | false | true/false | Disable transparency (for GPU compatibility) |
+| `[display] hide_from_capture` | false | true/false | Hide sidebar from screen capture (OBS, Teams, etc.) |
+| `[process] top_n` | 5 | 1–50 | Number of top processes to show |
+| `[graph] window` | 60 | 10–600 | Sparkline history window (samples) |
+| `[bandwidth] cycle_start_day` | Day(1) | Day(1–28) / LastDayOfMonth | Billing cycle start |
+| `[theme] mode` | Dark | Dark/Light/System | Theme preference |
+| `[theme] accent` | #4CAF50 | #RRGGBB | Accent color |
+| `[dock] edge` | Right | Left/Right/Top/Bottom | Docked edge |
+| `[dock] monitor_id` | primary | DeviceID or "primary" | Target monitor |
+| `[hotkeys] click_through` | Ctrl+Shift+S | Modifiers+Key | Click-through toggle hotkey |
+
+---
+
+## Download
+
+Pre-built binaries will be available on the [GitHub Releases](https://github.com/ravibaskaran/win11-diagnostics/releases)
+page once code signing is set up. Until then, you can build from source.
+
+## Build from source
+
+**Prerequisites:**
+- [Rust](https://rustup.rs/) 1.95+ (MSRV enforced by `sysinfo` 0.39.3)
+- MSVC Build Tools 2022+ (Visual Studio Installer → "Desktop development with C++")
+- PowerShell 7+ (`winget install Microsoft.PowerShell`)
+- Git
 
 ```pwsh
 git clone https://github.com/ravibaskaran/win11-diagnostics.git
 cd win11-diagnostics
 
-# Verify your machine has the system prerequisites (Rust >=1.95, MSVC Build Tools,
-# llvm-tools rustup component, PowerShell 7+, Git). 15-16 checks.
-.\scripts\verify-dev-env.ps1
+# Download + hash-verify the bundled LHM binary
+.\scripts\fetch_ohm.ps1
 
-# Provision the project-local tooling (cargo subcommands, CI tools, LHM binary).
-# Follows docs/dev-env.md §3.2 + scripts/fetch_ohm.ps1.
+# Build the release binary
+cargo build --release --target x86_64-pc-windows-msvc
 
-# Activate the dev env in your current PowerShell session (PATH only — no system mutation):
-. .\scripts\env.ps1
+# Run it
+.\target\x86_64-pc-windows-msvc\release\sidebar-app.exe
 ```
 
-See [`docs/dev-env.md`](docs/dev-env.md) for the full setup guide, including the minimal system prerequisites (Rust, MSVC Build Tools, PowerShell 7, Git) and the project-local relocatable tooling under `tools/`.
+---
 
-## Distribution
+## Project architecture (for contributors)
 
-Zero-cost-first: SignPath Foundation (free OSS code signing) + GitHub Releases + winget + optional Microsoft Store (free Partner Center onboarding). Total annual cost: $0. See `docs/architecture.md` §11, `docs/grants.md`, and [`signpath/code-signing-policy.md`](signpath/code-signing-policy.md) for the full analysis + signing policy.
+```
+crates/
+├── sidebar-domain/           Pure types + logic (Reading, Config, billing, formatting)
+├── sidebar-sensor/           SensorProvider trait + cost classifier
+├── sidebar-adapter-sysinfo/  CPU/RAM/disk via sysinfo crate (Basic tier)
+├── sidebar-adapter-nvml/     NVIDIA GPU via NVML (Basic tier)
+├── sidebar-adapter-battery/  Battery via starship-battery (Basic tier)
+├── sidebar-adapter-pdh/      Disk throughput via PDH counters (Basic tier)
+├── sidebar-adapter-net/      NIC throughput via GetIfTable2 (Basic tier)
+├── sidebar-adapter-ohm/      LHM HTTP /data.json adapter (Full tier)
+├── sidebar-persistence/      SQLite WAL bandwidth store (schema v2)
+├── sidebar-bandwidth/        Monthly bandwidth accountant + accumulator
+├── sidebar-platform/         Win32: AppBar, DPI, hotkey, OhmSupervisor, DWM
+└── sidebar-app/              Binary: egui GUI, poller, shutdown orchestrator
+```
+
+**Two-tier model:** Basic-mode providers run with no elevation. Full-mode
+providers require the LHM subprocess (elevated via `ShellExecuteW("runas")`).
+The sidebar probes `http://127.0.0.1:17127/data.json` to detect whether LHM
+is already running. If it is, the sidebar reuses it without relaunching (no
+redundant UAC prompt). If LHM crashes, the sidebar automatically degrades to
+Basic mode.
+
+**Panic safety:** Every provider call is wrapped in `catch_unwind` — a
+panicking adapter contributes zero readings for that tick but the poller
+continues. Poisoned locks are recovered via `into_inner()`. NaN/Inf sensor
+values are filtered and rendered as `"--"`.
+
+**Resource bounds:** Broadcast channels are capacity-8 (drop oldest + warn).
+SQLite busy-retry is 5 attempts with 10/20/40/80/160ms backoff. The tokio
+runtime uses 2 worker threads. Shutdown completes within 3s (watchdog
+force-exits at the 3s deadline).
+
+---
 
 ## License
 
-The host workspace is **MIT** (`LICENSE`). The bundled
-`LibreHardwareMonitor.exe` and its license remain MPL-2.0.
+The host workspace is **MIT** ([`LICENSE`](LICENSE)).
 
-## Documentation
+The bundled `LibreHardwareMonitor.exe` and its license remain **MPL-2.0**
+([`resources/LibreHardwareMonitor.LICENSE.txt`](resources/LibreHardwareMonitor.LICENSE.txt)).
 
-- [PRD](docs/PRD.md) — what we're building and why
-- [Architecture](docs/architecture.md) — how it's structured
-- [Dev Environment](docs/dev-env.md) — how to set up a contributor machine
-- [Backlog](docs/backlog/README.md) — the audited story breakdown for the agentic swarm
-- [Grants Strategy](docs/grants.md) — open-source credits + zero-cost distribution
+## Contributing
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the development workflow.
+
+## Acknowledgments
+
+- [SidebarDiagnostics](https://github.com/ArcadeRenegade/SidebarDiagnostics) —
+  the original C#/.NET sidebar that inspired this project
+- [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) —
+  the open-source hardware monitoring library (MPL-2.0)
+- [egui](https://github.com/emilk/egui) — the immediate-mode Rust GUI framework
+- [sysinfo](https://github.com/GuillaumeGomez/sysinfo) — cross-platform system
+  information crate

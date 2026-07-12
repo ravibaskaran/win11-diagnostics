@@ -60,3 +60,20 @@ Thumbs.db
 
 # Smoke-test artifacts
 /tmp/
+
+# Internal design documents — NOT for public consumption.
+# These are SDD/spec documents meant for internal development only.
+# To remove from git history entirely, use:
+#   git filter-repo --path docs/ --invert-paths
+#   git filter-repo --path .atl/ --invert-paths
+#   git filter-repo --path verify/ --invert-paths
+#   git filter-repo --path signpath/ --invert-paths
+# Then force-push. See https://github.com/newren/git-filter-repo
+docs/backlog/
+docs/architecture.md
+docs/PRD.md
+docs/dev-env.md
+docs/customization-parity.md
+verify/pending-HITL-gates.md
+signpath/
+.zcode/
