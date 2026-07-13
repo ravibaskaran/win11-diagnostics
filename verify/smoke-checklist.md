@@ -44,8 +44,52 @@ pwsh verify/smoke-checklist.ps1
 prints the failing test name + the relevant T-* / Story id. Manual items
 must be walked by a human and marked PASS / FAIL on the release checklist.
 
+## Reference machine runner (Story 13.5, T-46)
+
+For the v1.0.0 tag, the scriptable subset above is NOT sufficient on its
+own — the 13 `#[ignore]`'d integration tests (real AppBar/DPI/DWM/OHM-supervisor
+FFI) + the NFR-1 poll-cost bench + the 12 manual items must also be walked
+on the designated T-31 reference machine. `verify/reference-machine.ps1`
+bottles all of that into one command:
+
+```pwsh
+# Elevated PowerShell 7 on the T-31 reference machine (LAPTOP-PLN56DNU).
+# Run after `git pull` on main + after the release exe is built.
+pwsh verify/reference-machine.ps1
+```
+
+The script writes the full evidence bundle to `verify/evidence/<date>/`
+(workspace-tests.txt, ignored-suite.txt, poll_cost.txt, scriptable-smoke.txt,
+sha256.txt, manual-smoke.md) and exits 0 on full PASS / 1 on any failure.
+See `nfr-thresholds.md` T-46 for the bundle contract.
+
+## Full-mode one-time setup (LHM, Story 13.5)
+
+The bundled LibreHardwareMonitor v0.9.6 binary does NOT auto-start its HTTP
+server from any config key. The first time a user enables Full mode, they
+must perform a one-time click:
+
+1. Click the **BASIC** status pill in the sidebar → accept the Windows UAC
+   prompt. The sidebar launches the bundled LHM as an elevated, hidden
+   subprocess.
+2. If sensor readings (CPU package temp, fan speeds, voltages) do NOT
+   appear within ~10 seconds, find the **LibreHardwareMonitor** icon in the
+   system tray (bottom-right), right-click it → **View** → **Web Server**.
+   This is a one-time setup; LHM remembers the setting for subsequent
+   launches.
+3. Click the sidebar status pill again (it may still show BASIC) — the
+   probe now succeeds, the pill turns green, and Full-mode sensors render.
+
+This is the only non-idiot-proof step in v1.0.0 (per Epic 13's Path A
+decision). The About dialog (Story 13.4) + the first-run wizard document
+this. A v1.1 story may revisit upgrading LHM to a build that auto-starts
+the HTTP server.
+
 ## Release gate
 
 Per Story 9.2, a release tag MUST NOT be cut until every item is PASS or
 explicitly waived (with HITL rationale). Scriptable items failing blocks
 the release; manual items failing blocks unless a maintainer signs off.
+For v1.0.0+, the reference-machine runner (Story 13.5) MUST also produce a
+green evidence bundle under `verify/evidence/<date>/` before the tag is
+cut (T-46).

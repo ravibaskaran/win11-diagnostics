@@ -227,6 +227,28 @@ The script verifies, in order:
 
 Exits 0 on success, 1 on any failure. The CI regression gate (Story 11.2) calls this script as a pre-flight check before running the test matrix.
 
+### 4.1 Reference machine runner (T-46, Story 13.5)
+
+For the v1.0.0 tag, the dev-env verification above is necessary but NOT
+sufficient — the release must also be backed by a full evidence bundle
+produced on the designated T-31 reference machine (this machine,
+LAPTOP-PLN56DNU). `verify/reference-machine.ps1` bottles the full
+evidence run into one command:
+
+```pwsh
+# Elevated PowerShell 7. Run after `git pull` on main.
+pwsh verify/reference-machine.ps1
+```
+
+The script runs: pre-flight checks → release build + sidecar copy → full
+L0-L3 workspace matrix → all 13 `#[ignore]`'d integration tests (real
+AppBar/DPI/DWM/OHM-supervisor FFI — the tests CI cannot run) → NFR-1
+poll-cost bench → scriptable smoke → release-exe SHA-256 → the 12 manual
+smoke items (prompted one at a time). It writes the bundle to
+`verify/evidence/<date>/` and exits 0 on full PASS / 1 on any failure.
+See `nfr-thresholds.md` T-46 for the bundle contract + `verify/smoke-checklist.md`
+for the manual-item walkthrough.
+
 ---
 
 ## 5. Compatibility with the relocatable-folder goal

@@ -338,3 +338,52 @@ fn story_8_3_metric_row_render_ui() {
 ```
 **Rule:** Each story's PR MUST include at least one test at its declared Layer (per the Wiring block), AND at least one regression-tiebreaker test that re-runs a prior story's behavior at the same layer. The CI matrix (Story 11.2) enforces this by running ALL tests at ALL layers on every PR — there is no "only my crate" mode.
 **Cited by:** every story via the `Layer:` field in its Wiring block; G25/G26/G27; `regression-harness.md` §2.
+
+---
+
+## F15 — Corrupt-file quarantine + atomic-write harness
+**Use:** Any test that verifies a load/persist function (a) recovers from a corrupt file without crashing, (b) backs up the corrupt file with a timestamp before recovering, (c) writes atomically so a crash mid-write cannot truncate the target file. Used by Stories 13.1 (config) + 13.2 (SQLite).
+
+```rust
+use tempfile::TempDir;
+use std::fs;
+
+// Arrange: a corrupt file at the target path.
+let dir = TempDir::new().expect("TempDir::new");
+let path = dir.path().join("config.toml");
+fs::write(&path, b"not = a = valid = toml = at all").expect("write garbage");
+
+// Act: the function under test detects corruption + backs up + recovers.
+let config = load_config(&path);  // returns Config::default()
+
+// Assert: the corrupt file was backed up with a timestamp suffix.
+let backups: Vec<_> = fs::read_dir(dir.path()).unwrap()
+    .filter_map(Result::ok)
+    .map(|e| e.file_name().into_string().unwrap())
+    .filter(|n| n.starts_with("config.toml.corrupt-"))
+    .collect();
+assert_eq!(backups.len(), 1, "exactly one timestamped backup MUST exist");
+assert!(fs::read_to_string(dir.path().join(&backups[0])).unwrap()
+    .starts_with("not = a = valid"), "backup MUST preserve original bytes");
+
+// Assert: the target path now holds the recovered (default) content,
+// NOT the garbage — the next write goes to a clean file.
+assert!(config == Config::default());
+```
+
+For atomic-write verification (the persist path):
+```rust
+// Arrange: a clean target path.
+let dir = TempDir::new().expect("TempDir::new");
+let path = dir.path().join("config.toml");
+
+// Act: persist_config writes via <file>.tmp + rename.
+persist_config(&path, &config);
+
+// Assert: target exists, no .tmp leftover (rename completed).
+assert!(path.exists());
+assert!(!dir.path().join("config.toml.tmp").exists(),
+    "atomic write MUST NOT leave a .tmp file behind on success");
+```
+**Rule:** (1) The corrupt-file backup MUST be best-effort — if the backup itself fails (disk full, permissions), the function MUST still recover to defaults/fresh-state and log the backup failure at `warn!` (G15 — never propagate the error to the point of crashing the host). (2) The atomic write MUST use `std::fs::rename` over an existing file (atomic on NTFS same-volume); a bare `std::fs::write` is FORBIDDEN for persist paths. (3) The timestamp suffix MUST be a unix epoch second (sortable, no colons in filenames).
+**Cited by:** Story 13.1, Story 13.2, guardrails.md G28.

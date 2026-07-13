@@ -129,14 +129,19 @@ refresh is the current worktree truth after the Win11 audit:
 | 12.6 | partial | 2026-07-11T00Z | story-12.6 | L0:5 | AlertAck enum + displayed_state suppressor + ack_should_clear re-arm. check_threshold hysteresis reused. GUI action buttons (ack/snooze/open-settings) wiring is follow-up. |
 | 12.7 | deferred | 2026-07-11T00Z | story-12.7 | L0:3 | Locale enum + v1_default (LocaleStable) + decimal_separator/thousands_separator. v1 locale-stable per OQ-5; per-locale label tables + format_* Locale param post-v1. |
 | 12.8 | partial | 2026-07-12T00Z | story-12.8 | L0:2 | Working-tree integration slice wires all three gaps: status-pill launch callback, persisted BandwidthView watch bridge, and sidebar-launched-child liveness degradation (one-shot Full→Basic). 625 tests pass; commit/PR acceptance plus real UAC/LHM smoke remain. |
+| 13.1 | pending | — | — | — | — |
+| 13.2 | pending | — | — | — | — |
+| 13.3 | pending | — | — | — | — |
+| 13.4 | pending | — | — | — | — |
+| 13.5 | pending | — | — | — | — |
 
 ## Summary
-- Total stories: 68 (60 current delivery rows, including INT, + 8 Epic 12 parity/closure stories)
-- Merged: 54 / 68 (79.4%) — Stories 0.1-0.7, 1.1-1.6, 2.1-2.3, 3.1-3.6, 4.1-4.3, 5.1-5.3, 6.1-6.5, 7.1-7.5, 8.1-8.10, 10.1, 11.1, 11.3, 11.4, 12.1 + INT (Epic 0–8 coding slice + main.rs integration + Epic 11/12 closure slices + 2026-07-13 audit closure)
+- Total stories: 73 (60 current delivery rows, including INT, + 8 Epic 12 parity/closure + 5 Epic 13 hardening)
+- Merged: 54 / 73 (74.0%) — Stories 0.1-0.7, 1.1-1.6, 2.1-2.3, 3.1-3.6, 4.1-4.3, 5.1-5.3, 6.1-6.5, 7.1-7.5, 8.1-8.10, 10.1, 11.1, 11.3, 11.4, 12.1 + INT (Epic 0–8 coding slice + main.rs integration + Epic 11/12 closure slices + 2026-07-13 audit closure)
 - Partial: 9 — 6.6, 9.1, 9.2, 10.2, 11.2, 12.2, 12.3, 12.6, 12.8
 - Deferred: 4 — 9.3, 12.4, 12.5, 12.7
-- Pending: 1 — 3.2b
-- Ready for pickup: {3.2b}. 6.6/9.x/10.2/11.2/Epic 12 partials are in-progress (PRs open, HITL-gated).
+- Pending: 6 — 3.2b, 13.1, 13.2, 13.3, 13.4, 13.5
+- Ready for pickup: {3.2b, 13.1, 13.2, 13.3, 13.4} (13.1-13.4 are parallelizable; 13.5 depends on all four). 6.6/9.x/10.2/11.2/Epic 12 partials are in-progress (PRs open, HITL-gated).
 - Workspace checks recorded for this snapshot: 638 passing, 0 failing, 13 ignored (hardware/UAC/capture smokes). `cargo fmt --all -- --check` and `git diff --check` pass; clippy, deny, Windows-target, release-build, and manual Win11 checks remain separate evidence gates.
 - Blocked on HITL: 0
 - Long-term blocked: 0

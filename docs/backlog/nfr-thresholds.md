@@ -313,3 +313,9 @@ Cross-references: PRD §6 (NFR statements), architecture.md §7 (testing strateg
 - **Measurement:** `cargo llvm-cov --workspace --lcov --output-path coverage/lcov.info` (per T-43; NOT `cargo tarpaulin` which is Linux-only) on the PR vs `main`; diff per crate.
 - **Tolerance:** ±0.0% (zero regression). An intentional decrease (e.g. removing dead code) requires a PR-description justification + HITL sign-off per G19.
 - **Target:** `sidebar-domain` and `sidebar-sensor` ≥ 80% line coverage; adapter/platform crates ≥ 60% (Win32 FFI is hard to cover fully); `sidebar-app` ≥ 40% (GUI).
+
+### T-46 — Reference-machine evidence bundle (Audit Pass 5)
+- **Value:** The v1.0.0 tag MUST be backed by a single `verify/reference-machine.ps1` run on the designated T-31 reference machine (LAPTOP-PLN56DNU), producing an evidence bundle under `verify/evidence/<date>/`.
+- **Bundle contents (mandatory):** `workspace-tests.txt` (full L0-L3 matrix output), `ignored-suite.txt` (all 13 `#[ignore]`'d integration tests — real HW / UAC / desktop), `poll_cost.txt` (NFR-1 criterion bench + calibration constant), `scriptable-smoke.txt` (the 6 automatable smoke items), `sha256.txt` (release exe SHA-256), `manual-smoke.md` (the 12 human-walked items with PASS/FAIL per row).
+- **Exit convention:** `0` on full PASS (all automated stages green + all manual items PASS); `1` on any failure. The script MUST NOT exit 0 if any automated stage failed, even if the manual items were not yet walked.
+- **Cited by:** Story 13.5, guardrails.md G28.

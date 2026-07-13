@@ -114,7 +114,8 @@ Total critical-path length: 47 stories (parallelizable bursts reduce wall-clock)
 - `cargo test --workspace --tests` (L1 integration) — 60s budget, Windows-only.
 - `cargo test --test ui_snapshots` (L2 UI) — 30s budget.
 - `cargo bench --bench poll_cost` + `nfr_cold_start` + `nfr_rss` (L3 bench) — 600s budget.
-- `verify/smoke-runner.ps1` (L4 scriptable smoke) — manual + release gate.
+- `verify/smoke-checklist.ps1` (L4 scriptable smoke) — manual + release gate.
+- `verify/reference-machine.ps1` (L4 full reference-machine evidence, Story 13.5/T-46) — runs the full L0-L3 matrix + all 13 `#[ignore]`'d integration tests + NFR-1 bench + scriptable smoke + 12 manual items on the designated T-31 reference machine. Produces `verify/evidence/<date>/` bundle. Mandatory for the v1.0.0 tag.
 
 ### 6.2 — Coverage tracking
 - `cargo llvm-cov --workspace --lcov --output-path coverage/lcov.info` on every PR. (NOT `cargo tarpaulin` — Linux-only; see T-43.)

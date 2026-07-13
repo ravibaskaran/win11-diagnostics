@@ -297,3 +297,16 @@ The orchestrator enforces these via PR labels: each HITL action gets a `requires
 - The swarm MUST update `PROGRESS.md` on merge (automated via Story 11.4's CI job).
 - If a story's `Depends-On` cannot be satisfied (e.g. a dependency is `blocked-on-hitl` for >72h), the swarm MUST surface the blockage to the orchestrator — it MUST NOT skip ahead.
 - "Correctness and completeness" (the user's pass-4 mandate) means: every story's Wiring block is the single source of truth for its place in the sequence. Drift between the Wiring blocks and the prose narrative is a BLOCKING review issue.
+
+## G28 — Non-Technical-User Hardening (Audit Pass 5)
+
+v1.0.0+ targets users with little technical knowledge. The following
+hardening invariants are mandatory for the v1.0.0 tag (Stories 13.1–13.5):
+
+- **Atomic config writes.** `persist_config` MUST write via `<file>.tmp` + `std::fs::rename` (atomic on NTFS same-volume). A crash mid-write MUST NOT truncate `config.toml`. (Story 13.1.)
+- **Corrupt-file quarantine.** When `load_config` or `schema::init` detects a corrupt file, the app MUST back it up to `<name>.corrupt-<timestamp>` before recovering to defaults / a fresh file. Forensic evidence MUST NOT be silently destroyed. (Stories 13.1, 13.2.)
+- **Single-instance guard.** The app MUST detect an already-running instance via a Win32 named mutex (`Global\sidebar-app-single-instance`) and exit(0) on the second launch. Two instances writing the same `config.toml` + `bandwidth.db` is FORBIDDEN. (Story 13.3.)
+- **Plain-language settings.** Every settings control MUST carry an `on_hover_text(...)` explanation comprehensible to a user who does not know what "binary" or "poll interval" means. Jargon labels MUST be renamed. (Story 13.4.)
+- **About dialog.** The app MUST expose an About dialog (ⓘ button) showing version, LHM credit + license link, privacy-policy link, GitHub issues link, and the LHM one-time-click Full-mode instructions. (Story 13.4.)
+- **Reference-machine evidence bundle.** The v1.0.0 tag MUST be backed by a `verify/reference-machine.ps1` run on the designated T-31 reference machine, producing a single evidence bundle under `verify/evidence/<date>/`. (Story 13.5, T-46.)
+- **LHM one-time-click documentation.** The bundled LHM v0.9.6 binary does NOT auto-start its HTTP server from any config key. This limitation MUST be documented in the first-run wizard + About dialog + `verify/smoke-checklist.md`. A v1.1 story may revisit the LHM upgrade; v1.0.0 ships with the documented one-time click.

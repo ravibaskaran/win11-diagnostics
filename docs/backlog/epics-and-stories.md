@@ -1380,6 +1380,134 @@ Epic 10 (Verify)
 
 ---
 
+## EPIC 13 — Hardening for Non-Technical Users (Audit Pass 5, 2026-07-13)
+- **System Objective:** Close the gap between "the workspace tests pass" and "a non-technical user can run this without calling support." Five focused hardening stories that make the app self-healing on corrupt config/DB, prevent double-instance clobbering, explain every settings control in plain language, and bottle the reference-machine evidence into a single command.
+- **Status:** Planned 2026-07-13. All five stories are code-fixable with no external dependencies beyond the reference machine for the final runner (Story 13.5).
+- **Dependency convention:** Epic 13 is post-Epic 12. Stories 13.1–13.4 are independent of each other and may run in parallel (single-trunk PRs per G4). Story 13.5 depends on 13.1–13.4 landing first so the runner can exercise the hardened paths. No story in Epic 13 blocks the external SignPath/release gates (Epic 9), but Epic 13 SHOULD merge before the v1.0.0 tag so the hardened build is what gets signed.
+- **LHM one-time-click policy (Path A, approved 2026-07-13):** The bundled LHM v0.9.6 binary does not auto-start its HTTP server from any config key. Rather than upgrade LHM (Path B, rejected — re-pin/re-hash/re-test risk), Epic 13 documents the one-time `View → Web Server` click in the first-run wizard (Story 13.4's About dialog) and in `verify/smoke-checklist.md` (Story 13.5). This is the only non-idiot-proof step in v1.0.0; a v1.1 story may revisit the LHM upgrade.
+
+### STORY 13.1: Atomic config writes + corrupt-file backup
+- **User Story:** As a non-technical user, I want my settings to survive a crash or a corrupted config file, so I don't silently lose my preferences.
+- **Technical Context:** `crates/sidebar-app/src/main.rs:898-917` (`load_config`) + `crates/sidebar-app/src/gui/mod.rs:549-571` (`persist_config`). guardrails.md G15 (non-fatal recovery) + G28 (non-technical-user hardening). `persist_config` currently uses bare `std::fs::write` (non-atomic — a crash mid-write truncates the file). `load_config` returns `Config::default()` on malformed TOML but leaves the corrupt file on disk to be overwritten on the next settings edit (destroying forensic evidence). Fixture F15 (corrupt-file quarantine + atomic-write harness).
+- **Wiring:**
+  - **Layer:** unit + integration
+  - **Depends-On:** [1.5, 8.5]
+  - **Blocks:** [13.5]
+  - **Next:** 13.2
+  - **Parallel-With:** [13.2, 13.3, 13.4]
+  - **DoD:** `persist_config` writes via `config.toml.tmp` + `std::fs::rename` (atomic on NTFS same-volume); `load_config` copies a malformed file to `config.toml.corrupt-<unix_timestamp>` before returning defaults; three tests (malformed recovery, backup-with-timestamp, atomic-write) pass; full workspace regression green.
+- **Gentle-AI SDD Phase Checklist:**
+  1. [ ] **Plan:** Confirm NTFS same-volume rename is atomic (it is, per Microsoft docs). Decide the timestamp format (`unix_timestamp` — sortable, no colons in filenames).
+  2. [ ] **Implement:** Extract an `atomic_write(path, contents)` helper in `gui/mod.rs` (write-to-tmp + rename, returns `Result`). Extract `backup_corrupt(path)` in `main.rs` (copy to `<path>.corrupt-<ts>`, best-effort, logs on failure). Wire both into `persist_config` and `load_config`.
+  3. [ ] **Validate:** `cargo test -p sidebar-app --lib` green; `cargo test --workspace --all-targets` green.
+- **TDD Contract & Test Cases:**
+  - **Unit Test Cases (Happy Path):**
+    1. `load_config_recovers_from_malformed_toml` — write `b"not = a = valid = toml"` to a TempDir config path; `load_config` returns `Config::default()` and does not panic. Fixture F15.
+    2. `load_config_backs_up_corrupt_file_with_timestamp` — after the above, the TempDir contains a file matching `config.toml.corrupt-*` whose content is the original garbage. Fixture F15.
+    3. `persist_config_writes_atomically_via_temp_rename` — call `persist_config`; assert `config.toml` exists and no `config.toml.tmp` remains (rename succeeded). Fixture F15.
+  - **Boundary & Edge Case Test Cases (cite G15, G28, F15):**
+    1. Config dir is read-only — `persist_config` logs `warn!` and does not panic (G15 non-fatal); no `.tmp` left behind.
+    2. Corrupt-file backup fails (disk full) — `load_config` still returns defaults; logs the backup failure at `warn!` but does not panic (G15).
+    3. Concurrent writes from two threads — atomic rename guarantees the final file is one of the two writes, never a mix (assert via two threads + read-back).
+- **Explicit Swarm Guardrails:** No new dependency (use `std::fs`). No `unsafe` (pure Rust). Cite G15 (non-fatal recovery) + G28 (hardening) in every `warn!` log line.
+
+### STORY 13.2: SQLite corruption quarantine + auto-recreate
+- **User Story:** As a non-technical user, I want bandwidth tracking to recover automatically if the database file gets corrupted, so I don't lose the feature forever with no way to fix it.
+- **Technical Context:** `crates/sidebar-app/src/main.rs:549-597` (`run_accountant_on_thread`) + `crates/sidebar-persistence/src/schema.rs:40-104` (`init`) + `crates/sidebar-persistence/src/lib.rs`. guardrails.md G15 + G21 (SQLite discipline) + G28. The existing test `init_surfaces_error_on_corrupt_file` (`schema.rs:189-213`) locks in "init MUST NOT overwrite a corrupt file" — that contract stays. The gap: `run_accountant_on_thread` gives up entirely on `schema::init` failure, permanently disabling bandwidth tracking. Fixture F15.
+- **Wiring:**
+  - **Layer:** unit + integration
+  - **Depends-On:** [4.1, 4.2]
+  - **Blocks:** [13.5]
+  - **Next:** 13.3
+  - **Parallel-With:** [13.1, 13.3, 13.4]
+  - **DoD:** New `pub fn quarantine_and_reopen(db_path: &Path) -> Result<Connection>` in `sidebar-persistence` renames `bandwidth.db` → `bandwidth.db.corrupt-<ts>`, opens a fresh connection, calls `schema::init`, returns the conn. `run_accountant_on_thread` calls it on `schema::init` failure instead of giving up. Three tests pass; full regression green.
+- **Gentle-AI SDD Phase Checklist:**
+  1. [ ] **Plan:** Confirm `schema::init`'s "must not overwrite corrupt" contract is preserved (quarantine is a separate function, not a weakening of `init`). Decide the quarantine filename format (`bandwidth.db.corrupt-<unix_timestamp>`).
+  2. [ ] **Implement:** Add `quarantine_and_reopen` to `sidebar-persistence/src/lib.rs` (or a new `quarantine.rs` module). Wire it into `run_accountant_on_thread`'s error path. Log the quarantine path at `warn!`.
+  3. [ ] **Validate:** `cargo test -p sidebar-persistence` green; `cargo test -p sidebar-app --lib` green.
+- **TDD Contract & Test Cases:**
+  - **Unit Test Cases (Happy Path):**
+    1. `quarantine_renames_corrupt_file_with_timestamp` — write garbage to a TempDir `bandwidth.db`; call `quarantine_and_reopen`; assert the original garbage file is now at `bandwidth.db.corrupt-*`. Fixture F15.
+    2. `quarantine_reopens_fresh_connection_with_clean_schema` — after quarantine, the returned `Connection` passes `schema::init` (no error) and the schema tables exist. Fixture F15.
+  - **Boundary & Edge Case Test Cases (cite G15, G21, G28, F15):**
+    1. `quarantine_preserves_corrupt_file_for_forensics` — the renamed-aside file's bytes are byte-identical to the original garbage (no mutation).
+    2. Quarantine rename fails (e.g. target path is read-only) — `quarantine_and_reopen` returns `Err(Error::Io(...))`; `run_accountant_on_thread` logs + disables the accountant (G15 — does not crash the host).
+    3. `run_accountant_on_thread` recovers after quarantine — the accountant runs against the fresh DB and persists a sample reading without error.
+- **Explicit Swarm Guardrails:** No new dependency. No `unsafe`. Do NOT weaken `schema::init`'s existing contract. Cite G15 + G21 + G28 in log lines.
+
+### STORY 13.3: Single-instance named-mutex guard
+- **User Story:** As a non-technical user who double-clicks the exe, I want the second click to do nothing (not launch a second instance that clobbers my settings and registers a second AppBar).
+- **Technical Context:** `crates/sidebar-platform/src/lib.rs` (new `single_instance` module) + `crates/sidebar-app/src/main.rs:93-94` (top of `main`, after `init_tracing`). guardrails.md G2 (unsafe policy) + G10 (ownership — analog) + G28. Win32 `CreateMutexW` + `GetLastError() == ERROR_ALREADY_EXISTS`. The `windows` crate already has `Win32_System_Threading` + `Win32_Foundation` + `Win32_Security` features enabled (`sidebar-platform/Cargo.toml:16-28`). Fixture F11 (unsafe FFI test).
+- **Wiring:**
+  - **Layer:** unit + integration (the integration test spawns a child process)
+  - **Depends-On:** [0.1, 6.4]
+  - **Blocks:** [13.5]
+  - **Next:** 13.4
+  - **Parallel-With:** [13.1, 13.2, 13.4]
+  - **DoD:** New `sidebar_platform::single_instance::claim_or_exit()` calls `CreateMutexW` with `Global\sidebar-app-single-instance`; if `GetLastError` returns `ERROR_ALREADY_EXISTS`, logs + `std::process::exit(0)`. `main.rs` calls it right after `init_tracing()`. Two tests pass (constant pin + child-process second-launch exits 0). Full regression green.
+- **Gentle-AI SDD Phase Checklist:**
+  1. [ ] **Plan:** Confirm `Global\` prefix (cross-session) vs `Local\` (per-session) — use `Global\` so a second user session also gets the guard. Confirm the mutex handle must outlive `claim_or_exit` (leak it via `Box::leak` — lives until process exit, which is the intent).
+  2. [ ] **Implement:** `crates/sidebar-platform/src/single_instance.rs` — `claim_or_exit() -> !` with `CreateMutexW` + `GetLastError` + `std::process::exit(0)`. Add `pub mod single_instance;` to `lib.rs`. Wire into `main.rs` after `init_tracing()`.
+  3. [ ] **Validate:** `cargo test -p sidebar-platform` green; `cargo test -p sidebar-app --lib` green; `actionlint` clean.
+- **TDD Contract & Test Cases:**
+  - **Unit Test Cases (Happy Path):**
+    1. `mutex_name_is_global_sidebar_app_single_instance` — pin the constant string (compile-time guard against accidental rename). Fixture F11.
+    2. `claim_succeeds_on_first_call` — spawn the binary as a child process (mirroring `e2e_launch_smoke.rs`); assert it exits 0 within 5s (did not trip the mutex on first launch).
+  - **Boundary & Edge Case Test Cases (cite G2, G10, G28, F11):**
+    1. Second launch detects the first — spawn two child processes back-to-back; the second exits 0 within 2s (tripped the mutex) while the first keeps running. (May require a `--hold-open` test flag to keep the first alive; document if so.)
+    2. Mutex creation fails (extremely unlikely — kernel out of handles) — `claim_or_exit` logs `error!` and falls through (does not block the launch — better to risk a double-instance than to block the user from the app entirely). Document this tradeoff in the SAFETY comment.
+- **Explicit Swarm Guardrails:** HITL on the `unsafe` block per G2/G19 (reviewer confirms the SAFETY invariant holds on Win11 24H2 + 25H2). Every `unsafe` block has a `// SAFETY:` comment (workspace lint `clippy::undocumented_unsafe_blocks = "deny"`). No new dependency.
+
+### STORY 13.4: Settings tooltips + jargon cleanup + About dialog
+- **User Story:** As a non-technical user, I want every setting explained in plain language and a way to see what this app is + how to use Full mode, so I don't have to Google "GB vs GiB" or wonder how to get temperature readings.
+- **Technical Context:** `crates/sidebar-app/src/gui/settings_panel.rs:66-192` (8 sections, only 1 has a tooltip) + `crates/sidebar-app/src/gui/mod.rs:1282-1298` (header gear). guardrails.md G28 + nfr-thresholds.md T-37 (first-run wizard). New `about.rs` module mirroring `first_run.rs:99-197`. Version string via `env!("CARGO_PKG_VERSION")` (already used at `main.rs:393`).
+- **Wiring:**
+  - **Layer:** ui (kittest) + unit
+  - **Depends-On:** [8.5, 8.6]
+  - **Blocks:** [13.5]
+  - **Next:** 13.5
+  - **Parallel-With:** [13.1, 13.2, 13.3]
+  - **DoD:** Every settings section has an `on_hover_text(...)` with a plain-language explanation. Three jargon labels renamed ("Show raw values (Hz/bytes)" → "Show technical units"; "Byte base" → "Size units"; "Poll interval (seconds)" → "Refresh rate (seconds)"). New About dialog (ⓘ button next to the gear) shows version + LHM credit + privacy-policy link + GitHub issues link + the LHM one-time-click instructions. Kittest assertions for every tooltip + the About dialog content.
+- **Gentle-AI SDD Phase Checklist:**
+  1. [ ] **Plan:** Draft the 8 tooltip strings + 3 renamed labels + About dialog content. Review for plain-language register (target: a user who doesn't know what "binary" means).
+  2. [ ] **Implement:** Add tooltip constants to `settings_panel.rs` (mirror `NO_RESPLIT_TOOLTIP` at line 52). Add `on_hover_text` calls. New `gui/about.rs` with `render_about(ui, open)`. Wire `about_open` into `SidebarView` + the header.
+  3. [ ] **Validate:** `cargo test -p sidebar-app --lib` green; kittest assertions for each tooltip + About dialog pass.
+- **TDD Contract & Test Cases:**
+  - **Unit Test Cases (Happy Path):**
+    1. `settings_panel_renders_tooltip_for_every_section` — kittest harness; assert each section's tooltip text is queryable. Fixture F8.
+    2. `settings_panel_renamed_jargon_labels` — assert "Show technical units", "Size units", "Refresh rate" are present; "raw values", "Byte base", "Poll interval" are NOT (the old jargon is gone). Fixture F8.
+    3. `about_dialog_renders_version_lhm_credit_privacy_link` — open the About dialog; assert `env!("CARGO_PKG_VERSION")`, "LibreHardwareMonitor", "Privacy Policy", "GitHub" appear. Fixture F8.
+  - **Boundary & Edge Case Test Cases (cite G28, T-37, F8):**
+    1. About dialog closes when the user clicks the close button (kittest click + assert `open == false`).
+    2. About dialog Full-mode instructions contain the literal phrase "View → Web Server" (the Path A one-time-click documentation).
+    3. Tooltips render on hover (kittest `on_hover_text` registers the text in the access tree).
+- **Explicit Swarm Guardrails:** No new dependency. No `unsafe`. HITL on the tooltip wording (G19 — first-impression UX review, analog to Story 8.10). Cite G28 + T-37 in doc comments.
+
+### STORY 13.5: Reference-machine runner script + LHM one-time-click docs
+- **User Story:** As the release engineer, I want a single command that runs every evidence gate on the designated reference machine (T-31) and produces a bundle I can attach to the release, so the v1.0.0 tag is backed by reproducible proof rather than ad-hoc notes.
+- **Technical Context:** New `verify/reference-machine.ps1` + new `verify/evidence/` directory. nfr-thresholds.md T-46 (new). guardrails.md G25 (cumulative regression) + G28. Mirrors `verify/smoke-checklist.ps1` (the `Invoke-SmokeItem` pattern) + `scripts/env.ps1` (the `$PSScriptRoot` root derivation). The script runs: pre-flight → build → full L0-L3 matrix → all 13 `#[ignore]`'d tests → NFR-1 bench → scriptable smoke → exe SHA-256 → 12 manual items (prompted) → verdict + evidence bundle under `verify/evidence/<date>/`.
+- **Wiring:**
+  - **Layer:** smoke (L4) + integration (the structural test)
+  - **Depends-On:** [13.1, 13.2, 13.3, 13.4, 10.2]
+  - **Blocks:** — (terminal for Epic 13)
+  - **Next:** — (terminal — Epic 13 closure; the next gate is the external SignPath submission, Epic 9)
+  - **Parallel-With:** —
+  - **DoD:** `verify/reference-machine.ps1` exists, is actionlint-clean (well, pwsh-syntax-clean), runs end-to-end on the reference machine producing `verify/evidence/<date>/{workspace-tests.txt, ignored-suite.txt, poll_cost.txt, scriptable-smoke.txt, sha256.txt, manual-smoke.md}`, and exits 0 on full PASS / 1 on any failure. A structural Rust test asserts the script exists + contains the required sections.
+- **Gentle-AI SDD Phase Checklist:**
+  1. [ ] **Plan:** Inventory the 13 `#[ignore]`'d tests (already done in the audit). Decide the manual-item prompt UX (Read-Host per item, write PASS/FAIL to `manual-smoke.md`).
+  2. [ ] **Implement:** `verify/reference-machine.ps1` + `verify/evidence/.gitkeep`. Structural test in `crates/sidebar-app/tests/reference_machine_runner.rs`.
+  3. [ ] **Validate:** Dry-run the script's pre-flight + build + test stages on the reference machine (skip the manual-item prompts). Structural test passes.
+- **TDD Contract & Test Cases:**
+  - **Unit Test Cases (Happy Path):**
+    1. `reference_machine_script_exists_and_is_well_formed` — assert `verify/reference-machine.ps1` exists, contains `#Requires -Version 7.0`, contains section markers for each of the 10 stages, and uses the `exit 0`/`exit 1` convention. Fixture F14.
+    2. `evidence_directory_exists_with_gitkeep` — assert `verify/evidence/.gitkeep` exists (so the directory is tracked by git).
+  - **Boundary & Edge Case Test Cases (cite T-46, G25, G28, F14):**
+    1. Script pre-flight fails on missing Rust → exits 1 with a clear message (assert via a mocked `cargo --version` failure path, or by inspecting the script's pre-flight block).
+    2. Script exits non-zero if any automated stage fails (assert by inspecting the `$ErrorActionPreference = 'Stop'` + `throw` convention).
+- **Explicit Swarm Guardrails:** No new Rust dependency. HITL on the manual-item wording (the 12 prompts are the human-walker UX). Cite T-46 + G25 + G28 in the script header.
+
+---
+
 ## APPENDIX: Story Wiring Matrix (Audit Pass 4)
 
 Every story's `Wiring:` block in a single lookup table. The swarm consults this appendix to compute the ready set and the critical-path next pickup. See `regression-harness.md` §3 for the schema and §4 for the critical path.
@@ -1454,6 +1582,11 @@ Every story's `Wiring:` block in a single lookup table. The swarm consults this 
 | 12.6 | ui + unit | [1.2, 8.8, 11.4] | — | 12.7 | — |
 | 12.7 | ui + unit | [1.3, 12.1] | — | 12.8 | (optional/deferred) |
 | 12.8 | integration + smoke | [6.4, 7.2, 7.3, 7.4, 7.5, 8.2, 8.4, 11.4] | — (closure gate) | — | — |
+| 13.1 | unit + integration | [1.5, 8.5] | [13.5] | 13.2 | [13.2, 13.3, 13.4] |
+| 13.2 | unit + integration | [4.1, 4.2] | [13.5] | 13.3 | [13.1, 13.3, 13.4] |
+| 13.3 | unit + integration | [0.1, 6.4] | [13.5] | 13.4 | [13.1, 13.2, 13.4] |
+| 13.4 | ui + unit | [8.5, 8.6] | [13.5] | 13.5 | [13.1, 13.2, 13.3] |
+| 13.5 | smoke + integration | [13.1, 13.2, 13.3, 13.4, 10.2] | — (terminal) | — | — |
 
 ### Reading the matrix
 
@@ -1478,11 +1611,12 @@ Every story's `Wiring:` block in a single lookup table. The swarm consults this 
   → 9.1 → 9.2 → 9.3
   → 10.1 → 10.2
   → 11.4 → 12.1 → 12.2 → 12.3 → 12.4 → 12.5 → 12.6 → 12.7 → 12.8 (post-release parity/closure; optional/deferred rows may be skipped)
+  → 13.1 → 13.2 → 13.3 → 13.4 → 13.5 (hardening for non-technical users; SHOULD merge before v1.0.0 tag)
 ```
 
 Length: 48 stories on the current delivery critical path (out of 60 current
 rows, including INT), plus the 8-story post-release parity/closure extension
-(68 total). The other current
++ the 5-story Epic 13 hardening extension (73 total). The other current
 stories are parallel-burst-eligible per §5 of `regression-harness.md`.
 
 ### Parallel-burst optimization (multi-agent swarm, max 3 concurrent per G17)
@@ -1508,9 +1642,9 @@ A story is `merged` iff ALL of:
 
 ---
 
-**END OF EPICS & STORIES (AUDIT PASS 4 + current-state parity extension).** 13
-Epics, 68 Stories (60 current delivery rows including INT + 8 Epic 12
-parity/closure). Companion:
-`README.md`, `guardrails.md` (G1–G27), `nfr-thresholds.md` (T-1–T-45),
-`tdd-fixtures.md` (F1–F14), `regression-harness.md`, `PROGRESS.md`,
+**END OF EPICS & STORIES (AUDIT PASS 4 + current-state parity extension + Epic 13 hardening).** 14
+Epics, 73 Stories (60 current delivery rows including INT + 8 Epic 12
+parity/closure + 5 Epic 13 hardening). Companion:
+`README.md`, `guardrails.md` (G1–G28), `nfr-thresholds.md` (T-1–T-46),
+`tdd-fixtures.md` (F1–F15), `regression-harness.md`, `PROGRESS.md`,
 `docs/dev-env.md`. Source: `docs/PRD.md`, `docs/architecture.md`,
