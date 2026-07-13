@@ -8,9 +8,9 @@
 #   1. Build: cargo build --release --target x86_64-pc-windows-msvc
 #   2. Hash assertion: compute sidebar-app.exe SHA-256, warn if it doesn't
 #      match the recorded baseline (G18 warn-not-fail).
-#   3. Sign: SignPath API call (sidebar project, release policy). Falls back
-#      to unsigned on rejection/downtime.
-#   4. Package: ZIP signed-sidebar.exe + ohm.exe + config.toml.example.
+#   3. Sign: SignPath API call (sidebar project, release policy). A failed
+#      signing request produces an explicitly unsigned draft for HITL review.
+#   4. Package: ZIP sidebar.exe + the pinned LHM sidecar + its license.
 #   5. Publish: GitHub Release (draft). winget PR submission is a manual
 #      post-release step (rate-limited external service per Story 9.2 HITL).
 #
@@ -27,6 +27,7 @@ on:
         type: string
 
 permissions:
+  actions: read
   contents: write
 
 jobs:
@@ -34,6 +35,8 @@ jobs:
     name: "Build (release, x86_64-pc-windows-msvc)"
     runs-on: windows-latest
     timeout-minutes: 30
+    outputs:
+      unsigned_artifact_id: ${{ steps.upload_unsigned.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -56,7 +59,8 @@ jobs:
           ACTUAL=$(sha256sum staging/sidebar.exe | awk '{print $1}')
           echo "sidebar.exe SHA-256: $ACTUAL"
           echo "::notice::sidebar.exe SHA-256 is $ACTUAL"
-      - uses: actions/upload-artifact@v4
+      - id: upload_unsigned
+        uses: actions/upload-artifact@v4
         with:
           name: unsigned-build
           path: staging/
@@ -66,6 +70,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: build
+    outputs:
+      unsigned_release: ${{ steps.prepare_payload.outputs.unsigned_release }}
     # The release-approver environment gates the actual signing + publish.
     environment: release-approver
     steps:
@@ -76,23 +82,39 @@ jobs:
           path: staging/
       - name: Sign sidebar.exe via SignPath
         id: sign
-        uses: signpath/github-action-signer@v1
+        continue-on-error: true
+        uses: signpath/github-action-submit-signing-request@v2
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
-          project-slug: sidebar
-          signing-policy-slug: release
-          input-artifact-path: staging/sidebar.exe
-          output-artifact-path: staging/signed-sidebar.exe
-      - name: Handle SignPath rejection (G19 fallback)
-        if: failure()
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG }}
+          github-artifact-id: ${{ needs.build.outputs.unsigned_artifact_id }}
+          wait-for-completion: true
+          output-artifact-directory: staging/signed
+      - name: Prepare release payload
+        id: prepare_payload
+        shell: bash
         run: |
-          echo "::warning::SignPath signing failed; falling back to unsigned GitHub Release with prominent warning."
-          cp staging/sidebar.exe staging/signed-sidebar.exe
-          echo "UNSIGNED=1" >> "$GITHUB_ENV"
+          if [ "${{ steps.sign.outcome }}" = "success" ]; then
+            echo "SignPath returned a signed executable."
+            mkdir -p staging/signed
+            cp staging/LibreHardwareMonitor.exe staging/signed/
+            cp staging/LibreHardwareMonitor.LICENSE.txt staging/signed/
+            echo "unsigned_release=0" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::SignPath signing failed; creating an explicitly unsigned draft for HITL review."
+            rm -rf staging/signed
+            mkdir -p staging/signed
+            cp staging/sidebar.exe staging/signed/sidebar.exe
+            cp staging/LibreHardwareMonitor.exe staging/signed/
+            cp staging/LibreHardwareMonitor.LICENSE.txt staging/signed/
+            echo "unsigned_release=1" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: signed-build
-          path: staging/
+          path: staging/signed/
 
   publish:
     name: "Publish (GitHub Release)"
@@ -120,10 +142,8 @@ jobs:
           body: |
             Release v${{ inputs.version }}
 
-            **Status**: ${{ env.UNSIGNED == '1' && 'UNSIGNED (SignPath fallback)' || 'Signed via SignPath Foundation' }}
+            **Status**: ${{ needs.sign.outputs.unsigned_release == '1' && 'UNSIGNED (SignPath fallback; draft only)' || 'Signed via SignPath Foundation' }}
 
             See [signpath/code-signing-policy.md](signpath/code-signing-policy.md) for the trust policy.
           draft: true  # HITL review before public visibility
           prerelease: true
-        env:
-          UNSIGNED: ${{ env.UNSIGNED }}

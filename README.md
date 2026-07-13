@@ -27,8 +27,10 @@ rebuilds the same user experience in Rust for three reasons:
    long-running C# apps that depend on Win32 interop and native libraries.
 
 2. **Smaller, faster binaries.** Rust compiles to a single static binary
-   with no runtime dependency on .NET, the CLR, or a JIT. The release build
-   is ~11 MB with LTO + symbol stripping. Cold-start is under 20ms.
+   with no runtime dependency on .NET, the CLR, or a JIT. The current local
+   x64 release artifact is roughly 11.6 MB with LTO + symbol stripping. The
+   application targets a sub-500 ms first frame; actual startup varies by
+   Windows machine and disk state.
 
 3. **Predictable resource usage.** Rust's zero-cost abstractions and lack of
    a garbage collector mean RSS stays flat. There's no GC pause, no JIT warmup,
@@ -73,9 +75,10 @@ no administrator privileges. You see:
 - **Network** — per-NIC RX/TX throughput + **monthly bandwidth tracking** (via `GetIfTable2`)
 - **Per-process** — top-N CPU/RAM consumers
 
-Basic mode is designed to be **lightweight**: under 0.5% CPU per sensor source,
-under 200 MiB RSS, under 2ms cold-start. These are measured and enforced via
-automated CI gates.
+Basic mode is designed to be **lightweight**: no more than 0.5% average CPU
+per sensor source, with memory bounded toward the approximately 80 MiB RSS
+target. These limits are checked by automated tests and the Win11 smoke
+checklist; results vary with hardware and enabled providers.
 
 ### Full mode (opt-in, requires UAC)
 

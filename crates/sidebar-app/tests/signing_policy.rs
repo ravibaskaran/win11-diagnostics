@@ -92,7 +92,39 @@ fn release_yml_exists_with_build_sign_publish_stages() {
         "release.yml must reference the SIGNPATH_API_TOKEN secret"
     );
     assert!(
+        normalized.contains("actions: read"),
+        "SignPath must be allowed to download the uploaded GitHub artifact"
+    );
+    assert!(
+        normalized.contains("signpath/github-action-submit-signing-request@v2"),
+        "release.yml must use the current SignPath GitHub signing-request action"
+    );
+    for input in [
+        "organization-id:",
+        "project-slug:",
+        "signing-policy-slug:",
+        "github-artifact-id:",
+        "wait-for-completion: true",
+    ] {
+        assert!(
+            normalized.contains(input),
+            "release.yml must provide the SignPath input {input}"
+        );
+    }
+    assert!(
         normalized.contains("draft: true"),
         "release.yml must publish as draft for HITL review"
+    );
+    assert!(
+        normalized.contains("continue-on-error: true"),
+        "SignPath failure must reach the explicit unsigned-draft fallback"
+    );
+    assert!(
+        normalized.contains("steps.prepare_payload.outputs.unsigned_release"),
+        "the signing job must export unsigned status to the publish job"
+    );
+    assert!(
+        normalized.contains("staging/LibreHardwareMonitor.exe staging/signed/"),
+        "both signed and unsigned payloads must include the LHM sidecar"
     );
 }

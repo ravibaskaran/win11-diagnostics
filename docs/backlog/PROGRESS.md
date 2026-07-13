@@ -6,6 +6,24 @@ status for the current worktree.
 
 The swarm reads this file at task-startup to identify the ready set (stories whose `Depends-On` entries are all `merged`). See `regression-harness.md` §6.4 for the schema and §7 for the swarm loop.
 
+## Audit refresh (2026-07-13)
+
+The historical story rows below retain their original merge evidence. This
+refresh is the current worktree truth after the Win11 audit:
+
+- Full workspace matrix: **642 passed, 0 failed, 13 ignored**; all-features
+  matrix also passes. `cargo fmt`, workspace clippy with `-D warnings`, the
+  Windows MSVC target check, `cargo deny`, and `actionlint` pass.
+- Scriptable smoke checklist passes, including Basic cold-start, SQLite RSS,
+  bandwidth persistence, Basic RSS, and the 60-second zero-egress assertion.
+- Production GUI now persists per-metric alert acknowledgement/snooze state
+  with hysteresis, bounds the state map to alertable temperature metrics, and
+  makes the gear settings toggle functional. Release fallback status and LHM
+  payload packaging are explicit and job-output based.
+- Remaining acceptance gates are external: SignPath provisioning, physical
+  hotkey/multi-monitor/OBS/UAC smoke, LHM Web Server startup behavior, and the
+  optional/deferred 3.2b/9.3/12.4/12.5/12.7 feature decisions.
+
 ## Status values
 - `pending` — not started; `Depends-On` not yet satisfied.
 - `ready` — `Depends-On` all merged; eligible for swarm pickup.

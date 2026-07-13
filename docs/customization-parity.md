@@ -30,9 +30,9 @@ implementation of deferred items lands post-v1.
 | Capture-cloak (hide from OBS) | IN | DisplayConfig.hide_from_capture |
 | Threshold config (warn/crit) | IN | ThresholdConfig |
 | Metric enable/reorder | IN | MetricsConfig.order |
-| Per-metric alert ack/snooze | IN (12.6) | AlertAck enum + displayed_state |
+| Per-metric alert ack/snooze | IN (12.6) | AlertAck enum + hysteresis-preserving GUI actions |
 | Clock/date header | IN (12.1) | format_clock, header render |
-| Per-metric history graph | CORE (12.2) | MetricHistory map; GUI activation follow-up |
+| Per-metric history graph | IN (12.2) | MetricHistory map; poller push + per-row sparkline render |
 | Drag-reposition | CORE (12.3) | compute_new_offset; WM_NCHITTEST follow-up |
 | Battery health | DEFERRED (12.5) | Needs supported Windows source |
 | Adapter name/IP metadata | DEFERRED (12.5) | Display-only alongside LUID |

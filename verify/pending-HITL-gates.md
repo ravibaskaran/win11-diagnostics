@@ -8,6 +8,12 @@ command/submission needed and the story it closes.
 
 Format: `[STORY] gate description — command/submission — blocked-on`.
 
+## Audit refresh (2026-07-13)
+
+The scriptable smoke runner now passes all six automated checks, including the
+60-second zero-egress check. The gates below are therefore limited to the
+remaining human or external-resource evidence; they are not test failures.
+
 ## Story 6.5 — LHM acquisition (PARTIAL)
 
 - **Full network fetch on Windows CI.** The `lhm-hash` CI job runs

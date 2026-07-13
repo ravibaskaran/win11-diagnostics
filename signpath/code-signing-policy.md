@@ -16,7 +16,9 @@ This document is the authoritative policy referenced by:
 ## Trust boundary
 
 - **Host binary (`sidebar-app.exe`)**: MIT-licensed, signed by SignPath
-  Foundation in CI. No self-signing; no unsigned distribution channel.
+  Foundation in CI. No self-signing. If SignPath is unavailable, CI may create
+  an explicitly labelled **draft-only** unsigned artifact for maintainer
+  review; it must not be treated as a signed public release.
 - **Bundled LHM (`LibreHardwareMonitor.exe`)**: MPL-2.0, upstream-signed by
   the LibreHardwareMonitor maintainers. We re-verify the SHA-256 pin
   (`fe216a48...1ba22`) at every CI run. We do NOT re-sign the bundled LHM.
@@ -49,9 +51,11 @@ PR + push to main. A hash mismatch fails the build immediately.
 
 ## Edge cases
 
-- **SignPath rejection / downtime**: Story 9.2's `release.yml` falls back to
-  unsigned GitHub Releases + winget with a prominent "unsigned" warning.
-  Users are NEVER silently given an unsigned binary labeled as signed.
+- **SignPath rejection / downtime**: Story 9.2's `release.yml` keeps the
+  workflow observable by producing an explicitly labelled unsigned **draft**
+  with a prominent warning. Maintainers must not promote that draft or submit
+  it to winget as a signed release. Users are NEVER silently given an unsigned
+  binary labeled as signed.
 - **LHM hash mismatch on release**: CI fails fast. The release tag is NOT
   cut until the hash matches the committed pin.
 - **LHM upstream 404 (retired release)**: `fetch_ohm.ps1` emits an
