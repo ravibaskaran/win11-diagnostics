@@ -1,0 +1,6 @@
+# Story 13.5 — evidence bundles are generated per-run and should NOT be
+# committed (they're attached to the GitHub Release instead). Keep the
+# .gitkeep so the directory itself is tracked.
+*
+!.gitignore
+!.gitkeep
