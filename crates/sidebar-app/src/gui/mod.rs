@@ -1114,16 +1114,11 @@ impl eframe::App for SidebarApp {
         // After the render: mirror the (possibly-mutated) config + view into
         // AppState so background tasks see the new value. Persist config to
         // disk whenever the settings panel is open (cheap enough; debounce
-        // is a refinement). The gear-toggle flips view.settings_open via the
-        // on_change callback contract — but since render_sidebar's gear is a
-        // read-only render of view.settings_open, the actual flip happens
-        // here: if the gear was clicked this frame, we toggle the local
-        // view.settings_open + mirror it.
-        // NOTE: render_sidebar reads view.settings_open + emits on_change on
-        // gear.click(); we don't have a "gear was clicked" signal back, so
-        // the gear-toggle wiring is incomplete in this integration. The
-        // settings panel still opens via the user pressing 'S' or similar
-        // (deferred). For now we mirror the state we have.
+        // is a refinement). render_sidebar_mut holds a mut borrow on
+        // view.settings_open; the gear checkbox flips it in place when
+        // changed() fires, so the value mirrored here already reflects any
+        // gear click that happened this frame. The "Open settings" alert
+        // button also sets view.settings_open = true on click.
         self.state.replace_config(self.config.clone());
         self.state.replace_view(self.view.clone());
         if self.view.settings_open {
