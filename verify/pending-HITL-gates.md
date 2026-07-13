@@ -14,6 +14,16 @@ The scriptable smoke runner now passes all six automated checks, including the
 60-second zero-egress check. The gates below are therefore limited to the
 remaining human or external-resource evidence; they are not test failures.
 
+Additional 2026-07-13 audit closure:
+- The dedicated hotkey thread now receives `WM_QUIT` on shutdown and joins
+  cleanly (Story 6.6 regression). Physical Ctrl+Shift+S toggle smoke is still
+  manual (Windows only fires `WM_HOTKEY` on physical keypress).
+- The first-run wizard window-close path now applies Skip semantics (Story
+  8.10 contract) — closing the wizard no longer re-prompts on next launch.
+- `docs/privacy-policy.md` is published and linked from README, SECURITY, and
+  `signpath/code-signing-policy.md`. SignPath Foundation now requires only the
+  external submission (the privacy-policy prerequisite is satisfied).
+
 ## Story 6.5 — LHM acquisition (PARTIAL)
 
 - **Full network fetch on Windows CI.** The `lhm-hash` CI job runs
@@ -31,7 +41,11 @@ remaining human or external-resource evidence; they are not test failures.
 
 - **SignPath Foundation application.** External trust submission; requires
   OSI license verification (host MIT, bundled LHM MPL-2.0), public repo,
-  MFA approvers. **Blocked-on:** human submission to SignPath.
+  public code-signing policy page, public privacy-policy page, MFA approvers.
+  All prerequisites are now in place: code-signing-policy at
+  `signpath/code-signing-policy.md`, privacy policy at
+  `docs/privacy-policy.md` (linked from README + SECURITY + the codesigning
+  policy). **Blocked-on:** human submission to SignPath.
 - **`signpath/code-signing-policy.md` + README link.** CI-buildable once
   the SignPath project exists.
 

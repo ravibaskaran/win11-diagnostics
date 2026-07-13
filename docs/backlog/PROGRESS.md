@@ -11,15 +11,34 @@ The swarm reads this file at task-startup to identify the ready set (stories who
 The historical story rows below retain their original merge evidence. This
 refresh is the current worktree truth after the Win11 audit:
 
-- Full workspace matrix: **643 passed, 0 failed, 13 ignored**; all-features
-  matrix also passes. `cargo fmt`, workspace clippy with `-D warnings`, the
-  Windows MSVC target check, `cargo deny`, and `actionlint` pass.
+- Full workspace matrix (`cargo test --workspace --all-features --all-targets
+  --target x86_64-pc-windows-msvc`): **638 passed, 0 failed, 13 ignored**.
+  `cargo fmt --all -- --check`, workspace clippy with `-D warnings`, the
+  Windows MSVC `cargo check --locked`, `cargo deny check bans licenses
+  advisories sources`, and `actionlint` on all four workflows pass.
 - Scriptable smoke checklist passes, including Basic cold-start, SQLite RSS,
   bandwidth persistence, Basic RSS, and the 60-second zero-egress assertion.
 - Production GUI now persists per-metric alert acknowledgement/snooze state
   with hysteresis, bounds the state map to alertable temperature metrics, and
   makes the gear settings toggle functional. Release fallback status and LHM
   payload packaging are explicit and job-output based.
+- Hotkey shutdown cleanup is fixed: the dedicated hotkey thread now receives
+  `WM_QUIT` via `PostThreadMessageW` and joins cleanly, instead of being
+  leaked on app exit (regression test
+  `hotkey_thread_wakes_on_wm_quit_and_joins_cleanly`).
+- First-run wizard close-X is wired to Skip semantics per the Story 8.10
+  contract: closing the wizard window no longer re-prompts on every launch
+  (regression test `wizard_active_on_exit_applies_skip_semantics`).
+- **Privacy policy landed** (`docs/privacy-policy.md`, linked from README,
+  SECURITY, and the code-signing policy) — unblocks the SignPath Foundation
+  submission prerequisite for Story 9.1. Asserted by the new structural test
+  `privacy_policy_doc_exists_and_is_linked_from_repo_surfaces`.
+- Release build verified (2026-07-13 12:23 +05:30):
+  `target/x86_64-pc-windows-msvc/release/sidebar-app.exe` — 11,590,656 bytes;
+  SHA-256 `4AF1196C67063F8B64440220C294CD423C00822B821CB0D47A1C8603DE168E0A`.
+  Bundled `LibreHardwareMonitor.exe` SHA-256 matches the pinned
+  `fe216a48...1ba22`. All 11 LHM locale subdirs + the complete managed-DLL
+  runtime are packaged beside the executable.
 - Remaining acceptance gates are external: SignPath provisioning, physical
   hotkey/multi-monitor/OBS/UAC smoke, LHM Web Server startup behavior, and the
   optional/deferred 3.2b/9.3/12.4/12.5/12.7 feature decisions.
