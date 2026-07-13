@@ -76,7 +76,7 @@ use tokio::sync::broadcast;
 #[cfg(windows)]
 use sidebar_platform::{hotkey, monitors, theme_bridge};
 #[cfg(windows)]
-use windows::Win32::Foundation::HWND;
+use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 
 use crate::shutdown::ShutdownSignal;
 
@@ -587,6 +587,11 @@ struct PlatformRuntime {
     /// Handle to the dedicated hotkey thread (for cleanup on unregister).
     #[allow(clippy::used_underscore_binding)]
     hotkey_thread: Option<std::thread::JoinHandle<()>>,
+    /// Win32 thread-id of the dedicated hotkey thread. `unregister` posts
+    /// `WM_QUIT` to this TID so the thread's `GetMessageW` loop wakes, runs
+    /// its own `UnregisterHotKey(None, id)`, and exits cleanly. Without it
+    /// the thread would block in `GetMessageW` until process death (leak).
+    hotkey_thread_id: Option<u32>,
 }
 
 #[cfg(windows)]
@@ -599,6 +604,7 @@ impl PlatformRuntime {
             monitor_id: None,
             hotkey_rx: None,
             hotkey_thread: None,
+            hotkey_thread_id: None,
         }
     }
 
@@ -697,9 +703,26 @@ impl PlatformRuntime {
     }
 
     fn unregister(self) {
-        if let Some(id) = self.hotkey_id {
-            if let Err(error) = hotkey::unregister(self.hwnd, id) {
-                tracing::warn!(?error, id, "global hotkey unregister failed");
+        // Hotkey cleanup: the hotkey was registered thread-locally with
+        // `RegisterHotKey(None, ...)` on the dedicated hotkey thread (see
+        // `configure_platform`). `UnregisterHotKey` must run on THAT thread,
+        // not the GUI thread. We wake the thread's `GetMessageW` loop by
+        // posting `WM_QUIT`; the thread then unregisters + exits + the
+        // JoinHandle completes. This avoids both the unregister-against-wrong
+        // target bug AND the thread-leak-on-exit bug.
+        if let Some(tid) = self.hotkey_thread_id {
+            // SAFETY: PostThreadMessageW against a known-live TID with the
+            // benign WM_QUIT message is the documented shutdown handshake.
+            // If the thread has already exited, the call fails harmlessly.
+            unsafe {
+                use windows::Win32::UI::WindowsAndMessaging::PostThreadMessageW;
+                use windows::Win32::UI::WindowsAndMessaging::WM_QUIT;
+                let _ = PostThreadMessageW(tid, WM_QUIT, WPARAM(0), LPARAM(0));
+            }
+        }
+        if let Some(handle) = self.hotkey_thread {
+            if let Err(error) = handle.join() {
+                tracing::warn!(?error, "hotkey thread join failed during shutdown");
             }
         }
         if self.click_through {
@@ -790,6 +813,7 @@ fn configure_platform(cc: &eframe::CreationContext<'_>, app: &mut SidebarApp) {
     match hotkey::HotkeyCombo::parse(&app.config.hotkeys.click_through) {
         Ok(combo) => {
             let (tx, rx) = std::sync::mpsc::channel::<()>();
+            let (tid_tx, tid_rx) = std::sync::mpsc::channel::<u32>();
             let hotkey_id = CLICK_THROUGH_HOTKEY_ID;
             let ctrl = combo.ctrl;
             let shift = combo.shift;
@@ -799,11 +823,21 @@ fn configure_platform(cc: &eframe::CreationContext<'_>, app: &mut SidebarApp) {
             let thread = std::thread::Builder::new()
                 .name("sidebar-hotkey".to_string())
                 .spawn(move || {
+                    use windows::Win32::System::Threading::GetCurrentThreadId;
                     use windows::Win32::UI::Input::KeyboardAndMouse::{
                         HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN,
                         RegisterHotKey, UnregisterHotKey,
                     };
                     use windows::Win32::UI::WindowsAndMessaging::{GetMessageW, WM_HOTKEY};
+                    // Capture this thread's TID and report it back to the
+                    // spawner BEFORE registering or blocking. `unregister`
+                    // uses this TID to post WM_QUIT during shutdown. Sending
+                    // first is always correct: if RegisterHotKey fails below,
+                    // the thread exits and the TID receiver simply isn't used.
+                    // SAFETY: GetCurrentThreadId returns the calling thread's
+                    // identifier; no invariants to uphold.
+                    let tid = unsafe { GetCurrentThreadId() };
+                    let _ = tid_tx.send(tid);
                     // Register the hotkey on THIS thread (not the GUI thread).
                     let mut modifiers = HOT_KEY_MODIFIERS::default();
                     if ctrl { modifiers |= MOD_CONTROL; }
@@ -847,6 +881,12 @@ fn configure_platform(cc: &eframe::CreationContext<'_>, app: &mut SidebarApp) {
             platform.hotkey_id = Some(CLICK_THROUGH_HOTKEY_ID);
             platform.hotkey_rx = Some(rx);
             platform.hotkey_thread = Some(thread);
+            // Receive the thread's TID for shutdown cleanup. The thread
+            // sends it before blocking in GetMessageW; if the channel is
+            // empty at this point (extremely unlikely on a healthy OS
+            // scheduler), we fall back to None and the unregister path
+            // skips the PostThreadMessageW handshake.
+            platform.hotkey_thread_id = tid_rx.recv().ok();
         }
         Err(error) => tracing::warn!(?error, "invalid click-through hotkey; disabled"),
     }
@@ -1598,6 +1638,69 @@ mod tests {
 
         assert!(cancel.is_cancelled());
         assert_eq!(rx.try_recv(), Ok(Event::Shutdown));
+    }
+
+    /// Hotkey thread cleanup handshake (Story 6.6 regression, 2026-07-13).
+    ///
+    /// The dedicated hotkey thread blocks in `GetMessageW` until shutdown.
+    /// `PlatformRuntime::unregister` posts `WM_QUIT` to the thread's TID to
+    /// wake it. This test exercises the SAME handshake (capture TID →
+    /// `GetMessageW` loop → `WM_QUIT` wake → `join()` succeeds) without
+    /// requiring a real HWND or `RegisterHotKey` (which need an interactive
+    /// desktop session). The handshake is the part that was previously
+    /// broken — unregister targeted the wrong HWND and no `WM_QUIT` was
+    /// ever posted, leaking the thread.
+    #[cfg(windows)]
+    #[test]
+    fn hotkey_thread_wakes_on_wm_quit_and_joins_cleanly() {
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+        use windows::Win32::System::Threading::GetCurrentThreadId;
+        use windows::Win32::UI::WindowsAndMessaging::{GetMessageW, PostThreadMessageW, WM_QUIT};
+
+        let (tid_tx, tid_rx) = mpsc::channel::<u32>();
+        let handle = std::thread::Builder::new()
+            .name("test-hotkey-handshake".to_string())
+            .spawn(move || {
+                // SAFETY: GetCurrentThreadId returns the calling thread's id.
+                let tid = unsafe { GetCurrentThreadId() };
+                let _ = tid_tx.send(tid);
+                let mut msg = windows::Win32::UI::WindowsAndMessaging::MSG::default();
+                // SAFETY: same GetMessageW pattern as the production hotkey
+                // thread; blocks until WM_QUIT arrives on this TID.
+                let _ = unsafe { GetMessageW(&raw mut msg, None, 0, 0) };
+            })
+            .expect("spawn handshake thread");
+
+        let tid = tid_rx
+            .recv()
+            .expect("thread must report its TID before blocking in GetMessageW");
+
+        // SAFETY: PostThreadMessageW against the known-live TID with the
+        // benign WM_QUIT message; matches the production unregister path.
+        unsafe {
+            PostThreadMessageW(tid, WM_QUIT, WPARAM(0), LPARAM(0))
+                .expect("PostThreadMessageW must succeed against a live TID");
+        }
+
+        // The thread must exit promptly once WM_QUIT is posted. Bound the
+        // join at 2s so a regression (no WM_QUIT posted / wrong TID / etc.)
+        // surfaces as a failed test rather than a hung process.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if handle.is_finished() {
+                break;
+            }
+            assert!(
+                Instant::now() <= deadline,
+                "hotkey thread did not exit within 2s after WM_QUIT — the \
+                 cleanup handshake is broken (the thread is still blocked \
+                 in GetMessageW, which was the pre-2026-07-13 bug)"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // join() must succeed (clean exit, not panic).
+        handle.join().expect("hotkey thread must join cleanly");
     }
 
     #[test]
