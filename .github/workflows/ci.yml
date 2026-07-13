@@ -86,6 +86,48 @@ jobs:
           $ErrorActionPreference = 'Stop'
           ./scripts/fetch_ohm.ps1 -CheckOnly
 
+  # Story 6.5 — LHM upstream fetch gate. G16 CI egress for the LHM binary
+  # was approved 2026-07-13 (see verify/pending-HITL-gates.md §6.5). This
+  # job downloads LHM v0.9.6 from the pinned GitHub release URL into a clean
+  # temp directory and verifies the SHA-256 against resources/ohm.sha256. It
+  # proves the pinned release URL still resolves and the upstream has not
+  # retired the tag — the most common cause of a release-day surprise.
+  # `resources/` is NOT mutated by this job (the committed binary is the
+  # source of truth); the download lands in a temp staging dir that the
+  # runner discards.
+  lhm-fetch:
+    name: "LHM upstream fetch gate (Story 6.5, G16 egress approved 2026-07-13)"
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: "Download + verify pinned LHM from upstream (no resources/ mutation)"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Reuse the script's hash + extraction logic, but stage into a
+          # temp dir so the committed resources/ is never touched.
+          $staging = Join-Path $env:RUNNER_TEMP 'lhm-staging'
+          New-Item -ItemType Directory -Path $staging -Force | Out-Null
+          $zipUrl = 'https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases/download/v0.9.6/LibreHardwareMonitor.zip'
+          $zipPath = Join-Path $staging 'lhm.zip'
+          Write-Host "Downloading $zipUrl"
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath -TimeoutSec 30
+          $extract = Join-Path $staging 'extract'
+          Expand-Archive -LiteralPath $zipPath -DestinationPath $extract -Force
+          $exe = Get-ChildItem -LiteralPath $extract -Filter 'LibreHardwareMonitor.exe' -File -Recurse | Select-Object -First 1
+          if (-not $exe) { throw 'Archive did not contain LibreHardwareMonitor.exe' }
+          $actual = (Get-FileHash -LiteralPath $exe.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          $pinLine = (Get-Content -LiteralPath resources/ohm.sha256 -TotalCount 1).Trim()
+          $expected = ($pinLine -split '\s+')[0].ToLowerInvariant()
+          Write-Host "  Upstream SHA-256: $actual"
+          Write-Host "  Pinned   SHA-256: $expected"
+          if ($actual -ne $expected) {
+            throw "SHA-256 mismatch — upstream binary no longer matches the committed pin. Bump resources/ohm.sha256 (R7 HITL) or pin a different LHM release."
+          }
+          Write-Host "LHM upstream fetch matches the pinned hash." -ForegroundColor Green
+
   unit:
     name: "cargo test --workspace --lib (L0, T-40 budget: 60s)"
     runs-on: windows-latest

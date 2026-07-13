@@ -24,18 +24,19 @@ Additional 2026-07-13 audit closure:
   `signpath/code-signing-policy.md`. SignPath Foundation now requires only the
   external submission (the privacy-policy prerequisite is satisfied).
 
-## Story 6.5 — LHM acquisition (PARTIAL)
+## Story 6.5 — LHM acquisition (PARTIAL → INTEGRATED 2026-07-13)
 
-- **Full network fetch on Windows CI.** The `lhm-hash` CI job runs
-  `fetch_ohm.ps1 -CheckOnly` (offline, G16-compliant) on every PR. The
-  actual download (`fetch_ohm.ps1` without `-CheckOnly`) requires egress
-  to `github.com/LibreHardwareMonitor` + `objects.githubusercontent.com`
-  in the G16 CI allowlist, plus HITL sign-off on the upstream trust
-  decision (R7). **Blocked-on:** G16 egress-policy approval + G11 HITL.
+**G16 egress approval recorded 2026-07-13.** The maintainer approved CI
+egress to `github.com/LibreHardwareMonitor` + `objects.githubusercontent.com`
++ `raw.githubusercontent.com` for the LHM binary + license fetch. The
+`lhm-fetch` CI job (ci.yml) now performs the real download +
+SHA-256 verification + license acquisition on every PR + push to main.
+
+- **Full network fetch on Windows CI: RESOLVED.** No longer HITL-gated.
 - **Negative-path tests (hash mismatch, 404 retired release, network
-  timeout).** Need a controlled network/filesystem fixture or a mocked
-  download URL. Can land alongside the full-fetch CI step once egress is
-  approved. **Blocked-on:** same G16/HITL gate as above.
+  timeout).** Still pending — needs a controlled network/filesystem
+  fixture or a mocked download URL. **Blocked-on:** test-fixture design,
+  not policy.
 
 ## Story 9.1 — SignPath project setup (NOT STARTED)
 
@@ -57,19 +58,21 @@ Additional 2026-07-13 audit closure:
 - **winget PR submission.** External; rate-limited. **Blocked-on:** 9.2
   release.yml landing first.
 
-## Story 10.1 — NFR acceptance harness (PARTIAL)
+## Story 10.1 — NFR acceptance harness (PASS 2026-07-13)
 
-- **Reference-hardware NFR sign-off (T-31).** **COMPLETED 2026-07-12.**
-  Criterion poll_cost bench ran on Win11 25H2 (AMD Ryzen AI 7 350).
-  Calibration idle baseline: 17.373%. T-1/T-2 gate PASSES: all 6 providers
-  + aggregate under 0.5% per-source / 2.0% aggregate after calibration.
-  Calibration constant captured in target/criterion/calibration.txt.
-  (Note: calibration is machine-specific; reference-hardware sign-off per
-  T-31 requires the bench on the designated reference machine. This machine
-  is the dev machine, not a designated reference — G11 HITL still applies
-  for final sign-off.)
+**T-31 designated-reference-hardware sign-off recorded 2026-07-13.** The
+maintainer designated the dev machine (LAPTOP-PLN56DNU, AMD Ryzen AI 7 350,
+24 GB RAM, Win11 25H2 build 26200) as the v1 reference hardware per T-31.
+All NFR acceptance evidence below was measured on this machine and is now
+authoritative (not illustrative) for v1 sign-off.
+
+- **Reference-hardware NFR sign-off (T-31): SIGNED OFF 2026-07-13.**
+  Criterion poll_cost bench: calibration idle baseline 17.373%; T-1/T-2
+  gate PASSES — all 6 providers + aggregate under 0.5% per-source / 2.0%
+  aggregate after calibration. Calibration constant captured in
+  `target/criterion/calibration.txt`.
 - **Production cold-start (T-7) + RSS (T-4/T-5/T-6) + egress (G16)
-  evidence.** Verified on Win11 25H2 (build 26200, AMD Ryzen AI 7 350):
+  evidence.** Verified on the designated reference machine:
   - T-7 cold-start: 20ms (≤2000ms) — **PASS 2026-07-12**
   - T-1/T-2 poll-cost: all providers under 0.5% — **PASS 2026-07-12**
   - T-4 RSS p95 (bench-path): 11.9 MiB — **PASS 2026-07-12**
@@ -80,11 +83,11 @@ Additional 2026-07-13 audit closure:
   - R11 bandwidth persistence: restart rehydrates totals — **PASS 2026-07-12**
   - First-run wizard: config absent → wizard mode entered cleanly — **PASS 2026-07-12**
   - Bandwidth rollover: cycle_start_for_today all 8 variants pass — **PASS 2026-07-12**
-  - Remaining: T-31 designated-reference-hardware sign-off (G11 HITL).
 
 - **18 manual smoke items** including UAC elevation, Job-Object reap,
   capture-cloak under OBS, multi-monitor re-dock. Manual smoke cannot be
-  automated away (G11). **Blocked-on:** 10.1 NFR evidence + human runner.
+  automated away (G11). **Remaining:** human walker must run the 12 manual
+  items on the reference machine before each release tag.
 
 ## Story 11.x — regression harness (PER-STORY GATES)
 

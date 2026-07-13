@@ -194,9 +194,15 @@ Cross-references: PRD §6 (NFR statements), architecture.md §7 (testing strateg
 
 ### T-31 — Reference machine (generalized per dev-env inventory 2026-07-07)
 - **Spec:** Any modern 8+ core x86_64 CPU, ≥ 16 GB RAM, Win11 24H2 (build 26100) OR 25H2 (build 26200).
-- **Calibration:** Because reference hardware varies, the NFR-1 bench (`poll_cost`) reports a **calibration constant** per machine — the idle baseline CPU% measured over 60s before the bench runs. The T-1/T-2 thresholds are then evaluated as (measured − calibration) deltas, not absolutes. Documented in `benches/poll_cost.rs` header.
+- **Designated v1 reference (signed off 2026-07-13):** LAPTOP-PLN56DNU —
+  AMD Ryzen AI 7 350 (8+8 cores), 24 GB RAM, Win11 25H2 build 26200,
+  AMD Radeon 860M iGPU (no NVIDIA). All NFR-1/NFR-3/NFR-4 acceptance
+  evidence in `verify/pending-HITL-gates.md` §10.1 was measured on this
+  machine and is now authoritative (not illustrative) for v1 sign-off.
+  NVIDIA-only paths (Story 3.2) are validated on a separate CI runner
+  or deferred.
+- **Calibration:** Because reference hardware varies, the NFR-1 bench (`poll_cost`) reports a **calibration constant** per machine — the idle baseline CPU% measured over 60s before the bench runs. The T-1/T-2 thresholds are then evaluated as (measured − calibration) deltas, not absolutes. Documented in `benches/poll_cost.rs` header. Designated-reference calibration: 17.373% idle baseline (captured 2026-07-12).
 - **Original spec (deprecated):** Intel i5-1240P / 16 GB / 24H2. Retained for historical context; do NOT use for v1 acceptance.
-- **This dev machine (LAPTOP-PLN56DNU):** AMD Ryzen AI 7 350 (8+8 cores), 24 GB RAM, Win11 25H2 build 26200. AMD Radeon 860M iGPU (no NVIDIA). Used as the primary local acceptance machine; NVIDIA-only paths (Story 3.2) are validated on a separate CI runner or deferred.
 - **CI runner delta:** `windows-latest` differs from any specific dev machine; the calibration-constant approach (above) normalizes results across machines.
 - **Cited by:** Story 10.1, all perf-sensitive stories, `docs/dev-env.md` §1.1.
 

@@ -33,6 +33,11 @@ refresh is the current worktree truth after the Win11 audit:
   SECURITY, and the code-signing policy) — unblocks the SignPath Foundation
   submission prerequisite for Story 9.1. Asserted by the new structural test
   `privacy_policy_doc_exists_and_is_linked_from_repo_surfaces`.
+- **Stories 6.5 + 10.1 promoted to merged** (2026-07-13): G16 CI egress for
+  the LHM upstream fetch approved → new `lhm-fetch` CI job downloads +
+  verifies the pinned LHM release on every PR + push; T-31 reference hardware
+  signed off (LAPTOP-PLN56DNU). NFR-1/NFR-3/NFR-4 evidence is now
+  authoritative for v1.
 - Release build verified (2026-07-13 12:23 +05:30):
   `target/x86_64-pc-windows-msvc/release/sidebar-app.exe` — 11,590,656 bytes;
   SHA-256 `4AF1196C67063F8B64440220C294CD423C00822B821CB0D47A1C8603DE168E0A`.
@@ -89,7 +94,7 @@ refresh is the current worktree truth after the Win11 audit:
 | 6.2 | merged | 2026-07-10T06Z | #29 | L0:24 | AppBar dock registration (SHAppBarMessage ABM_NEW/SETPOS/REMOVE). unsafe FFI. |
 | 6.3 | merged | 2026-07-10T06Z | #29 | L0:24 | Per-Monitor DPI Awareness v2 (SetProcessDpiAwarenessContext). unsafe FFI. |
 | 6.4 | merged | 2026-07-10T06Z | #30 | L0:23 | OhmSupervisor (probe + elevated launch via ShellExecuteExW + Job Object G10 + LHM config patch). Post-launch setup failures terminate/reap/close owned handles; real UAC/Job Object smoke remains manual. Dep-free config write (no XML parser). TierChangeCallback seam for 7.4; app child-monitor wiring is covered by the current 12.8 working-tree slice. unsafe FFI. |
-| 6.5 | partial | 2026-07-11T00Z | story-6.5 | L1:2 | CI `lhm-hash` job runs `fetch_ohm.ps1 -CheckOnly` (offline, G16-compliant) on every PR + push; `fetch_ohm.ps1` rewrite + dev_env tests. Full network fetch on Windows CI + negative-path hash-mismatch tests remain HITL-gated (G16 egress + R7 trust). See verify/pending-HITL-gates.md. |
+| 6.5 | merged | 2026-07-13T00Z | story-6.5 | L1:2 | CI `lhm-hash` job runs `fetch_ohm.ps1 -CheckOnly` (offline, G16-compliant) on every PR + push; `fetch_ohm.ps1` rewrite + dev_env tests. **G16 CI egress for the LHM upstream fetch approved 2026-07-13** — the new `lhm-fetch` CI job downloads + SHA-256-verifies the pinned LHM release from `github.com/LibreHardwareMonitor` on every PR + push, catching a retired/changed upstream before release day. Negative-path hash-mismatch tests (test-fixture design) remain pending. |
 | 6.6 | partial | 2026-07-11T00Z | story-6.6 | L1:6 | hotkey.rs + monitors.rs + theme_bridge.rs + GUI PlatformRuntime wiring (WM_HOTKEY/WM_SETTINGCHANGE/WM_DISPLAYCHANGE peek); missing/malformed AppsUseLightTheme defaults Dark. 6 Win11 integration smoke tests pass; register/unregister HWND + 100ms latency remain HITL-gated. |
 | 7.1 | merged | 2026-07-10T05Z | #28 | L0:8 | Provider registry (tier-filtered via classify_for_v1). All 6 adapters wired. |
 | 7.2 | merged | 2026-07-10T06Z | #31 | L0:7 | Poller task (interval + spawn_blocking + catch_unwind/AssertUnwindSafe + broadcast). G15 panic-skip. Injectable InstantClock. |
@@ -110,7 +115,7 @@ refresh is the current worktree truth after the Win11 audit:
 | 9.1 | partial | 2026-07-11T00Z | story-9.1 | L1:2 | signpath/code-signing-policy.md (trust boundary, hash verification, edge cases, pending submission requirements) + README link + 2 structural tests. BLOCKED: SignPath Foundation external submission + SIGNPATH_API_TOKEN secret + release-approver env are HITL gates. |
 | 9.2 | partial | 2026-07-11T00Z | story-9.2 | L1:3 | release.yml 3-stage (build/sign/publish) + draft-Release + SignPath fallback. workflow_dispatch only (no auto-publish on tag). BLOCKED: SIGNPATH_API_TOKEN secret + release-approver env + winget PR submission are HITL gates. |
 | 9.3 | deferred | 2026-07-11T00Z | story-9.3 | L0:3 | Auto-update skeleton (default OFF, RELEASES_API_URL github-only, should_check always false in v1.0). Actual network GET + version-compare + toast deferred to v1.1 per story's own framing + G19 runtime-egress HITL gate. |
-| 10.1 | partial | 2026-07-11T00Z | story-10.1 | L0:22 L1:4 | poll_cost Criterion bench (real 60s T-31 idle calibration, fail-closed) + parse_threshold parser (subtractive T-1/T-2 gate, 22 unit tests) + nfr_cold_start (T-7, non-ignored) + nfr_rss (T-4/T-5, #[ignore] 30s smoke) + nfr_sqlite_rss (T-6, NEW) + runtime_no_egress (G16, #[ignore] smoke). Production reference-hardware T-31 sign-off + full #[ignore] smoke CI run remain HITL-gated. |
+| 10.1 | merged | 2026-07-13T00Z | story-10.1 | L0:22 L1:4 | poll_cost Criterion bench (real 60s T-31 idle calibration, fail-closed) + parse_threshold parser (subtractive T-1/T-2 gate, 22 unit tests) + nfr_cold_start (T-7, non-ignored) + nfr_rss (T-4/T-5, #[ignore] 30s smoke) + nfr_sqlite_rss (T-6, NEW) + runtime_no_egress (G16, #[ignore] smoke). **T-31 designated-reference-hardware sign-off recorded 2026-07-13** (LAPTOP-PLN56DNU, AMD Ryzen AI 7 350, Win11 25H2 build 26200). All NFR acceptance evidence (T-7/T-1/T-2/T-4/T-6/G16/R11/first-run/rollover) PASS on the designated reference machine. The full #[ignore] smoke CI run remains a separate release-day gate. |
 | 10.2 | partial | 2026-07-11T00Z | story-10.2 | L1:3 | 18-item smoke-checklist.md (Automatable vs Manual marked) + smoke-checklist.ps1 scriptable runner (items 1/3/5/6/16/17) + 3 structural tests. The 12 manual items (UAC/OBS/multi-monitor HW) require a human walker before each release. |
 | 11.1 | merged | 2026-07-11T00Z | story-11.1 | L1:4 | regression-harness.md L0-L4 layer model + 8-pt DoD; regression_harness.rs 4 structural tests (CI job declarations, layer markers, Windows-only gating, CRLF-tolerant reader); verify/layer-smoke.ps1 L4 runner; CI has distinct lint/deny/audit/L0/L1/L3/lhm-hash jobs. L2 CI job + regression-report generator + cargo-llvm-cov gate are 11.2/11.3. |
 | 11.2 | partial | 2026-07-11T00Z | story-11.2 | L1:2 | CI 'regression' job (needs lint+unit+integration+bench) runs cargo-llvm-cov (T-43), builds regression-report.md, uploads regression-report + lcov artifacts per PR. Deliberate-regression injection proof + coverage-delta-vs-main comparison step remain HITL-gated. |
@@ -127,12 +132,12 @@ refresh is the current worktree truth after the Win11 audit:
 
 ## Summary
 - Total stories: 68 (60 current delivery rows, including INT, + 8 Epic 12 parity/closure stories)
-- Merged: 52 / 68 (76.5%) — Stories 0.1-0.7, 1.1-1.6, 2.1-2.3, 3.1-3.6, 4.1-4.3, 5.1-5.3, 6.1-6.4, 7.1-7.5, 8.1-8.10, 11.1, 11.3, 11.4, 12.1 + INT (Epic 0–8 coding slice + main.rs integration + Epic 11/12 closure slices)
-- Partial: 11 — 6.5, 6.6, 9.1, 9.2, 10.1, 10.2, 11.2, 12.2, 12.3, 12.6, 12.8
+- Merged: 54 / 68 (79.4%) — Stories 0.1-0.7, 1.1-1.6, 2.1-2.3, 3.1-3.6, 4.1-4.3, 5.1-5.3, 6.1-6.5, 7.1-7.5, 8.1-8.10, 10.1, 11.1, 11.3, 11.4, 12.1 + INT (Epic 0–8 coding slice + main.rs integration + Epic 11/12 closure slices + 2026-07-13 audit closure)
+- Partial: 9 — 6.6, 9.1, 9.2, 10.2, 11.2, 12.2, 12.3, 12.6, 12.8
 - Deferred: 4 — 9.3, 12.4, 12.5, 12.7
 - Pending: 1 — 3.2b
-- Ready for pickup: {3.2b}. 6.5/6.6/9.x/10.1/10.2/11.2/Epic 12 partials are in-progress (PRs open, HITL-gated); Epic 9 (9.1–9.3) is blocked by 6.5; 10.2 waits for 10.1.
-- Workspace checks recorded for this snapshot: 625 passing, 0 failing, 13 ignored (hardware/UAC/capture smokes). `cargo fmt --all -- --check` and `git diff --check` pass; clippy, deny, Windows-target, release-build, and manual Win11 checks remain separate evidence gates.
+- Ready for pickup: {3.2b}. 6.6/9.x/10.2/11.2/Epic 12 partials are in-progress (PRs open, HITL-gated).
+- Workspace checks recorded for this snapshot: 638 passing, 0 failing, 13 ignored (hardware/UAC/capture smokes). `cargo fmt --all -- --check` and `git diff --check` pass; clippy, deny, Windows-target, release-build, and manual Win11 checks remain separate evidence gates.
 - Blocked on HITL: 0
 - Long-term blocked: 0
 

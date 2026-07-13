@@ -153,9 +153,17 @@ The swarm MUST NOT introduce unbounded channels, unbounded retries, or unbounded
   `/data.json` for local LHM sensors.
 - **CI environment:** Allowed egress limited to:
   - `static.crates.io`, `crates.io`, `index.crates.io`, `static.rust-lang.org` (cargo)
-  - `github.com`, `*.githubusercontent.com`, `objects.githubusercontent.com` (actions, SignPath, winget)
+  - `github.com`, `*.githubusercontent.com`, `objects.githubusercontent.com` (actions, SignPath, winget, LHM upstream fetch — approved 2026-07-13)
   - `signpath.io`, `*.signpath.org`, `app.signpath.io`, `api.signpath.io` (signing)
   - `repo.rustsec.org` (cargo-audit DB)
+- **CI LHM fetch job (G16 egress approved 2026-07-13).** The `lhm-fetch`
+  job in `.github/workflows/ci.yml` downloads the pinned
+  `LibreHardwareMonitor.zip` from
+  `github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases/download/v0.9.6/...`
+  into a runner-temp staging directory and verifies the SHA-256 against
+  `resources/ohm.sha256`. It does NOT mutate `resources/` (the committed
+  binary remains the source of truth). The approval is bounded to this
+  exact URL + the matching license URL on `raw.githubusercontent.com`.
 - The swarm MUST NOT add any other network dependency to either runtime or CI without HITL approval (G19).
 - A runtime-network-egress integration test (Story 10.1 extended) MUST verify
   sidebar.exe opens no non-loopback sockets during a 60-second smoke run
