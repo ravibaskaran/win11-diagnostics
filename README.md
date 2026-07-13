@@ -187,6 +187,9 @@ cd win11-diagnostics
 # Build the release binary
 cargo build --release --target x86_64-pc-windows-msvc
 
+# Keep the complete LHM runtime beside the sidebar executable for Full mode
+Copy-Item .\resources\* .\target\x86_64-pc-windows-msvc\release\ -Recurse -Force
+
 # Run it
 .\target\x86_64-pc-windows-msvc\release\sidebar-app.exe
 ```

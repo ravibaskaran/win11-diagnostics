@@ -11,7 +11,7 @@ The swarm reads this file at task-startup to identify the ready set (stories who
 The historical story rows below retain their original merge evidence. This
 refresh is the current worktree truth after the Win11 audit:
 
-- Full workspace matrix: **642 passed, 0 failed, 13 ignored**; all-features
+- Full workspace matrix: **643 passed, 0 failed, 13 ignored**; all-features
   matrix also passes. `cargo fmt`, workspace clippy with `-D warnings`, the
   Windows MSVC target check, `cargo deny`, and `actionlint` pass.
 - Scriptable smoke checklist passes, including Basic cold-start, SQLite RSS,

@@ -45,6 +45,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: cargo build --release
         run: cargo build --release --target x86_64-pc-windows-msvc
+      - name: Fetch pinned LHM runtime package
+        shell: pwsh
+        run: ./scripts/fetch_ohm.ps1
       - name: Verify LHM binary pin (Story 6.5)
         shell: pwsh
         run: ./scripts/fetch_ohm.ps1 -CheckOnly
@@ -53,8 +56,10 @@ jobs:
         run: |
           mkdir -p staging
           cp target/x86_64-pc-windows-msvc/release/sidebar-app.exe staging/sidebar.exe
-          cp resources/LibreHardwareMonitor.exe staging/
-          cp resources/LibreHardwareMonitor.LICENSE.txt staging/
+          # Ship the complete LHM runtime (managed DLLs, config, locales, and
+          # license), not only the entry-point executable. OhmSupervisor
+          # resolves this bundle next to sidebar.exe in a portable ZIP.
+          cp -R resources/. staging/
           # Hash assertion (G18: warn-not-fail).
           ACTUAL=$(sha256sum staging/sidebar.exe | awk '{print $1}')
           echo "sidebar.exe SHA-256: $ACTUAL"
@@ -96,19 +101,25 @@ jobs:
         id: prepare_payload
         shell: bash
         run: |
+          copy_lhm_payload() {
+            for item in staging/*; do
+              base="$(basename "$item")"
+              if [ "$base" != "sidebar.exe" ] && [ "$base" != "signed" ]; then
+                cp -R "$item" staging/signed/
+              fi
+            done
+          }
           if [ "${{ steps.sign.outcome }}" = "success" ]; then
             echo "SignPath returned a signed executable."
             mkdir -p staging/signed
-            cp staging/LibreHardwareMonitor.exe staging/signed/
-            cp staging/LibreHardwareMonitor.LICENSE.txt staging/signed/
+            copy_lhm_payload
             echo "unsigned_release=0" >> "$GITHUB_OUTPUT"
           else
             echo "::warning::SignPath signing failed; creating an explicitly unsigned draft for HITL review."
             rm -rf staging/signed
             mkdir -p staging/signed
             cp staging/sidebar.exe staging/signed/sidebar.exe
-            cp staging/LibreHardwareMonitor.exe staging/signed/
-            cp staging/LibreHardwareMonitor.LICENSE.txt staging/signed/
+            copy_lhm_payload
             echo "unsigned_release=1" >> "$GITHUB_OUTPUT"
           fi
       - uses: actions/upload-artifact@v4

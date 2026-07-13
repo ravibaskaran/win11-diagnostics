@@ -96,6 +96,14 @@ fn release_yml_exists_with_build_sign_publish_stages() {
         "SignPath must be allowed to download the uploaded GitHub artifact"
     );
     assert!(
+        normalized.contains("run: ./scripts/fetch_ohm.ps1\n"),
+        "release builds must fetch the ignored LHM runtime on clean CI checkouts"
+    );
+    assert!(
+        normalized.contains("cp -R resources/. staging/"),
+        "release payload must include the complete LHM runtime bundle"
+    );
+    assert!(
         normalized.contains("signpath/github-action-submit-signing-request@v2"),
         "release.yml must use the current SignPath GitHub signing-request action"
     );
@@ -124,7 +132,8 @@ fn release_yml_exists_with_build_sign_publish_stages() {
         "the signing job must export unsigned status to the publish job"
     );
     assert!(
-        normalized.contains("staging/LibreHardwareMonitor.exe staging/signed/"),
+        normalized.contains("copy_lhm_payload()")
+            && normalized.contains("cp -R \"$item\" staging/signed/"),
         "both signed and unsigned payloads must include the LHM sidecar"
     );
 }

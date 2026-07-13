@@ -97,6 +97,7 @@ fn main() -> eframe::Result {
         return Ok(());
     }
     let config_dir = resolve_config_dir();
+    let lhm_dir = resolve_lhm_dir();
     let config_path = config_dir.join("config.toml");
     let config = load_config(&config_path);
     tracing::info!(
@@ -136,7 +137,7 @@ fn main() -> eframe::Result {
         // agent). The tier-change callback is wired so a later Full resolution
         // reaches the GUI. The probe itself runs on spawn_blocking below.
         let client = RealHttpClient::new();
-        let supervisor = OhmSupervisor::new(client, &config_dir);
+        let supervisor = OhmSupervisor::new(client, &lhm_dir);
         let raw_tx = event_channel.raw_tx.clone();
         let cb: sidebar_platform::ohm_supervisor::TierChangeCallback = Box::new(move |new_tier| {
             let mapped = if matches!(new_tier, ProviderTier::Full) {
@@ -155,7 +156,7 @@ fn main() -> eframe::Result {
         // ureq Agent) so the main-thread supervisor stays available for the
         // shutdown teardown.
         let probe_port = config.ohm.http_port;
-        let probe_dir = config_dir.clone();
+        let probe_dir = lhm_dir.clone();
         let probe_tx = event_channel.raw_tx.clone();
         runtime.spawn_blocking(move || {
             let probe_client = RealHttpClient::new();
@@ -858,6 +859,40 @@ fn resolve_config_dir() -> PathBuf {
     dir
 }
 
+/// Resolve the relocatable LHM runtime directory without coupling it to the
+/// user's configuration/database directory. Release ZIPs place the sidecar
+/// next to `sidebar-app.exe`; source-tree runs use `resources/` from the
+/// current checkout. Missing resources are still returned as the executable
+/// directory so Full mode degrades cleanly through the supervisor's existing
+/// missing-file error path.
+fn resolve_lhm_dir() -> PathBuf {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(PathBuf::from));
+    let cwd_resources = std::env::current_dir()
+        .ok()
+        .map(|path| path.join("resources"));
+
+    resolve_lhm_dir_from(exe_dir, cwd_resources)
+}
+
+fn resolve_lhm_dir_from(exe_dir: Option<PathBuf>, cwd_resources: Option<PathBuf>) -> PathBuf {
+    let mut candidates = Vec::new();
+    if let Some(dir) = exe_dir.clone() {
+        candidates.push(dir.clone());
+        candidates.push(dir.join("resources"));
+    }
+    if let Some(dir) = cwd_resources {
+        candidates.push(dir);
+    }
+
+    candidates
+        .into_iter()
+        .find(|dir| dir.join("LibreHardwareMonitor.exe").is_file())
+        .or(exe_dir)
+        .unwrap_or_else(|| PathBuf::from("resources"))
+}
+
 /// Load the config from the given path, falling back to `Config::default()`
 /// if absent/unreadable. G15: never crash on a malformed config.
 fn load_config(path: &PathBuf) -> Config {
@@ -887,9 +922,11 @@ mod tests {
         child_probe_is_alive, join_poller_with_timeout, join_thread_with_timeout,
         watchdog_should_force_exit,
     };
+    use std::fs;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
+    use tempfile::TempDir;
 
     #[test]
     fn watchdog_decision_only_forces_exit_when_shutdown_is_incomplete() {
@@ -903,6 +940,20 @@ mod tests {
         assert!(child_probe_is_alive(false, true));
         assert!(child_probe_is_alive(true, true));
         assert!(!child_probe_is_alive(true, false));
+    }
+
+    #[test]
+    fn lhm_resources_are_resolved_from_release_directory_before_source_tree() {
+        let root = TempDir::new().expect("temp root");
+        let exe_dir = root.path().join("release");
+        let source_resources = root.path().join("resources");
+        fs::create_dir_all(&exe_dir).expect("exe dir");
+        fs::create_dir_all(&source_resources).expect("source resources");
+        fs::write(exe_dir.join("LibreHardwareMonitor.exe"), b"release-sidecar")
+            .expect("release sidecar");
+
+        let resolved = super::resolve_lhm_dir_from(Some(exe_dir.clone()), Some(source_resources));
+        assert_eq!(resolved, exe_dir);
     }
 
     #[tokio::test(flavor = "current_thread")]
