@@ -101,7 +101,8 @@ the loopback probe succeeds, the sidebar deliberately remains in Basic mode.
 **Privacy:** Full mode makes a **loopback-only** HTTP connection to
 `127.0.0.1`. The sidebar has **zero runtime network egress** in any mode
 (verified via `netstat` snapshot diff). No telemetry, no auto-update checks,
-no cloud sync — nothing leaves your machine.
+no cloud sync — nothing leaves your machine. See the
+[Privacy Policy](docs/privacy-policy.md) for the full statement.
 
 If the sidebar is closed normally, it sends a signal to LHM to shut down
 cleanly. If the sidebar crashes, the Job Object ensures LHM is reaped by the

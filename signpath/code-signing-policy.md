@@ -12,6 +12,7 @@ This document is the authoritative policy referenced by:
 - `README.md` (download instructions)
 - `.github/workflows/release.yml` (Story 9.2 — the signing CI job)
 - `docs/backlog/guardrails.md` G18 (supply-chain automation)
+- `docs/privacy-policy.md` (data-handling statement required by SignPath)
 
 ## Trust boundary
 
@@ -30,8 +31,13 @@ This document is the authoritative policy referenced by:
 **Status: pending external submission (HITL).** SignPath Foundation requires:
 1. OSI-approved license verification (host MIT, bundled MPL-2.0 — both qualify).
 2. Public repo (`github.com/ravibaskaran/win11-diagnostics`).
-3. MFA-enabled approvers.
-4. Project slug: `sidebar`; signing policy slug: `release`.
+3. Public **code-signing policy** page reachable from the repo homepage
+   (this document; surfaced in the GitHub Releases body via
+   `.github/workflows/release.yml`).
+4. Public **privacy policy** page reachable from the repo homepage
+   (`docs/privacy-policy.md`, linked from `README.md` and `SECURITY.md`).
+5. MFA-enabled approvers.
+6. Project slug: `sidebar`; signing policy slug: `release`.
 
 The submission is a manual HITL action (G11/G19). Once approved, the
 `SIGNPATH_API_TOKEN` secret + `release-approver` GitHub Environment are

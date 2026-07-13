@@ -49,7 +49,8 @@ egress** (guardrails.md G16). It does not:
 
 Configuration and bandwidth-tracking state live under
 `%APPDATA%\sidebar\` (config.toml + bandwidth.db). No data leaves the
-machine.
+machine. The full data-handling statement is in the
+[Privacy Policy](docs/privacy-policy.md).
 
 ## Threat model
 

@@ -36,6 +36,72 @@ fn code_signing_policy_doc_exists_and_covers_trust_boundary() {
     );
 }
 
+/// Privacy policy must exist, link to no-telemetry/no-egress statements,
+/// and be reachable from README + SECURITY + code-signing-policy. SignPath
+/// Foundation OSS approval requires a public privacy-policy page (the
+/// submission requirements list at signpath/code-signing-policy.md calls
+/// this out explicitly). Cited: docs/privacy-policy.md, guardrails.md G16.
+#[test]
+fn privacy_policy_doc_exists_and_is_linked_from_repo_surfaces() {
+    let root = workspace_root();
+
+    // The policy file itself.
+    let policy_path = root.join("docs/privacy-policy.md");
+    let policy = fs::read_to_string(&policy_path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", policy_path.display()));
+    let normalized = policy.replace("\r\n", "\n");
+    let lower = normalized.to_lowercase();
+    for required in [
+        "telemetry",
+        "analytics",
+        "loopback",
+        "127.0.0.1",
+        "%appdata%\\sidebar",
+        "librehardwaremonitor",
+        "signpath",
+        "effective date",
+    ] {
+        assert!(
+            lower.contains(required),
+            "privacy policy must mention '{required}' (got header + first 200 chars: {:?})",
+            &normalized[..normalized.len().min(200)]
+        );
+    }
+    // The policy must explicitly state zero runtime egress (the architectural
+    // invariant guardrails.md G16).
+    assert!(
+        lower.contains("zero runtime network egress"),
+        "privacy policy must state 'zero runtime network egress' (G16)"
+    );
+
+    // README must link the policy.
+    let readme = fs::read_to_string(root.join("README.md")).expect("read README");
+    assert!(
+        readme.contains("docs/privacy-policy.md"),
+        "README.md must link docs/privacy-policy.md"
+    );
+
+    // SECURITY.md must link the policy.
+    let security = fs::read_to_string(root.join("SECURITY.md")).expect("read SECURITY");
+    assert!(
+        security.contains("docs/privacy-policy.md"),
+        "SECURITY.md must link docs/privacy-policy.md"
+    );
+
+    // Code-signing-policy must link the policy AND list the privacy-policy
+    // page in its SignPath Foundation submission requirements.
+    let signing = fs::read_to_string(root.join("signpath/code-signing-policy.md"))
+        .expect("read code-signing-policy");
+    assert!(
+        signing.contains("docs/privacy-policy.md"),
+        "signpath/code-signing-policy.md must link docs/privacy-policy.md"
+    );
+    assert!(
+        signing.to_lowercase().contains("privacy policy"),
+        "signpath/code-signing-policy.md must name 'privacy policy' as a SignPath requirement"
+    );
+}
+
 #[test]
 fn ohm_sha256_pin_is_well_formed() {
     let path = workspace_root().join("resources/ohm.sha256");
