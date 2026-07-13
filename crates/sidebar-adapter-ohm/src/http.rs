@@ -251,6 +251,24 @@ mod tests {
         assert!(validate_loopback_url("https://127.0.0.1:17127/data.json").is_err());
     }
 
+    /// Story 13 certification (2026-07-13) — defense-in-depth: the authority
+    /// must contain ONLY `host:port`. Reject fragments (`#`), queries (`?`),
+    /// and userinfo-attempts that don't carry `@` but smuggle via `#`.
+    #[test]
+    fn loopback_validator_rejects_fragments_and_queries_in_authority() {
+        // Fragment smuggle — the IPv4 parse happens to reject this, but the
+        // explicit check makes the invariant obvious + survives any future
+        // loosening of the IPv4 parser.
+        assert!(
+            validate_loopback_url("http://127.0.0.1#@evil.com/data.json").is_err(),
+            "fragment smuggle must be rejected"
+        );
+        assert!(
+            validate_loopback_url("http://127.0.0.1?x=y/data.json").is_err(),
+            "query smuggle must be rejected"
+        );
+    }
+
     #[test]
     fn real_client_rejects_non_loopback_before_transport() {
         let error = RealHttpClient::new()

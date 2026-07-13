@@ -28,7 +28,7 @@
 
 use std::sync::Mutex;
 
-use sidebar_domain::reading::{MetricKind, Reading, SensorId, Unit};
+use sidebar_domain::reading::{finite, MetricKind, Reading, SensorId, Unit};
 use sidebar_sensor::descriptor::{CostClass, ProviderTier, SensorDescriptor};
 use sidebar_sensor::provider::SensorProvider;
 
@@ -144,17 +144,6 @@ fn readings_from_snapshot(s: &backend::PdhSnapshot) -> Vec<Reading> {
         }
     }
     out
-}
-
-/// Returns `Some(v)` only when `v` is finite; `None` otherwise. T-20: adapters
-/// MUST omit non-finite readings rather than emit `NaN`/`±Inf`.
-#[inline]
-fn finite(v: f64) -> Option<f64> {
-    if v.is_finite() {
-        Some(v)
-    } else {
-        None
-    }
 }
 
 // Re-export key types for downstream consumers.

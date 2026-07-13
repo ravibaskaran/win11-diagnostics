@@ -50,15 +50,6 @@ pub enum Event {
     Shutdown,
 }
 
-impl Event {
-    /// Returns `true` if this event is a `TierChanged` (the coalesced variant).
-    /// Used by the coalescer to decide whether to debounce or pass through.
-    #[must_use]
-    pub fn is_tier_change(&self) -> bool {
-        matches!(self, Self::TierChanged(_))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     //! Story 7.4 domain-layer tests for the Event enum + Tier type.
@@ -71,15 +62,6 @@ mod tests {
         assert_ne!(Tier::Basic, Tier::Full);
         assert_eq!(Tier::Basic, Tier::Basic);
         assert_eq!(Tier::Full, Tier::Full);
-    }
-
-    /// Cited: Story 7.4.
-    #[test]
-    fn event_is_tier_change_discriminates() {
-        assert!(Event::TierChanged(Tier::Full).is_tier_change());
-        assert!(Event::TierChanged(Tier::Basic).is_tier_change());
-        assert!(!Event::ThemeChanged("dark".to_string()).is_tier_change());
-        assert!(!Event::Shutdown.is_tier_change());
     }
 
     /// Cited: Story 7.4.

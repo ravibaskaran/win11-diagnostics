@@ -309,24 +309,6 @@ fn fire_tier_change(
     }
 }
 
-/// Re-export of [`is_lhm_signature`] for downstream consumers that want to
-/// double-check a probe body without reconstructing an `OhmSupervisor`.
-///
-/// This is a thin pass-through; the real classification logic lives in
-/// `sidebar-platform::ohm_supervisor`.
-#[must_use]
-pub fn body_is_lhm_signature(body: &str) -> bool {
-    is_lhm_signature(body)
-}
-
-/// The inclusive lower bound of the T-45 fallback chain (17127). Re-exported
-/// so downstream code (e.g. the status pill tooltip) can reference the
-/// canonical range without depending on `sidebar-platform` directly.
-pub const T45_PORT_START: u16 = PORT_RANGE_START;
-
-/// The inclusive upper bound of the T-45 fallback chain (17137).
-pub const T45_PORT_END: u16 = PORT_RANGE_END;
-
 #[cfg(test)]
 mod tests {
     //! Story 7.3 TDD contract tests (RED — stub returns Basic, so the

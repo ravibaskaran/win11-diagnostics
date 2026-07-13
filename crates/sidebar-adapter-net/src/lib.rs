@@ -145,11 +145,6 @@ fn readings_from_snapshot(s: &backend::NetSnapshot) -> Vec<Reading> {
     out
 }
 
-#[cfg(test)]
-fn finite(v: f64) -> Option<f64> {
-    v.is_finite().then_some(v)
-}
-
 // Re-export key types for downstream consumers.
 pub use backend::{NetSnapshot, NicSnapshot, RealNetBackend};
 
@@ -173,7 +168,7 @@ mod tests {
 
     use super::*;
     use mockall::mock;
-    use sidebar_domain::reading::{MetricKind, Unit};
+    use sidebar_domain::reading::{finite, MetricKind, Unit};
     use sidebar_sensor::descriptor::{CostClass, ProviderTier};
     use sidebar_sensor::provider::SensorProvider;
     use std::sync::Arc;

@@ -24,7 +24,7 @@
 
 use std::sync::Mutex;
 
-use sidebar_domain::reading::{MetricKind, Reading, SensorId, Unit};
+use sidebar_domain::reading::{finite, MetricKind, Reading, SensorId, Unit};
 use sidebar_sensor::descriptor::{CostClass, ProviderTier, SensorDescriptor};
 use sidebar_sensor::provider::SensorProvider;
 
@@ -244,20 +244,6 @@ fn readings_from_snapshot(s: &backend::SysinfoSnapshot) -> Vec<Reading> {
     }
 
     out
-}
-
-/// Returns `Some(v)` only when `v` is finite; `None` otherwise.
-///
-/// T-20: adapters MUST omit non-finite readings rather than emit `NaN`/`±Inf`.
-/// `format_*` renders `"--"` for missing readings; emitting NaN here would
-/// break sorting, averaging, and persistence.
-#[inline]
-fn finite(v: f64) -> Option<f64> {
-    if v.is_finite() {
-        Some(v)
-    } else {
-        None
-    }
 }
 
 /// Convert a `u64` byte/second count to `f64` for the `Reading::value` field.

@@ -297,6 +297,18 @@ impl ReadingValue {
     }
 }
 
+/// Filter a raw `f64` to a finite value, returning `None` for NaN/±Inf.
+/// Adapters call this to enforce T-20 at the source. Deduplicated here so
+/// every adapter shares one definition (cert audit 2026-07-13).
+#[must_use]
+pub fn finite(v: f64) -> Option<f64> {
+    if v.is_finite() {
+        Some(v)
+    } else {
+        None
+    }
+}
+
 /// A single sensor reading at a point in time.
 ///
 /// `value` MUST be finite per T-20. Adapters MUST omit a reading rather
@@ -358,12 +370,6 @@ impl Reading {
     #[must_use]
     pub fn exact_value(&self) -> &ReadingValue {
         &self.reading_value
-    }
-
-    /// Return the display-facing floating-point projection.
-    #[must_use]
-    pub fn display_value(&self) -> f64 {
-        self.value
     }
 
     /// Return the exact counter, if this reading is counter-typed.
@@ -448,7 +454,7 @@ mod tests {
     }
 
     #[test]
-    fn gauge_constructor_keeps_display_value_behavior() {
+    fn gauge_constructor_keeps_value_and_counter_behavior() {
         let reading = Reading::gauge(
             SensorId::new("cpu", "package"),
             MetricKind::CpuUtilization,
@@ -456,7 +462,6 @@ mod tests {
             Unit::Percent,
         );
         assert!((reading.value - 42.5).abs() < f64::EPSILON);
-        assert!((reading.display_value() - 42.5).abs() < f64::EPSILON);
         assert!(reading.counter_value().is_none());
     }
 
