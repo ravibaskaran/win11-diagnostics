@@ -963,6 +963,17 @@ fn send_dock_position(
 
 impl eframe::App for SidebarApp {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // Story 8.10 contract — closing the wizard window via the title-bar
+        // X is treated as Skip: defaults are applied + first_run_complete is
+        // flipped so the wizard does not re-block on next launch. Without
+        // this, the wizard reappears every launch if the user closes the
+        // window without clicking Skip. See first_run.rs §"Window-X (close)".
+        if self.wizard_active {
+            self.config = Config::default();
+            self.config.first_run_complete = true;
+            self.persist_config();
+            self.wizard_active = false;
+        }
         #[cfg(windows)]
         if let Some(platform) = self.platform.take() {
             platform.unregister();
@@ -1638,6 +1649,39 @@ mod tests {
 
         assert!(cancel.is_cancelled());
         assert_eq!(rx.try_recv(), Ok(Event::Shutdown));
+    }
+
+    /// Story 8.10 — Window-X (close) while the wizard is showing is treated
+    /// as Skip. Without this contract the wizard re-shows on every launch
+    /// if the user closes the window without clicking Skip. The fix lands
+    /// defaults + first_run_complete=true + clears the wizard gate on exit.
+    /// See first_run.rs §"Window-X (close) → treated as Skip".
+    #[test]
+    fn wizard_active_on_exit_applies_skip_semantics() {
+        let state = AppState::new(ProviderTier::Basic, None);
+        let mut app = SidebarApp::with_config_path(state, std::path::PathBuf::new(), true);
+        assert!(app.wizard_active, "precondition: wizard must start active");
+        assert!(
+            !app.config.first_run_complete,
+            "precondition: first_run must start incomplete"
+        );
+
+        <SidebarApp as eframe::App>::on_exit(&mut app, None);
+
+        assert!(
+            !app.wizard_active,
+            "on_exit must clear wizard_active so next launch skips the wizard"
+        );
+        assert!(
+            app.config.first_run_complete,
+            "on_exit must set first_run_complete=true (Skip semantics) so the \
+             wizard does not re-block the next launch"
+        );
+        // Skip restores defaults (first_run.rs §"Skip" applies Config::default()).
+        assert_eq!(
+            app.config.dock.edge, "Right",
+            "Skip semantics restore dock.edge default"
+        );
     }
 
     /// Hotkey thread cleanup handshake (Story 6.6 regression, 2026-07-13).
