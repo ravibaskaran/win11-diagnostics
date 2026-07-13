@@ -92,6 +92,12 @@ fn child_probe_is_alive(launched: bool, alive: bool) -> bool {
 #[allow(clippy::too_many_lines)]
 fn main() -> eframe::Result {
     init_tracing();
+    // Story 13.3 — single-instance guard. A second launch (double-click
+    // while running) exits(0) here before any window/resource work. MUST
+    // be after init_tracing (so the exit is logged) but before the bench
+    // check + config load + eframe launch (so no resources are wasted on
+    // the doomed second instance). Cited: G28.
+    sidebar_platform::single_instance::claim_or_exit();
     if std::env::args().any(|arg| arg == "--bench-cold-start") {
         run_cold_start_bench();
         return Ok(());
