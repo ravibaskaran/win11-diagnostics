@@ -895,6 +895,12 @@ fn resolve_lhm_dir_from(exe_dir: Option<PathBuf>, cwd_resources: Option<PathBuf>
 
 /// Load the config from the given path, falling back to `Config::default()`
 /// if absent/unreadable. G15: never crash on a malformed config.
+/// Load the config at `path`, recovering from a missing or corrupt file
+/// per G15 (non-fatal) + G28 (non-technical-user hardening). A malformed
+/// TOML file is backed up to `<path>.corrupt-<unix_timestamp>` before
+/// returning `Config::default()`, so forensic evidence is preserved and
+/// the next `persist_config` write goes to a clean file. Cited: Story 13.1,
+/// guardrails.md G15/G28, tdd-fixtures.md F15.
 fn load_config(path: &PathBuf) -> Config {
     let Ok(content) = std::fs::read_to_string(path) else {
         tracing::info!(
@@ -909,9 +915,38 @@ fn load_config(path: &PathBuf) -> Config {
             tracing::warn!(
                 error = %e,
                 path = %path.display(),
-                "config file malformed — using defaults (G15)"
+                "config file malformed — backing up + using defaults (G15/G28, Story 13.1)"
             );
+            backup_corrupt_file(path);
             Config::default()
+        }
+    }
+}
+
+/// Back up a corrupt file to `<path>.corrupt-<unix_timestamp>`. Best-effort
+/// per G15: if the backup fails (disk full, permissions), log at `warn!`
+/// and return — the caller (`load_config`) still recovers to defaults.
+/// Cited: Story 13.1, G28, F15.
+fn backup_corrupt_file(path: &PathBuf) {
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let backup = path.with_extension(format!("toml.corrupt-{timestamp}"));
+    match std::fs::copy(path, &backup) {
+        Ok(_) => {
+            tracing::warn!(
+                original = %path.display(),
+                backup = %backup.display(),
+                "corrupt config backed up (Story 13.1, G28)"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                original = %path.display(),
+                backup = %backup.display(),
+                error = %e,
+                "failed to back up corrupt config (G15 — non-fatal, recovering to defaults anyway)"
+            );
         }
     }
 }
@@ -922,6 +957,7 @@ mod tests {
         child_probe_is_alive, join_poller_with_timeout, join_thread_with_timeout,
         watchdog_should_force_exit,
     };
+    use sidebar_domain::config::Config;
     use std::fs;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
@@ -1029,5 +1065,104 @@ mod tests {
     async fn join_thread_with_timeout_handles_none() {
         let result = join_thread_with_timeout(None, Duration::from_millis(100), "none").await;
         assert!(result.is_ok(), "None handle must short-circuit Ok(())");
+    }
+
+    // ===== Story 13.1 — Atomic config writes + corrupt-file backup =====
+    // Cited: Story 13.1, guardrails.md G15/G28, tdd-fixtures.md F15.
+
+    /// Cited: Story 13.1, F15. A malformed config.toml MUST parse to
+    /// `Config::default()` without panicking (G15).
+    #[test]
+    fn load_config_recovers_from_malformed_toml() {
+        let dir = TempDir::new().expect("temp root");
+        let path = dir.path().join("config.toml");
+        fs::write(&path, b"not = a = valid = toml = at all").expect("write garbage");
+
+        let config = super::load_config(&path);
+
+        assert_eq!(
+            config.poll_interval_seconds,
+            Config::default().poll_interval_seconds,
+            "malformed TOML MUST recover to defaults (G15)"
+        );
+    }
+
+    /// Cited: Story 13.1, F15, G28. A malformed config.toml MUST be backed
+    /// up to `config.toml.corrupt-<timestamp>` before recovery so forensic
+    /// evidence is not silently destroyed on the next write.
+    #[test]
+    fn load_config_backs_up_corrupt_file_with_timestamp() {
+        let dir = TempDir::new().expect("temp root");
+        let path = dir.path().join("config.toml");
+        let garbage = b"not = a = valid = toml = at all";
+        fs::write(&path, garbage).expect("write garbage");
+
+        let _config = super::load_config(&path);
+
+        let backups: Vec<String> = fs::read_dir(dir.path())
+            .expect("read_dir")
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().into_string().unwrap_or_default())
+            .filter(|n| n.starts_with("config.toml.corrupt-"))
+            .collect();
+        assert_eq!(
+            backups.len(),
+            1,
+            "exactly one timestamped backup MUST exist (got {backups:?})"
+        );
+        let backup_content = fs::read_to_string(dir.path().join(&backups[0])).expect("read backup");
+        assert!(
+            backup_content.starts_with("not = a = valid"),
+            "backup MUST preserve original bytes (got first 40: {:?})",
+            &backup_content[..backup_content.len().min(40)]
+        );
+    }
+
+    /// Cited: Story 13.1, F15, G28. `persist_config` MUST write via a temp
+    /// file + rename (atomic on NTFS same-volume). After a successful write,
+    /// no `.tmp` file MUST remain (rename completed).
+    #[test]
+    fn persist_config_writes_atomically_via_temp_rename() {
+        let dir = TempDir::new().expect("temp root");
+        let path = dir.path().join("config.toml");
+        let toml_str = Config::default().to_toml_string().expect("serialize");
+
+        sidebar_app::gui::atomic_write_config(&path, &toml_str);
+
+        assert!(path.exists(), "target config MUST exist after persist");
+        assert!(
+            !dir.path().join("config.toml.tmp").exists(),
+            "atomic write MUST NOT leave a .tmp file behind on success"
+        );
+    }
+
+    /// Cited: Story 13.1, F15, G28. A second persist MUST overwrite the
+    /// first via a fresh temp + rename (idempotent; no stale .tmp from the
+    /// prior write).
+    #[test]
+    fn persist_config_atomic_is_idempotent_across_writes() {
+        let dir = TempDir::new().expect("temp root");
+        let path = dir.path().join("config.toml");
+        let first = Config::default().to_toml_string().expect("serialize");
+        let second = Config {
+            poll_interval_seconds: 30,
+            ..Config::default()
+        }
+        .to_toml_string()
+        .expect("serialize");
+
+        sidebar_app::gui::atomic_write_config(&path, &first);
+        sidebar_app::gui::atomic_write_config(&path, &second);
+
+        assert!(path.exists());
+        assert!(
+            !dir.path().join("config.toml.tmp").exists(),
+            "no .tmp leftover after second write"
+        );
+        let written = fs::read_to_string(&path).expect("read back");
+        assert!(
+            written.contains("poll_interval_seconds = 30"),
+            "second write MUST win (got: {written})"
+        );
     }
 }

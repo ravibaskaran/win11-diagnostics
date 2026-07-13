@@ -543,31 +543,53 @@ impl SidebarApp {
         &self.state
     }
 
-    /// Persist the in-memory config to the on-disk path. Best-effort: errors
-    /// are logged at `warn` (G15 — settings-panel edits are non-fatal). Called
-    /// from the on_change callback after every settings mutation.
+    /// Persist the in-memory config to the on-disk path atomically via
+    /// `<path>.tmp` + `std::fs::rename` (atomic on NTFS same-volume). A crash
+    /// mid-write MUST NOT truncate `config.toml`. Best-effort: errors are
+    /// logged at `warn` (G15 — settings-panel edits are non-fatal). Called
+    /// from the on_change callback after every settings mutation. Cited:
+    /// Story 13.1, guardrails.md G28, tdd-fixtures.md F15.
     fn persist_config(&self) {
         if self.config_path.as_os_str().is_empty() {
             // No on-disk path (test or wizard path) — skip persistence.
             return;
         }
-        match self.config.to_toml_string() {
-            Ok(toml_str) => {
-                if let Err(e) = std::fs::write(&self.config_path, toml_str) {
-                    tracing::warn!(
-                        path = %self.config_path.display(),
-                        error = %e,
-                        "settings panel: failed to persist config (G15 — non-fatal)"
-                    );
-                }
-            }
+        let toml_str = match self.config.to_toml_string() {
+            Ok(s) => s,
             Err(e) => {
                 tracing::warn!(
                     error = %e,
                     "settings panel: failed to serialize config (G15 — non-fatal)"
                 );
+                return;
             }
-        }
+        };
+        atomic_write_config(&self.config_path, &toml_str);
+    }
+}
+
+/// Write `contents` to `path` atomically via a temp file + rename. On
+/// success, no `.tmp` file remains. On failure, logs at `warn` (G15) and
+/// best-effort cleans up the orphaned temp file. Cited: Story 13.1, G28, F15.
+pub fn atomic_write_config(path: &std::path::Path, contents: &str) {
+    let tmp = path.with_extension("toml.tmp");
+    if let Err(e) = std::fs::write(&tmp, contents) {
+        tracing::warn!(
+            path = %path.display(),
+            tmp = %tmp.display(),
+            error = %e,
+            "persist_config: failed to write temp file (G15 — non-fatal)"
+        );
+        return;
+    }
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        tracing::warn!(
+            path = %path.display(),
+            tmp = %tmp.display(),
+            error = %e,
+            "persist_config: failed to rename temp over target (G15 — non-fatal)"
+        );
+        let _ = std::fs::remove_file(&tmp);
     }
 }
 
