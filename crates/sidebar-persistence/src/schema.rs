@@ -300,4 +300,101 @@ mod tests {
         // And the u64 reinterpret confirms the value.
         assert_eq!(read_back.cast_unsigned(), u64::MAX);
     }
+
+    // ===== Story 13.2 — SQLite corruption quarantine + auto-recreate =====
+    // Cited: Story 13.2, guardrails.md G15/G21/G28, tdd-fixtures.md F15.
+    // The quarantine function lives in sidebar_persistence:: (lib.rs) and
+    // wraps schema::init — it does NOT weaken init's "must not overwrite
+    // corrupt" contract (Boundary #1 above stays intact).
+
+    /// Cited: Story 13.2, F15, G28. A corrupt `bandwidth.db` MUST be
+    /// renamed to `bandwidth.db.corrupt-<timestamp>` by
+    /// `quarantine_and_reopen`, preserving forensic evidence.
+    #[test]
+    fn quarantine_renames_corrupt_file_with_timestamp() {
+        let dir = TempDir::new().expect("TempDir::new");
+        let path = dir.path().join("bandwidth.db");
+        let garbage = b"this is definitely not a sqlite database file";
+        std::fs::write(&path, garbage).expect("write garbage");
+
+        let result = super::super::quarantine_and_reopen(&path);
+        assert!(
+            result.is_ok(),
+            "quarantine_and_reopen MUST succeed: {:?}",
+            result.err()
+        );
+
+        let backups: Vec<String> = std::fs::read_dir(dir.path())
+            .expect("read_dir")
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().into_string().unwrap_or_default())
+            .filter(|n| n.starts_with("bandwidth.db.corrupt-"))
+            .collect();
+        assert_eq!(
+            backups.len(),
+            1,
+            "exactly one timestamped backup MUST exist (got {backups:?})"
+        );
+        let backup_bytes = std::fs::read(dir.path().join(&backups[0])).expect("read backup");
+        assert!(
+            backup_bytes.starts_with(b"this is definitely not"),
+            "backup MUST preserve original garbage bytes"
+        );
+    }
+
+    /// Cited: Story 13.2, F15, G28. After quarantine, the returned
+    /// `Connection` MUST point at a fresh, schema-initialized DB (the
+    /// `current_cycle` table exists + `user_version = 2`).
+    #[test]
+    fn quarantine_reopens_fresh_connection_with_clean_schema() {
+        let dir = TempDir::new().expect("TempDir::new");
+        let path = dir.path().join("bandwidth.db");
+        std::fs::write(&path, b"garbage - not a db").expect("write garbage");
+
+        let conn = super::super::quarantine_and_reopen(&path).expect("quarantine + reopen");
+
+        // The fresh DB MUST have the schema tables.
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='current_cycle'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("query must succeed on fresh DB");
+        assert_eq!(count, 1, "current_cycle table MUST exist after quarantine");
+
+        // user_version MUST be 2 (schema::init ran).
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("pragma user_version");
+        assert_eq!(version, 2, "user_version MUST be 2 after quarantine + init");
+    }
+
+    /// Cited: Story 13.2, F15, G28. The corrupt file's bytes MUST be
+    /// byte-identical after quarantine (no mutation, just a rename).
+    #[test]
+    fn quarantine_preserves_corrupt_file_for_forensics() {
+        let dir = TempDir::new().expect("TempDir::new");
+        let path = dir.path().join("bandwidth.db");
+        let garbage = b"\x00\x01\x02not a db\xff\xfe";
+        std::fs::write(&path, garbage).expect("write garbage");
+
+        let _ = super::super::quarantine_and_reopen(&path).expect("quarantine");
+
+        let backups: Vec<_> = std::fs::read_dir(dir.path())
+            .expect("read_dir")
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with("bandwidth.db.corrupt-"))
+            })
+            .collect();
+        assert_eq!(backups.len(), 1, "exactly one backup");
+        let backup_bytes = std::fs::read(&backups[0]).expect("read backup");
+        assert_eq!(
+            backup_bytes, garbage,
+            "backup MUST be byte-identical to the original corrupt file"
+        );
+    }
 }

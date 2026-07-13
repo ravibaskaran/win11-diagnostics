@@ -3513,6 +3513,7 @@ dependencies = [
  "rusqlite",
  "sidebar-domain",
  "tempfile",
+ "tracing",
 ]
 
 [[package]]

@@ -566,14 +566,34 @@ fn run_accountant_on_thread(
             return;
         }
     };
-    if let Err(e) = sidebar_persistence::schema::init(&conn) {
-        tracing::warn!(
-            error = %e,
-            "schema::init failed — bandwidth accountant disabled (G15 non-fatal)"
-        );
-        flush_flag.store(true, Ordering::SeqCst);
-        return;
-    }
+    // Story 13.2 — if schema::init fails on a corrupt DB, quarantine the
+    // corrupt file + reopen a fresh DB instead of permanently disabling
+    // bandwidth tracking. The corrupt file is renamed to
+    // `bandwidth.db.corrupt-<ts>` for forensics (G28). If quarantine also
+    // fails (extremely unlikely — disk full / permissions), disable the
+    // accountant per G15 (non-fatal).
+    let conn = match sidebar_persistence::schema::init(&conn) {
+        Ok(()) => conn,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                path = %db_path.display(),
+                "schema::init failed on existing DB — attempting quarantine + reopen (Story 13.2, G28)"
+            );
+            drop(conn);
+            match sidebar_persistence::quarantine_and_reopen(db_path) {
+                Ok(fresh_conn) => fresh_conn,
+                Err(qe) => {
+                    tracing::warn!(
+                        error = %qe,
+                        "quarantine + reopen failed — bandwidth accountant disabled (G15 non-fatal)"
+                    );
+                    flush_flag.store(true, Ordering::SeqCst);
+                    return;
+                }
+            }
+        }
+    };
     let accountant_config = AccountantConfig::production(cycle_day);
     let accountant = BandwidthAccountant::new(
         readings_rx,

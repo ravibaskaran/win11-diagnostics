@@ -11,6 +11,7 @@ description = "sidebar SQLite-backed bandwidth state store (AD-11, Stories 4.1-4
 [dependencies]
 sidebar-domain = { path = "../sidebar-domain" }   # internal — Error::Sqlite variant (Story 0.6)
 rusqlite = { workspace = true }                   # MIT — SQLite bindings; bundled compiles sqlite3 (~1 MB, T-6)
+tracing = { workspace = true }                    # MIT — structured logging (Story 13.2 quarantine path)
 
 [dev-dependencies]
 tempfile = { workspace = true }                   # MIT OR Apache-2.0 — TempDir fixture (F1)
