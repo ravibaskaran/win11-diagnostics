@@ -22,7 +22,7 @@ function Invoke-SmokeItem {
         [string]$Threshold,
         [scriptblock]$Command
     )
-    Write-Host "`n=== $Id: $Name ($Threshold) ===" -ForegroundColor Cyan
+    Write-Host "`n=== ${Id}: $Name ($Threshold) ===" -ForegroundColor Cyan
     try {
         & $Command
         Write-Host "PASS: $Id" -ForegroundColor Green

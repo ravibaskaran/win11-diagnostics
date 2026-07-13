@@ -323,6 +323,31 @@ fn fetch_ohm_ps1_check_only_validates_local_hash_offline() {
     );
 }
 
+/// Story 10.2 — the scriptable smoke runner must parse before it is used by
+/// a release checklist. This catches PowerShell interpolation errors such as
+/// `$Id:` being parsed as an invalid variable reference.
+#[test]
+fn smoke_checklist_ps1_parses_without_errors() {
+    let pwsh = require_pwsh!();
+    let script = workspace_root().join("verify").join("smoke-checklist.ps1");
+    assert!(script.exists(), "{} must exist", script.display());
+
+    let command = format!(
+        "$errors = $null; [System.Management.Automation.PSParser]::Tokenize((Get-Content -Raw '{}'), [ref]$errors) | Out-Null; if ($errors.Count -gt 0) {{ exit 1 }}",
+        script.display()
+    );
+    let output = Command::new(pwsh)
+        .args(["-NoProfile", "-NonInteractive", "-Command", &command])
+        .output()
+        .expect("failed to invoke pwsh");
+
+    assert!(
+        output.status.success(),
+        "smoke-checklist.ps1 must parse. stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 /// Story 6.5 Validate: CI must run `fetch_ohm.ps1 -CheckOnly` so a hash drift
 /// on the committed LHM binary fails the build offline (no network egress,
 /// G16-compliant). Cited: Story 6.5 DoD, regression-harness.md CI contract.
