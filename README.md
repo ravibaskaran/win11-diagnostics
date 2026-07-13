@@ -91,6 +91,10 @@ prompt. Accept it, and the sidebar:
 5. Switches to Full mode — the status pill turns green, and temperature/fan/
    voltage readings appear alongside the existing metrics
 
+If the bundled LHM build does not start its Web Server automatically, open
+LHM's **View → Web Server** menu once, then click the status pill again. Until
+the loopback probe succeeds, the sidebar deliberately remains in Basic mode.
+
 **Privacy:** Full mode makes a **loopback-only** HTTP connection to
 `127.0.0.1`. The sidebar has **zero runtime network egress** in any mode
 (verified via `netstat` snapshot diff). No telemetry, no auto-update checks,
@@ -186,40 +190,19 @@ cargo build --release --target x86_64-pc-windows-msvc
 
 ---
 
-## Project architecture (for contributors)
+## Troubleshooting
 
-```
-crates/
-├── sidebar-domain/           Pure types + logic (Reading, Config, billing, formatting)
-├── sidebar-sensor/           SensorProvider trait + cost classifier
-├── sidebar-adapter-sysinfo/  CPU/RAM/disk via sysinfo crate (Basic tier)
-├── sidebar-adapter-nvml/     NVIDIA GPU via NVML (Basic tier)
-├── sidebar-adapter-battery/  Battery via starship-battery (Basic tier)
-├── sidebar-adapter-pdh/      Disk throughput via PDH counters (Basic tier)
-├── sidebar-adapter-net/      NIC throughput via GetIfTable2 (Basic tier)
-├── sidebar-adapter-ohm/      LHM HTTP /data.json adapter (Full tier)
-├── sidebar-persistence/      SQLite WAL bandwidth store (schema v2)
-├── sidebar-bandwidth/        Monthly bandwidth accountant + accumulator
-├── sidebar-platform/         Win32: AppBar, DPI, hotkey, OhmSupervisor, DWM
-└── sidebar-app/              Binary: egui GUI, poller, shutdown orchestrator
-```
+| Symptom | What to do |
+|---|---|
+| The sidebar opens in **BASIC** mode | This is the safe default. Click the status pill only when you want the extra LHM sensors and accept the UAC prompt. |
+| Full mode does not start | Confirm that the bundled LHM files were downloaded by `fetch_ohm.ps1`, then retry. A firewall or an incompatible running LHM instance can prevent the loopback probe from succeeding. |
+| A monitor or edge is wrong | Open settings, select the target monitor and dock edge again, then restart after a Windows display-topology change. |
+| Bandwidth totals look empty | Generate traffic, wait for the next poll, and confirm `%APPDATA%\\sidebar\\bandwidth.db` is writable. |
+| The UI is too large or too small | Check Windows display scaling. The application uses per-monitor DPI awareness. |
 
-**Two-tier model:** Basic-mode providers run with no elevation. Full-mode
-providers require the LHM subprocess (elevated via `ShellExecuteW("runas")`).
-The sidebar probes `http://127.0.0.1:17127/data.json` to detect whether LHM
-is already running. If it is, the sidebar reuses it without relaunching (no
-redundant UAC prompt). If LHM crashes, the sidebar automatically degrades to
-Basic mode.
-
-**Panic safety:** Every provider call is wrapped in `catch_unwind` — a
-panicking adapter contributes zero readings for that tick but the poller
-continues. Poisoned locks are recovered via `into_inner()`. NaN/Inf sensor
-values are filtered and rendered as `"--"`.
-
-**Resource bounds:** Broadcast channels are capacity-8 (drop oldest + warn).
-SQLite busy-retry is 5 attempts with 10/20/40/80/160ms backoff. The tokio
-runtime uses 2 worker threads. Shutdown completes within 3s (watchdog
-force-exits at the 3s deadline).
+The application has no telemetry, account system, cloud sync, or background
+update service. It reads local sensors only; the optional LHM bridge is
+loopback-only.
 
 ---
 
