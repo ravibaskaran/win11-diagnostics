@@ -1049,12 +1049,12 @@ impl eframe::App for SidebarApp {
         let on_change_noop: &dyn Fn() = &|| {};
         let on_launch: &dyn Fn() = self.launch_fn.as_ref().map_or(&|| {}, |f| f.as_ref());
         let hist = self.state.history_snapshot();
-        render_sidebar(
+        render_sidebar_mut(
             ui,
             &snapshot,
             tier,
             &mut self.config,
-            &self.view,
+            &mut self.view,
             on_change_noop,
             on_launch,
             Some(&hist),
@@ -1179,15 +1179,18 @@ pub struct SidebarView {
         sidebar_domain::graph::MetricKey,
         sidebar_domain::alert::AlertAck,
     >,
+    /// Story 12.6 — previous raw alert state per metric. Keeping this state
+    /// across frames preserves the domain hysteresis contract before ack or
+    /// snooze decisions are applied.
+    pub alert_states: std::collections::HashMap<
+        sidebar_domain::graph::MetricKey,
+        sidebar_domain::alert::AlertState,
+    >,
 }
 
-/// Composed top-level render wiring together: status pill + gear toggle +
-/// (settings panel when open, otherwise metric rows + bandwidth panel).
-///
-/// This is the Story 8.4 + 8.5 composition. The simpler [`render_snapshot`]
-/// remains for the Story 8.1 tests; the production render path
-/// ([`SidebarApp::ui`]) will switch to this function once AppState owns the
-/// Config + BandwidthView handles (Story 8.5 launch sequence).
+/// Compatibility wrapper for callers that only need a read-only render.
+/// Alert actions are applied to a cloned view; production uses
+/// [`render_sidebar_mut`] so acknowledgements persist across frames.
 #[allow(clippy::too_many_arguments)]
 pub fn render_sidebar(
     ui: &mut Ui,
@@ -1195,6 +1198,28 @@ pub fn render_sidebar(
     tier: ProviderTier,
     config: &mut Config,
     view: &SidebarView,
+    on_change: &dyn Fn(),
+    on_launch: &dyn Fn(),
+    history: Option<&sidebar_domain::graph::MetricHistory>,
+) {
+    let mut view = view.clone();
+    render_sidebar_mut(
+        ui, readings, tier, config, &mut view, on_change, on_launch, history,
+    );
+}
+
+/// Mutable production render path. Alert actions mutate `view.alert_acks` and
+/// open settings without introducing a second callback or global state.
+#[allow(clippy::too_many_arguments)]
+// The immediate-mode composition is intentionally kept in one pass so egui
+// layout state, alert state, and history rendering cannot drift apart.
+#[allow(clippy::too_many_lines)]
+pub fn render_sidebar_mut(
+    ui: &mut Ui,
+    readings: &[Reading],
+    tier: ProviderTier,
+    config: &mut Config,
+    view: &mut SidebarView,
     on_change: &dyn Fn(),
     on_launch: &dyn Fn(),
     history: Option<&sidebar_domain::graph::MetricHistory>,
@@ -1219,16 +1244,10 @@ pub fn render_sidebar(
         header.with_layout(egui::Layout::right_to_left(egui::Align::Center), |right| {
             let mut open = view.settings_open;
             let gear = right.checkbox(&mut open, "⚙");
-            // The local `open` is dropped here; the persistent state lives in
-            // the host's SidebarView. We surface the toggle event through the
-            // on_change callback — the host updates its SidebarView. This keeps
-            // the render path side-effect-free (Story 8.1 logic/ui split).
             if gear.changed() {
+                view.settings_open = open;
                 on_change();
             }
-            // NOTE: the host is responsible for flipping SidebarView.settings_open
-            // in response to on_change. The render path reads view.settings_open
-            // and writes nothing — it just signals via on_change.
         });
     });
 
@@ -1274,27 +1293,63 @@ pub fn render_sidebar(
             out
         };
 
+        let now_epoch = chrono::Local::now().timestamp();
         for reading in &ordered {
-            // Story 8.8: classify + pick the row color. The render path is
-            // stateless here (we always feed `AlertState::Normal` as prev);
-            // the SidebarView will hold per-sensor prev-state in a follow-up
-            // story once AppState owns a per-sensor history map.
-            let (color, _state) = alert_indicator::color_for(
-                reading,
-                Some(&config.thresholds),
-                sidebar_domain::alert::AlertState::Normal,
-                accent,
-                default,
+            // Story 8.8/12.6: preserve the previous raw state so threshold
+            // hysteresis remains effective across frames and ack/snooze does
+            // not re-arm while a metric is still inside the hysteresis band.
+            let key = sidebar_domain::graph::MetricKey {
+                category: reading.sensor.category.to_string(),
+                instance: reading.sensor.instance.clone(),
+                kind: format!("{:?}", reading.kind),
+            };
+            let previous_state = view
+                .alert_states
+                .get(&key)
+                .copied()
+                .unwrap_or(sidebar_domain::alert::AlertState::Normal);
+            let alertable = matches!(
+                reading.kind,
+                MetricKind::CpuTemperature | MetricKind::GpuTemperature
             );
+            let raw_state =
+                alert_indicator::classify(reading, Some(&config.thresholds), previous_state);
+            if alertable {
+                view.alert_states.insert(key.clone(), raw_state);
+            }
+            if let Some(ack) = view.alert_acks.get(&key).copied() {
+                if sidebar_domain::alert::ack_should_clear(raw_state, ack, now_epoch) {
+                    view.alert_acks.remove(&key);
+                }
+            }
+            let ack = view.alert_acks.get(&key).copied();
+            let displayed_state = sidebar_domain::alert::displayed_state(raw_state, ack, now_epoch);
+            let color = alert_indicator::color_for_state(displayed_state, accent, default);
             metric_row::render_with_color(ui, reading, &display, color);
+            if matches!(
+                displayed_state,
+                sidebar_domain::alert::AlertState::Warning
+                    | sidebar_domain::alert::AlertState::Critical
+            ) {
+                ui.horizontal(|actions| {
+                    if actions.small_button("Acknowledge").clicked() {
+                        view.alert_acks
+                            .insert(key.clone(), sidebar_domain::alert::AlertAck::Acknowledged);
+                    }
+                    if actions.small_button("Snooze 5m").clicked() {
+                        view.alert_acks.insert(
+                            key.clone(),
+                            sidebar_domain::alert::AlertAck::Snoozed(now_epoch + 300),
+                        );
+                    }
+                    if actions.small_button("Open settings").clicked() {
+                        view.settings_open = true;
+                    }
+                });
+            }
             // Story 12.2 — per-row sparkline from MetricHistory.
             if let Some(hist) = history {
-                let mkey = sidebar_domain::graph::MetricKey {
-                    category: reading.sensor.category.to_string(),
-                    instance: reading.sensor.instance.clone(),
-                    kind: format!("{:?}", reading.kind),
-                };
-                if let Some(window) = hist.get(&mkey) {
+                if let Some(window) = hist.get(&key) {
                     if window.len() >= 2 {
                         sparkline::render_snapshot(ui, &window.to_vec(), 60.0);
                     }
@@ -1940,6 +1995,7 @@ mod tests {
             settings_open: true,
             sparkline: None,
             alert_acks: std::collections::HashMap::new(),
+            alert_states: std::collections::HashMap::new(),
         };
         let mut harness = Harness::new_ui(|ui| {
             render_sidebar(
@@ -1975,6 +2031,7 @@ mod tests {
             settings_open: false,
             sparkline: None,
             alert_acks: std::collections::HashMap::new(),
+            alert_states: std::collections::HashMap::new(),
         };
         let mut harness = Harness::new_ui(|ui| {
             render_sidebar(
@@ -2044,6 +2101,7 @@ mod tests {
             settings_open: false,
             sparkline: Some(vec![10.0, 20.0, 30.0]),
             alert_acks: std::collections::HashMap::new(),
+            alert_states: std::collections::HashMap::new(),
         };
         let mut harness = Harness::new_ui(|ui| {
             render_sidebar(
@@ -2122,6 +2180,131 @@ mod tests {
         assert!(
             labels.contains("95"),
             "critical CPU temp must still render its value (got: {labels})"
+        );
+    }
+
+    #[test]
+    fn render_sidebar_mut_alert_actions_persist_acknowledgement() {
+        use egui_kittest::kittest::Queryable;
+
+        let readings = vec![reading(MetricKind::CpuTemperature, 95.0, Unit::Celsius)];
+        let mut config = Config::default();
+        let mut view = SidebarView::default();
+        let mut harness = Harness::new_ui(|ui| {
+            render_sidebar_mut(
+                ui,
+                &readings,
+                ProviderTier::Basic,
+                &mut config,
+                &mut view,
+                &|| {},
+                &|| {},
+                None,
+            );
+        });
+        harness.run();
+        harness.get_by_label("Acknowledge").click();
+        harness.run();
+        drop(harness);
+
+        let key = sidebar_domain::graph::MetricKey {
+            category: "cpu".to_string(),
+            instance: "package".to_string(),
+            kind: "CpuTemperature".to_string(),
+        };
+        assert_eq!(
+            view.alert_acks.get(&key),
+            Some(&sidebar_domain::alert::AlertAck::Acknowledged),
+            "acknowledgement must persist in the production mutable view"
+        );
+    }
+
+    #[test]
+    fn render_sidebar_mut_preserves_alert_hysteresis_before_rearming_ack() {
+        let key = sidebar_domain::graph::MetricKey {
+            category: "cpu".to_string(),
+            instance: "package".to_string(),
+            kind: "CpuTemperature".to_string(),
+        };
+        let mut config = Config::default();
+        let mut view = SidebarView::default();
+        let first = vec![reading(MetricKind::CpuTemperature, 85.0, Unit::Celsius)];
+        {
+            let mut harness = Harness::new_ui(|ui| {
+                render_sidebar_mut(
+                    ui,
+                    &first,
+                    ProviderTier::Basic,
+                    &mut config,
+                    &mut view,
+                    &|| {},
+                    &|| {},
+                    None,
+                );
+            });
+            harness.run();
+        }
+        assert_eq!(
+            view.alert_states.get(&key),
+            Some(&sidebar_domain::alert::AlertState::Warning)
+        );
+        view.alert_acks
+            .insert(key.clone(), sidebar_domain::alert::AlertAck::Acknowledged);
+
+        // 78°C is below the warning threshold but inside the 5°C hysteresis
+        // band; the acknowledgement must remain until the metric recovers.
+        let second = vec![reading(MetricKind::CpuTemperature, 78.0, Unit::Celsius)];
+        {
+            let mut harness = Harness::new_ui(|ui| {
+                render_sidebar_mut(
+                    ui,
+                    &second,
+                    ProviderTier::Basic,
+                    &mut config,
+                    &mut view,
+                    &|| {},
+                    &|| {},
+                    None,
+                );
+            });
+            harness.run();
+        }
+        assert!(
+            view.alert_acks.contains_key(&key),
+            "ack must not clear while hysteresis keeps the raw state in Warning"
+        );
+        assert_eq!(
+            view.alert_states.get(&key),
+            Some(&sidebar_domain::alert::AlertState::Warning)
+        );
+    }
+
+    #[test]
+    fn render_sidebar_mut_gear_toggle_opens_settings() {
+        use egui_kittest::kittest::Queryable;
+
+        let readings = vec![reading(MetricKind::CpuUtilization, 42.0, Unit::Percent)];
+        let mut config = Config::default();
+        let mut view = SidebarView::default();
+        let mut harness = Harness::new_ui(|ui| {
+            render_sidebar_mut(
+                ui,
+                &readings,
+                ProviderTier::Basic,
+                &mut config,
+                &mut view,
+                &|| {},
+                &|| {},
+                None,
+            );
+        });
+        harness.run();
+        harness.get_by_label("⚙").click();
+        harness.run();
+        drop(harness);
+        assert!(
+            view.settings_open,
+            "gear click must open settings in production"
         );
     }
 
