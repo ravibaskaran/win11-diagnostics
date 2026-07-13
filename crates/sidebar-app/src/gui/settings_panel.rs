@@ -52,6 +52,47 @@ pub(crate) const MAX_POLL_INTERVAL: u32 = 60;
 pub const NO_RESPLIT_TOOLTIP: &str = "Billing-cycle start day applies to the \
      NEXT rollover only. The current cycle is not re-split.";
 
+// ===== Story 13.4 — plain-language tooltips for every settings section =====
+// Cited: Story 13.4, guardrails.md G28, nfr-thresholds.md T-37.
+
+/// Tooltip for the billing-cycle-start-day section. Cited: Story 13.4, G28.
+pub const BILLING_CYCLE_TOOLTIP: &str = "The day of the month your bandwidth \
+    counter resets. If your internet plan resets on the 15th, set this to 15. \
+    For month-end, use 'Last day'.";
+
+/// Tooltip for the temperature-unit section. Cited: Story 13.4, G28.
+pub const TEMP_UNIT_TOOLTIP: &str = "Whether to show temperatures in Celsius \
+    (°C) or Fahrenheit (°F).";
+
+/// Tooltip for the technical-units toggle (renamed from 'Show raw values').
+/// Cited: Story 13.4, G28.
+pub const TECHNICAL_UNITS_TOOLTIP: &str = "Show exact values like 3,840,000,000 \
+    Hz instead of 3.84 GHz, and bytes instead of GB. Most users leave this off.";
+
+/// Tooltip for the size-units section (renamed from 'Byte base'). Cited:
+/// Story 13.4, G28.
+pub const SIZE_UNITS_TOOLTIP: &str = "Decimal (GB) = 1,000,000,000 bytes — what \
+    Windows shows. Binary (GiB) = 1,073,741,824 bytes — what some tools show. \
+    Most users use Decimal.";
+
+/// Tooltip for the refresh-rate section (renamed from 'Poll interval').
+/// Cited: Story 13.4, G28.
+pub const REFRESH_RATE_TOOLTIP: &str = "How often the sidebar updates its \
+    readings. Lower = fresher but uses more CPU. Default 10s is fine for most \
+    users.";
+
+/// Tooltip for the docked-edge section. Cited: Story 13.4, G28.
+pub const DOCKED_EDGE_TOOLTIP: &str = "Which screen edge the sidebar sticks to. \
+    Right is the default.";
+
+/// Tooltip for the theme section. Cited: Story 13.4, G28.
+pub const THEME_TOOLTIP: &str = "Dark or Light appearance. 'System' follows your \
+    Windows dark/light setting.";
+
+/// Tooltip for the metrics section. Cited: Story 13.4, G28.
+pub const METRICS_TOOLTIP: &str = "Choose which readings appear and in what \
+    order. Drag to reorder; uncheck to hide.";
+
 /// Render the settings panel into `ui`, editing `config` in place. The host
 /// passes `on_change: &dyn Fn()` which is invoked whenever the user changes
 /// any field — the host is responsible for persisting `config.toml` (debounced
@@ -67,7 +108,8 @@ pub fn render(ui: &mut Ui, config: &mut Config, on_change: &dyn Fn()) {
     let mut changed = false;
 
     // ---- Billing cycle start day (T-26: Day in [1,28] OR LastDayOfMonth) ----
-    ui.label("Billing cycle start day");
+    ui.label("Billing cycle start day")
+        .on_hover_text(BILLING_CYCLE_TOOLTIP);
     ui.horizontal(|row| {
         // The slider operates on a local day_value; if "Last day" is checked
         // we leave the slider at MAX_CYCLE_DAY and disable it.
@@ -112,7 +154,8 @@ pub fn render(ui: &mut Ui, config: &mut Config, on_change: &dyn Fn()) {
     ui.label(egui::RichText::new(NO_RESPLIT_TOOLTIP).small().weak());
 
     // ---- Temperature unit (T-29: C/F — only C/F ship in v1) ----
-    ui.label("Temperature unit");
+    ui.label("Temperature unit")
+        .on_hover_text(TEMP_UNIT_TOOLTIP);
     ui.horizontal(|row| {
         let mut unit = config.display.temp_unit;
         if row
@@ -131,18 +174,20 @@ pub fn render(ui: &mut Ui, config: &mut Config, on_change: &dyn Fn()) {
         }
     });
 
-    // ---- Raw values toggle (T-28) ----
+    // ---- Technical units toggle (Story 13.4: renamed from 'Show raw values') ----
     ui.horizontal(|row| {
         let mut raw = config.display.raw_values;
-        let r = row.checkbox(&mut raw, "Show raw values (Hz/bytes)");
+        let r = row
+            .checkbox(&mut raw, "Show technical units")
+            .on_hover_text(TECHNICAL_UNITS_TOOLTIP);
         if r.changed() {
             config.display.raw_values = raw;
             changed = true;
         }
     });
 
-    // ---- Decimal / binary base (T-28) ----
-    ui.label("Byte base");
+    // ---- Size units (Story 13.4: renamed from 'Byte base') (T-28) ----
+    ui.label("Size units").on_hover_text(SIZE_UNITS_TOOLTIP);
     ui.horizontal(|row| {
         let mut decimal = config.display.decimal_base;
         let r1 = row.radio_value(&mut decimal, true, "Decimal (GB)");
@@ -153,8 +198,9 @@ pub fn render(ui: &mut Ui, config: &mut Config, on_change: &dyn Fn()) {
         }
     });
 
-    // ---- Poll interval (T-3: clamp to [1, 60]) ----
-    ui.label("Poll interval (seconds)");
+    // ---- Refresh rate (Story 13.4: renamed from 'Poll interval') (T-3: clamp to [1, 60]) ----
+    ui.label("Refresh rate (seconds)")
+        .on_hover_text(REFRESH_RATE_TOOLTIP);
     ui.horizontal(|row| {
         let mut v = config.poll_interval_seconds;
         let slider = row.add(
@@ -183,7 +229,7 @@ pub fn render(ui: &mut Ui, config: &mut Config, on_change: &dyn Fn()) {
 
     // ---- Story 8.9: metric enable/disable + reorder ----
     ui.separator();
-    ui.label("Metrics");
+    ui.label("Metrics").on_hover_text(METRICS_TOOLTIP);
     crate::gui::metric_list::render(ui, &mut config.metrics, "settings", on_change);
 
     if changed {
@@ -193,7 +239,7 @@ pub fn render(ui: &mut Ui, config: &mut Config, on_change: &dyn Fn()) {
 
 /// Render the docked-edge radio section.
 fn dock_edge_section(ui: &mut Ui, dock: &mut DockConfig, changed: &mut bool) {
-    ui.label("Docked edge");
+    ui.label("Docked edge").on_hover_text(DOCKED_EDGE_TOOLTIP);
     ui.horizontal(|row| {
         for &e in &["Left", "Right", "Top", "Bottom"] {
             let mut selected = dock.edge == e;
@@ -207,7 +253,7 @@ fn dock_edge_section(ui: &mut Ui, dock: &mut DockConfig, changed: &mut bool) {
 
 /// Render the theme-mode radio section.
 fn theme_section(ui: &mut Ui, theme: &mut ThemeConfig, changed: &mut bool) {
-    ui.label("Theme");
+    ui.label("Theme").on_hover_text(THEME_TOOLTIP);
     ui.horizontal(|row| {
         for &m in &["Dark", "Light", "System"] {
             let mut selected = theme.mode == m;
@@ -328,8 +374,8 @@ mod tests {
             });
         });
         harness.run();
-        // Find the "Show raw values" checkbox and click it.
-        harness.get_by_label("Show raw values (Hz/bytes)").click();
+        // Find the "Show technical units" checkbox and click it.
+        harness.get_by_label("Show technical units").click();
         harness.run();
         assert!(
             config.lock().unwrap().display.raw_values,

@@ -47,6 +47,7 @@
 // Story 8.6 (theme + accent), 8.7 (sparkline), 8.8 (threshold alert UI) add
 // three more submodules; their wiring into `render_sidebar` lands in the
 // GREEN commit for that batch.
+pub mod about;
 pub mod alert_indicator;
 pub mod bandwidth_panel;
 pub mod first_run;
@@ -1254,6 +1255,9 @@ pub struct SidebarView {
         sidebar_domain::graph::MetricKey,
         sidebar_domain::alert::AlertState,
     >,
+    /// Story 13.4 — when true, render the About dialog. Toggled by the "ⓘ"
+    /// button in the header (next to the gear).
+    pub about_open: bool,
 }
 
 /// Compatibility wrapper for callers that only need a read-only render.
@@ -1311,10 +1315,14 @@ pub fn render_sidebar_mut(
         header.label(sidebar_domain::format::format_clock_date(now.date_naive()));
         header.with_layout(egui::Layout::right_to_left(egui::Align::Center), |right| {
             let mut open = view.settings_open;
-            let gear = right.checkbox(&mut open, "⚙");
+            let gear = right.checkbox(&mut open, "⚙").on_hover_text("Settings");
             if gear.changed() {
                 view.settings_open = open;
                 on_change();
+            }
+            // Story 13.4 — About dialog button (ⓘ) next to the gear.
+            if right.button("ⓘ").on_hover_text("About").clicked() {
+                view.about_open = true;
             }
         });
     });
@@ -1455,6 +1463,11 @@ pub fn render_sidebar_mut(
             &config.display,
         );
     }
+
+    // Story 13.4 — render the About dialog on top of everything if open.
+    // This is a Window (not a panel), so it overlays regardless of whether
+    // the settings panel or the live sidebar is showing.
+    about::render_about(ui, &mut view.about_open);
 }
 
 /// Short uppercase label for a [`MetricKind`] — the per-row "kind" the F8
@@ -2160,6 +2173,7 @@ mod tests {
             sparkline: None,
             alert_acks: std::collections::HashMap::new(),
             alert_states: std::collections::HashMap::new(),
+            about_open: false,
         };
         let mut harness = Harness::new_ui(|ui| {
             render_sidebar(
@@ -2196,6 +2210,7 @@ mod tests {
             sparkline: None,
             alert_acks: std::collections::HashMap::new(),
             alert_states: std::collections::HashMap::new(),
+            about_open: false,
         };
         let mut harness = Harness::new_ui(|ui| {
             render_sidebar(
@@ -2266,6 +2281,7 @@ mod tests {
             sparkline: Some(vec![10.0, 20.0, 30.0]),
             alert_acks: std::collections::HashMap::new(),
             alert_states: std::collections::HashMap::new(),
+            about_open: false,
         };
         let mut harness = Harness::new_ui(|ui| {
             render_sidebar(
