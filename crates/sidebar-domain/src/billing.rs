@@ -90,9 +90,9 @@ pub fn cycle_end(start: CycleStartDay, year: i32, month: u32) -> Option<chrono::
     next_start.pred_opt()
 }
 
-/// Compute the start date of the NEXT billing cycle.
-#[must_use]
-pub fn cycle_start_of_next_month(
+/// Compute the start date of the NEXT billing cycle. Private — only
+/// `cycle_end` (this module) consumes it; no external callers (cert iter-2).
+fn cycle_start_of_next_month(
     start: CycleStartDay,
     year: i32,
     month: u32,

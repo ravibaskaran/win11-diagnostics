@@ -34,6 +34,14 @@ use std::time::Duration;
 /// poller. HITL (G11) — do not change without architect sign-off.
 pub const HTTP_TIMEOUT_MS: u64 = 500;
 
+/// Hard cap on the LHM `/data.json` response body (cert iter-2, 2026-07-14).
+/// A real LHM payload is ~50-500 KB; 10 MiB is 20-200x headroom. Bounds a
+/// compromised/impersonating loopback service from streaming unbounded bytes
+/// into RAM before the LHM-signature check or serde_json sees them. The
+/// 500ms timeout provides indirect mitigation, but on loopback a malicious
+/// server can saturate that window; this cap is the direct defense.
+pub const MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
+
 /// T-45: LHM's default HTTP port. Configurable via [`RealHttpClient::new`]
 /// / [`OhmAdapterGeneric`] constructor; the actual resolved port is supplied
 /// by `OhmSupervisor` (Story 6.4). Hardcoded here as the default.
@@ -175,9 +183,27 @@ impl HttpClient for RealHttpClient {
         // `Error::Timeout` variant (2.x); map accordingly so the adapter can
         // log a targeted message per Boundary #2.
         match self.agent.get(url).call() {
-            Ok(resp) => resp
-                .into_string()
-                .map_err(|e| OhmError::HttpFailed(format!("read body: {e}"))),
+            Ok(resp) => {
+                // cert iter-2 (2026-07-14): bound the response body to
+                // MAX_BODY_BYTES before buffering into a String. A real LHM
+                // payload is small; a malicious/compromised loopback service
+                // could otherwise stream unbounded bytes. `Read::take` caps
+                // the read; the trailing `read_to_end` would error on truncation
+                // but we instead read one extra byte to detect oversize.
+                use std::io::Read;
+                let mut reader = resp.into_reader().take((MAX_BODY_BYTES + 1) as u64);
+                let mut buf = Vec::new();
+                reader
+                    .read_to_end(&mut buf)
+                    .map_err(|e| OhmError::HttpFailed(format!("read body: {e}")))?;
+                if buf.len() > MAX_BODY_BYTES {
+                    return Err(OhmError::HttpFailed(format!(
+                        "LHM response body exceeded {MAX_BODY_BYTES} byte cap (cert iter-2 G16 defense)"
+                    )));
+                }
+                String::from_utf8(buf)
+                    .map_err(|e| OhmError::HttpFailed(format!("body not UTF-8: {e}")))
+            }
             Err(ureq::Error::Status(code, _resp)) => {
                 // Non-2xx status. LHM normally returns 200 with JSON on
                 // `/data.json`; a 404 here almost certainly means a different
@@ -231,7 +257,7 @@ fn is_timeout_transport(t: &ureq::Transport) -> bool {
 #[cfg(test)]
 mod tests {
     use super::validate_loopback_url;
-    use super::{HttpClient, OhmError, RealHttpClient};
+    use super::{HttpClient, OhmError, RealHttpClient, MAX_BODY_BYTES};
 
     #[test]
     fn loopback_validator_accepts_ipv4_loopback_range() {
@@ -305,6 +331,55 @@ mod tests {
             matches!(result, Ok(ref body) if body.is_empty())
                 || matches!(result, Err(OhmError::HttpFailed(ref message)) if message.contains("HTTP 302")),
             "redirect must not be followed to remote host, got {result:?}"
+        );
+    }
+
+    /// Cited: cert iter-2 (2026-07-14). A malicious/compromised loopback
+    /// service streaming a body larger than `MAX_BODY_BYTES` MUST be rejected
+    /// before the buffer grows unbounded. Real LHM payloads are ~50-500 KB;
+    /// the 10 MiB cap is generous headroom.
+    #[test]
+    fn real_client_rejects_body_exceeding_max_bytes_cap() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::time::Duration;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind body-cap fixture");
+        let address = listener.local_addr().expect("body-cap fixture address");
+        let oversize = MAX_BODY_BYTES + 1024; // just over the cap
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept body-cap request");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("configure body-cap fixture timeout");
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request);
+            // Advertise Content-Length = oversize; write a body that's truncated
+            // by the client's `take(MAX_BODY_BYTES + 1)` cap. The client reads
+            // MAX_BODY_BYTES + 1 bytes, sees len > MAX_BODY_BYTES, rejects.
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {oversize}\r\nConnection: close\r\n\r\n"
+            );
+            stream.write_all(header.as_bytes()).expect("write header");
+            // Stream zeros to fill the client's read window.
+            let chunk = vec![b'0'; 65536];
+            let mut written = 0_usize;
+            while written < oversize {
+                let n = std::cmp::min(chunk.len(), oversize - written);
+                if stream.write_all(&chunk[..n]).is_err() {
+                    break; // client closed after detecting oversize
+                }
+                written += n;
+            }
+        });
+
+        let result = RealHttpClient::new().get(&format!("http://{address}/data.json"));
+        // The test passes the borrow-checker + thread-join even if the server
+        // thread breaks on early client close; what matters is the result.
+        let _ = server.join();
+        assert!(
+            matches!(result, Err(OhmError::HttpFailed(ref message)) if message.contains("exceeded")),
+            "oversized body MUST be rejected with the cap message, got {result:?}"
         );
     }
 }

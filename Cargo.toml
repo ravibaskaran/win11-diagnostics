@@ -57,7 +57,7 @@ windows = "0.62.2"           # MIT OR Apache-2.0 — Win32 FFI (GetIfTable2, She
 egui = "0.35"                # MIT — immediate-mode GUI
 eframe = { version = "0.35", default-features = false, features = ["glow", "accesskit"] }  # MIT — egui desktop shell (glow renderer for lower RSS per NFR-4 T-4); wayland/x11 dropped — Win32-only binary (cert audit 2026-07-13)
 raw-window-handle = "0.6.2"  # MIT OR Apache-2.0 — eframe root viewport HWND extraction
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "net", "io-util", "signal"] }  # MIT — async runtime (AD-6); signal added Story 7.5 (Ctrl+C shutdown)
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "signal"] }  # MIT — async runtime (AD-6); net/io-util dropped cert iter-2 (unused); signal for Ctrl+C shutdown (Story 7.5)
 rusqlite = { version = "0.32", features = ["bundled"] }  # MIT — SQLite bindings; `bundled` compiles sqlite3 in (~1 MB, T-6)
 toml = "0.8"                 # MIT OR Apache-2.0 — config.toml parse (AD-9)
 serde = { version = "1", features = ["derive"] }  # MIT OR Apache-2.0 — serialization

@@ -33,8 +33,9 @@ use windows::Win32::System::Threading::CreateMutexW;
 pub const MUTEX_NAME: &str = "Global\\sidebar-app-single-instance";
 
 /// Claim the single-instance mutex, or exit(0) if another instance already
-/// holds it. Called once at the very top of `main()` (before
-/// `init_tracing` even, so a second launch exits before doing any work).
+/// holds it. Called from `main()` immediately AFTER `init_tracing()` (so the
+/// exit is logged) but before any resource work — config load, eframe launch.
+/// A second launch exits(0) before wasting any work on the doomed instance.
 ///
 /// The mutex handle is leaked on purpose — it must outlive the function
 /// frame so the kernel keeps the mutex alive for the entire process

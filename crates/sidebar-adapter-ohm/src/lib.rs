@@ -50,7 +50,7 @@
 
 use std::sync::Mutex;
 
-use sidebar_domain::reading::{MetricKind, Reading, SensorId, Unit};
+use sidebar_domain::reading::{finite, MetricKind, Reading, SensorId, Unit};
 use sidebar_sensor::descriptor::{CostClass, ProviderTier, SensorDescriptor};
 use sidebar_sensor::provider::SensorProvider;
 use tracing::{debug, warn};
@@ -271,9 +271,7 @@ fn map_sensor(node: &LhmNode) -> Option<Reading> {
     // it yet). Skip — never emit NaN (T-20).
     let raw = node.value?;
     // T-20: non-finite values are omitted, not emitted with a sentinel.
-    if !raw.is_finite() {
-        return None;
-    }
+    let raw = finite(raw)?;
 
     // Parse the LHM id path. Format: `/<hw_class>/<hw_index>/<category>/<sensor_index>`
     // e.g. `/amdcpu/0/temperature/0`. The leading segment is empty (the id

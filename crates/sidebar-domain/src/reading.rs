@@ -401,6 +401,17 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
+    // ----- finite() helper (T-20 contract, cert iter-1 dedup 2026-07-13) -----
+
+    #[test]
+    fn finite_passes_finite_values_and_rejects_nan_inf() {
+        assert_eq!(finite(0.0), Some(0.0));
+        assert_eq!(finite(-42.5), Some(-42.5));
+        assert_eq!(finite(f64::NAN), None);
+        assert_eq!(finite(f64::INFINITY), None);
+        assert_eq!(finite(f64::NEG_INFINITY), None);
+    }
+
     // ----- Happy Path #1: SensorId round-trips through Debug/PartialEq/Hash -----
 
     #[test]

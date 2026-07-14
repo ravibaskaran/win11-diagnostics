@@ -168,7 +168,7 @@ mod tests {
 
     use super::*;
     use mockall::mock;
-    use sidebar_domain::reading::{finite, MetricKind, Unit};
+    use sidebar_domain::reading::{MetricKind, Unit};
     use sidebar_sensor::descriptor::{CostClass, ProviderTier};
     use sidebar_sensor::provider::SensorProvider;
     use std::sync::Arc;
@@ -418,12 +418,7 @@ mod tests {
     }
 
     // ----- Helper sanity (T-20 finite filter) -----
-
-    /// The `finite` helper is the T-20 contract enforcer — quick sanity test.
-    #[test]
-    fn finite_helper_is_sane() {
-        assert_eq!(finite(0.0), Some(0.0));
-        assert_eq!(finite(f64::NAN), None);
-        assert_eq!(finite(f64::INFINITY), None);
-    }
+    // The `finite` helper now lives in sidebar_domain::reading (deduplicated
+    // cert iter-1, 2026-07-13). The T-20 contract test belongs there, not in
+    // an adapter crate.
 }
