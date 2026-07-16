@@ -1508,6 +1508,409 @@ Epic 10 (Verify)
 
 ---
 
+## EPIC 14 — Silent-Failure Elimination (Productization Pass, 2026-07-16)
+- **System Objective:** Eliminate every place where a non-technical user does something and nothing visibly happens. Five silent-failure traps were identified in the 2026-07-16 productization audit: wizard dead-end, launch-failure silence, per-sensor staleness invisibility, config-corruption silence, DB-corruption silence. Each is a trust-killer. This epic closes all five.
+- **Status:** Planned 2026-07-16. All five stories MUST land before the v1.0.0 tag (per maintainer directive 2026-07-16: "all of these before v1, not v1.1").
+- **Dependency convention:** Epic 14 is post-Epic 13. Stories 14.1-14.5 are independent and parallelizable (disjoint file ownership). No story in Epic 14 blocks the external SignPath/release gates (Epic 9), but Epic 14 SHOULD merge before the v1.0.0 tag so the hardened build is what gets signed.
+
+### STORY 14.1: Launch-failure visibility (launch_result_rx → user banner)
+- **User Story:** As a non-technical user, when I click the BASIC pill and accept (or decline) the UAC prompt, I want to SEE whether it worked — not a silent gray pill with no explanation.
+- **Technical Context:** `crates/sidebar-app/src/main.rs:215-225` (supervisor thread swallows `launch_elevated` Err into `tracing::warn!`). `crates/sidebar-platform/src/ohm_supervisor.rs:440-448` (T-11 timeout returns Err). `crates/sidebar-app/src/gui/mod.rs:1173` (degraded_message only fires for child-EXIT, not launch-FAILURE). guardrails.md G28 (non-technical-user hardening) + G29 (silent-failure surfaces).
+- **Wiring:**
+  - **Layer:** unit + integration
+  - **Depends-On:** [12.8]
+  - **Blocks:** [14.5]
+  - **Next:** 14.2
+  - **Parallel-With:** [14.2, 14.3, 14.4, 14.5]
+  - **DoD:** A `LaunchOutcome` enum (Success/UacDeclined/Timeout/BinaryMissing/PortChainExhausted) is sent from the supervisor thread to the GUI via a new `watch::Receiver<Option<LaunchOutcome>>`. The GUI renders actionable banners: UacDeclined → "You declined the permission prompt. Click the pill to try again."; Timeout → "The hardware monitor didn't respond. Click again, or restart sidebar."; BinaryMissing → "Bundled monitor binary is missing. Reinstall sidebar."
+- **Gentle-AI SDD Phase Checklist:**
+  1. [ ] **Plan:** Define `LaunchOutcome` in sidebar-domain (pure enum, no deps). Wire the watch channel in main.rs alongside the existing `bandwidth_view_rx`.
+  2. [ ] **Implement:** Supervisor thread sends outcome on launch completion/failure. GUI drains it in `logic()` + sets a `launch_message: Option<String>` field rendered as a banner above the metric rows. Auto-clear on first successful Full broadcast.
+  3. [ ] **Validate:** Unit test the outcome→message mapping; kittest that the banner renders; integration test the watch channel plumbing.
+- **TDD Contract & Test Cases:**
+  - **Unit Test Cases (Happy Path):** (1) UacDeclined maps to the "declined" message string. (2) Success maps to None (no banner). (3) The banner auto-clears when tier flips to Full with a non-empty broadcast.
+  - **Boundary & Edge Case Test Cases (cite G29):** (1) A launch that times out after T-11 surfaces the Timeout message, not a silent gray pill. (2) BinaryMissing surfaces the reinstall message. (3) The banner does NOT auto-clear if the user just dismisses it manually (needs a dismiss button).
+- **Explicit Swarm Guardrails:** No new dependency. Cite G29 (silent-failure surfaces) in every message string's doc comment.
+
+### STORY 14.2: Wizard hot-start (no restart required)
+- **User Story:** As a non-technical user completing the first-run wizard, I want sensors to appear immediately — not a dead "Restart sidebar" string with no restart button.
+- **Technical Context:** `crates/sidebar-app/src/gui/mod.rs:1221-1232` (wizard completion shows dead string). `crates/sidebar-app/src/main.rs:443-454` (poller/accountant/supervisor gated on `wizard_active` for the whole process lifetime). guardrails.md G24 (first-run gate) + G29.
+- **Wiring:**
+  - **Layer:** integration
+  - **Depends-On:** [8.10, 7.2, 7.5]
+  - **Blocks:** [14.5]
+  - **Next:** 14.3
+  - **Parallel-With:** [14.1, 14.3, 14.4, 14.5]
+  - **DoD:** After wizard Continue/Skip, a `tokio::sync::Notify` signal hot-starts the poller, accountant, and supervisor in-session. The user sees a "Starting sensors…" interim banner until the first non-empty broadcast. No restart required.
+- **Gentle-AI SDD Phase Checklist:**
+  1. [ ] **Plan:** The building blocks exist (channels, `with_*` builders, `drain_broadcast`). The hard part is wiring background-task handles into AppState post-construction.
+  2. [ ] **Implement:** Add `state.attach_readings_rx(...)` + `state.attach_bandwidth_view_rx(...)` setters. On wizard completion, fire the Notify signal → main.rs spawns the poller/accountant/supervisor inline + attaches the receivers.
+  3. [ ] **Validate:** Integration test that wizard completion → first broadcast arrives within 5s without a restart.
+- **TDD Contract & Test Cases:**
+  - **Unit Test Cases (Happy Path):** (1) Wizard Continue fires the Notify signal. (2) The poller spawns within 2s of the signal.
+  - **Boundary & Edge Case Test Cases (cite G24, G29):** (1) If the poller fails to spawn (e.g. runtime error), the user sees an error banner, not a silent hang. (2) The wizard gate (G24) still holds — the poller does NOT start until the user clicks Continue/Skip.
+- **Explicit Swarm Guardrails:** HITL on the hot-start UX (G19 — first impression). Cite G24 (the poller is still gated on wizard completion; this story removes the RESTART requirement, not the gate).
+
+### STORY 14.3: Per-sensor staleness detection + visual indicator
+- **User Story:** As a non-technical user, if one sensor (e.g. GPU temp) hangs while others keep working, I want to see that it's stale — not a frozen number that looks plausible.
+- **Technical Context:** `Reading.timestamp` already exists per-reading (`reading.rs:330`, stamped in `poller.rs:492-494`). The render loop (`gui/mod.rs:1540-1601`) iterates readings but never checks timestamps. The poller-level stale badge (`gui/mod.rs:1251-1263`) only fires on a TOTAL blackout. guardrails.md G29.
+- **Wiring:**
+  - **Layer:** ui + unit
+  - **Depends-On:** [8.3]
+  - **Blocks:** [14.5]
+  - **Next:** 14.4
+  - **Parallel-With:** [14.1, 14.2, 14.4, 14.5]
+  - **DoD:** In the render loop, each reading's `timestamp` is compared to `Instant::now()`. Past the threshold (3× poll interval, clamped [15s, 120s]), the row renders dimmed + a `⏱` glyph + tooltip "This sensor hasn't updated in X seconds."
+- **Gentle-AI SDD Phase Checklist:**
+  1. [ ] **Plan:** No domain change — `Reading.timestamp` is already there. Pure render logic.
+  2. [ ] **Implement:** In `render_sidebar_mut`, compute `is_stale = reading.timestamp.elapsed() > threshold`. Pass a `stale: bool` flag to the row renderer. Reuse `metric_row::render` with a dimmed color.
+  3. [ ] **Validate:** Kittest that a stale reading renders dimmed + the glyph; a fresh reading renders normally.
+- **TDD Contract & Test Cases:**
+  - **Unit Test Cases (Happy Path):** (1) A reading stamped `now` renders as fresh (no dim). (2) A reading stamped 60s ago (poll=10s → threshold=30s) renders as stale (dimmed + glyph).
+  - **Boundary & Edge Case Test Cases (cite G29):** (1) The threshold scales with poll interval (poll=1s → threshold=3s, clamped to 15s min). (2) An empty readings vec shows WAITING_TEXT, not a stale badge.
+- **Explicit Swarm Guardrails:** No new dependency. Cite G29.
+
+### STORY 14.4: Config-corruption + DB-corruption user banners
+- **User Story:** As a non-technical user whose settings or bandwidth history got corrupted, I want to SEE that it happened + where my backup is — not a silent reset to defaults that makes me think I lost everything.
+- **Technical Context:** `crates/sidebar-app/src/main.rs:930-978` (`load_config` + `backup_corrupt_file` — both `tracing::warn!`-only). `crates/sidebar-app/src/main.rs:581-602` (`quarantine_and_reopen` — warn-only). Story 13.1/13.2 added the quarantine + recovery; this story surfaces it to the user. guardrails.md G29.
+- **Wiring:**
+  - **Layer:** unit + integration
+  - **Depends-On:** [13.1, 13.2]
+  - **Blocks:** [14.5]
+  - **Next:** 14.5
+  - **Parallel-With:** [14.1, 14.2, 14.3, 14.5]
+  - **DoD:** Two one-shot flags: `config_recovered: Option<PathBuf>` (backup path) + `db_quarantined: Option<PathBuf>`. Rendered as dismissible banners: "Your settings file was unreadable and we reset to defaults. Your old file was backed up at `<path>`." / "Bandwidth history was corrupted; starting fresh. Old data was backed up at `<path>`."
+- **Gentle-AI SDD Phase Checklist:**
+  1. [ ] **Plan:** Mirror the `degraded_message` pattern. The backup paths are already computed in `backup_corrupt_file` + `quarantine_and_reopen` — propagate them to the GUI.
+  2. [ ] **Implement:** Return `Option<PathBuf>` from the recovery functions. Pass to SidebarApp. Render banners with a dismiss (X) button.
+  3. [ ] **Validate:** Unit test the flag is set on corrupt input; kittest the banner renders.
+- **TDD Contract & Test Cases:**
+  - **Unit Test Cases (Happy Path):** (1) A corrupt config.toml sets `config_recovered` to the backup path. (2) A corrupt bandwidth.db sets `db_quarantined` to the backup path.
+  - **Boundary & Edge Case Test Cases (cite G29):** (1) The banner dismiss button clears the flag (one-shot). (2) If the backup itself fails, the banner still fires but without a path ("…back up failed; settings were reset.").
+- **Explicit Swarm Guardrails:** Cite G29 + G15 (non-fatal recovery).
+
+### STORY 14.5: Generalized user-message stack (Vec<UserMessage> framework)
+- **User Story:** As the product owner, I want a single general framework for surfacing user-facing messages (info/warning/error), so stories 14.1-14.4 + future conditions all feed into one dismissible stack rather than ad-hoc fields.
+- **Technical Context:** Currently `degraded_message: Option<&'static str>` (`gui/mod.rs:387`) is the only user-facing surface. Stories 14.1-14.4 each need their own message. This story promotes the ad-hoc field to a `Vec<UserMessage>` with severity + dismiss semantics. guardrails.md G29.
+- **Wiring:**
+  - **Layer:** ui + unit
+  - **Depends-On:** [14.1, 14.2, 14.3, 14.4]
+  - **Blocks:** — (terminal for Epic 14)
+  - **Next:** 15.1
+  - **Parallel-With:** —
+  - **DoD:** `UserMessage { severity: Severity, text: String, dismissable: bool, id: MessageId }` struct. Rendered as a vertical stack of banners above the metric rows. Each of 14.1-14.4 feeds into it. Existing `degraded_message` migrates to a `UserMessage` with `Severity::Warning`.
+- **Gentle-AI SDD Phase Checklist:**
+  1. [ ] **Plan:** Define `Severity { Info, Warning, Error }` + `MessageId` (enum for dedup). The stack lives on SidebarApp.
+  2. [ ] **Implement:** Replace `degraded_message` with `push_message()`. Migrate 14.1-14.4 producers. Render stack in `ui()`.
+  3. [ ] **Validate:** Kittest that multiple messages stack vertically; dismiss removes one, not all.
+- **TDD Contract & Test Cases:**
+  - **Unit Test Cases (Happy Path):** (1) Three messages stack in insertion order. (2) Dismissing by MessageId removes only that one. (3) Auto-clear rules (e.g. degraded clears on Full broadcast) still fire.
+  - **Boundary & Edge Case Test Cases (cite G29):** (1) Duplicate MessageId is deduped (no message spam). (2) The stack doesn't grow unbounded (max 5; oldest dropped).
+- **Explicit Swarm Guardrails:** HITL on the message wording (G19). Cite G29.
+
+---
+
+## EPIC 15 — LHM Library Host Architecture (Productization Pass, 2026-07-16)
+- **System Objective:** Eliminate the LibreHardwareMonitor.exe HTTP-auto-start regression by consuming `LibreHardwareMonitorLib.dll` directly via a tiny elevated .NET host process. This is THE architectural move that makes "click pill → sensors appear" reliable. The current dependency on LHM-the-GUI (with its flaky HTTP server, LHM Issue #1855) is the single biggest productization blocker.
+- **Status:** Planned 2026-07-16. MUST land before v1.0.0 (per maintainer directive). The 2026-07-16 deep investigation confirmed: the library API is stable + documented (`LibreHardwareMonitorLib.xml` exposes `Computer.Open()` + `Hardware[].Sensors[]`), the DLL is already shipped, no new runtime is needed (.NET 4.7.2 is already required by the GUI).
+- **Dependency convention:** Epic 15 is post-Epic 14 (the launch-failure visibility from 14.1 is a prerequisite — even with the lib-host, launch can fail). Stories 15.1→15.2→15.3 are sequential (host → trait refactor → delete dead HTTP code).
+
+### STORY 15.1: Elevated .NET sensor host (sidebar-monitor-host)
+- **User Story:** As the sidebar runtime, I want a lean elevated process that loads LibreHardwareMonitorLib.dll + emits sensor frames over stdout, so I never depend on LHM's HTTP server starting.
+- **Technical Context:** New `resources/sidebar-monitor-host.exe` (~50 lines C#). Loads `LibreHardwareMonitor.Hardware.Computer`, enables CPU/GPU/RAM/motherboard/storage/battery, walks `Hardware[].Sensors[]`, emits JSON to stdout in the same shape as LHM's `/data.json` (sidebar already parses this — `lhm_model.rs`). Runs elevated (ring-0 MSR/SMBIOS access) via the same `ShellExecuteExW("runas")` + Job Object wiring as the current LHM launch. guardrails.md G10 (ownership) + G16 (zero runtime egress — the host emits to a pipe, not HTTP).
+- **Wiring:**
+  - **Layer:** integration + smoke
+  - **Depends-On:** [14.1]
+  - **Blocks:** [15.2]
+  - **Next:** 15.2
+  - **Parallel-With:** —
+  - **DoD:** `sidebar-monitor-host.exe` exists, is hash-pinned like LHM, loads the library, emits valid JSON sensor frames to stdout on demand (or continuously). Integration test: spawn the host, read stdout, parse the JSON, assert sensor coverage matches the current LHM HTTP path.
+- **Gentle-AI SDD Phase Checklist:**
+  1. [ ] **Plan:** Decide stdout protocol (continuous JSON-lines vs request/response over stdin). Continuous is simpler — sidebar reads the latest frame each poll tick.
+  2. [ ] **Implement:** C# project in `resources/sidebar-monitor-host/`. Build produces a signed EXE. The host enables all sensor categories + emits one JSON frame per second (or on stdin newline).
+  3. [ ] **Validate:** Run the host standalone; verify JSON shape matches `lhm_model.rs` expectations.
+- **TDD Contract & Test Cases:**
+  - **Unit Test Cases (Happy Path):** (1) The host emits at least one JSON frame within 2s of launch. (2) The JSON parses as `Vec<LhmNode>`.
+  - **Boundary & Edge Case Test Cases (cite G10, G16):** (1) If the library fails to load (e.g. .NET 4.7.2 missing), the host exits non-zero with a clear stderr message. (2) The host does NOT open any network socket (G16 — pipe only).
+- **Explicit Swarm Guardrails:** HITL mandatory (G11/G19) — this is a new signed binary running elevated. The C# source MUST be in the repo (not just the binary) for audit. Cite G10 (sidebar kills only hosts it launched) + G16 (pipe, not HTTP).
+
+### STORY 15.2: SensorSource trait refactor + pipe client
+- **User Story:** As the sidebar adapter layer, I want a `SensorSource` trait so I can consume either the new pipe host OR the old HTTP path (for fallback / testing) without changing the adapter.
+- **Technical Context:** `crates/sidebar-adapter-ohm/src/http.rs:153` (`RealHttpClient` + `HttpClient` trait). `crates/sidebar-adapter-ohm/src/lib.rs:154` (`format!("http://127.0.0.1:{}/data.json")`). Refactor `HttpClient` → `SensorSource` with two impls: `HttpSource` (existing, for fallback) + `PipeSource` (new, reads the host's stdout). guardrails.md G16 (loopback validation now applies to the pipe, not HTTP — but the contract is "local process only").
+- **Wiring:**
+  - **Layer:** unit + integration
+  - **Depends-On:** [15.1]
+  - **Blocks:** [15.3]
+  - **Next:** 15.3
+  - **Parallel-With:** —
+  - **DoD:** `SensorSource` trait replaces `HttpClient`. `PipeSource` spawns the host via `StdCommand::new(host_exe).stdout(Stdio::piped())`, reads the latest JSON frame, parses it. The adapter consumes the trait, not a specific impl. `OhmSupervisor` is generic over `SensorSource`.
+- **Gentle-AI SDD Phase Checklist:**
+  1. [ ] **Plan:** The trait method is `fn read_frame(&self) -> Result<String>` (JSON body) — same shape as the current `HttpClient::get`.
+  2. [ ] **Implement:** Rename `HttpClient` → `SensorSource`. Add `PipeSource`. Wire `OhmSupervisor` to spawn the host + wrap its stdout in `PipeSource`.
+  3. [ ] **Validate:** Unit test `PipeSource` parsing; integration test the supervisor→host→frame chain.
+- **TDD Contract & Test Cases:**
+  - **Unit Test Cases (Happy Path):** (1) `PipeSource::read_frame` returns a valid JSON string. (2) The adapter parses it identically to the HTTP path.
+  - **Boundary & Edge Case Test Cases (cite G16, G10):** (1) Host exits mid-read → `Err` surfaced + child-liveness degrades to Basic. (2) Malformed JSON → `Err` (same as HTTP path).
+- **Explicit Swarm Guardrails:** No new Rust dependency (`std::process::Command` is stdlib). Cite G16 (pipe is local-process only, not network).
+
+### STORY 15.3: Delete dead HTTP code + config-patching + port-fallback
+- **User Story:** As the codebase, I want the HTTP client, the LHM config-patching, and the 11-port fallback chain removed — they're dead code once the pipe host is the primary path.
+- **Technical Context:** `crates/sidebar-adapter-ohm/src/http.rs` (validate_loopback_url, MAX_BODY_BYTES, RealHttpClient — all become dead if PipeSource is primary). `crates/sidebar-platform/src/ohm_supervisor.rs:896-1076` (`patch_lhm_config`, `patch_lhm_user_config`, `update_app_setting_key` — dead, no HTTP server to configure). `ohm_supervisor.rs:834-872` (`pick_free_port`, the T-45 11-port chain — dead, no port to pick). guardrails.md G17 (deletion over addition).
+- **Wiring:**
+  - **Layer:** unit
+  - **Depends-On:** [15.2]
+  - **Blocks:** — (terminal for Epic 15)
+  - **Next:** 16.1
+  - **Parallel-With:** —
+  - **DoD:** `HttpSource` kept as a `#[cfg(test)]` mock-only impl (for adapter unit tests). Production path uses `PipeSource` exclusively. The LHM config-patching + port-fallback code is deleted. The `validate_loopback_url` + `MAX_BODY_BYTES` tests move to the `HttpSource` test module (they're still valid for the test impl).
+- **Gentle-AI SDD Phase Checklist:**
+  1. [ ] **Plan:** Audit every reference to HTTP/port/config-patch. Confirm `PipeSource` covers every production call site.
+  2. [ ] **Implement:** Delete the dead code. Move HTTP tests to `#[cfg(test)]`. Update docs (G16, T-10, T-45 — note the HTTP path is now test-only).
+  3. [ ] **Validate:** Full workspace regression green.
+- **TDD Contract & Test Cases:**
+  - **Unit Test Cases (Happy Path):** (1) No production code references `validate_loopback_url` or `pick_free_port`. (2) The adapter test suite still passes via `HttpSource` mock.
+  - **Boundary & Edge Case Test Cases (cite G17):** (1) The deletion does not weaken G16 (the pipe is local-process, stricter than loopback HTTP).
+- **Explicit Swarm Guardrails:** Cite G17 (deletion over addition) + G3 (no dead code).
+
+---
+
+## EPIC 16 — Windows Service + Installer (Productization Pass, 2026-07-16)
+- **System Objective:** Ship a Windows Service (`sidebar-monitor-svc.exe`) that owns the elevated sensor host + an Inno Setup installer that registers the service — so UAC happens ONCE (at install time) and the user never sees a recurring elevation prompt. This is the maintainer's chosen path (Option A) for reliable, set-and-forget elevation.
+- **Status:** Planned 2026-07-16. MUST land before v1.0.0 (per maintainer directive). The installer is **Inno Setup** (free, OSS, used by VS Code, winget-compatible via `InstallerType: inno` with the known `PrivilegesRequired` workaround documented in [winget-cli #254](https://github.com/microsoft/winget-cli/issues/254)).
+- **Dependency convention:** Epic 16 is post-Epic 15 (the service owns the lib-host from 15.1). Stories 16.1→16.2→16.3→16.4 are sequential (service → IPC → installer → CI).
+
+### STORY 16.1: sidebar-monitor-svc (Windows Service binary)
+- **User Story:** As the sidebar, I want a Windows Service running as LocalSystem that owns the elevated sensor host, so I can request sensor data via IPC without re-prompting UAC on every launch.
+- **Technical Context:** New Rust binary `sidebar-monitor-svc.exe` (in a new crate `sidebar-svc` or as a `[[bin]]` in sidebar-platform). Uses the `windows-service` crate (MIT/Apache-2.0, T-32-allowed) or direct `OpenSCManager` + `CreateService` FFI. The service spawns `sidebar-monitor-host.exe` (from Story 15.1) as a child, owns the Job Object (G10), and exposes a named-pipe IPC endpoint (`\\.\pipe\sidebar-monitor`) for the non-elevated sidebar UI to request sensor frames. guardrails.md G10 (ownership) + G16 (pipe, not network).
+- **Wiring:**
+  - **Layer:** integration + smoke
+  - **Depends-On:** [15.1]
+  - **Blocks:** [16.2]
+  - **Next:** 16.2
+  - **Parallel-With:** —
+  - **DoD:** `sidebar-monitor-svc.exe` registers as a Windows Service (via `sc create` or the installer), runs as LocalSystem, spawns the host, exposes the named pipe, + shuts down cleanly on service stop. Integration test: install the service (test env), connect to the pipe, read a sensor frame.
+- **Gentle-AI SDD Phase Checklist:**
+  1. [ ] **Plan:** Decide crate structure (new `sidebar-svc` crate vs `[[bin]]` in platform). New crate is cleaner (separate signing, separate Cargo features).
+  2. [ ] **Implement:** Service entry point (`ServiceMain`), host-child spawn + Job Object, named-pipe server thread, clean shutdown on `SERVICE_CONTROL_STOP`.
+  3. [ ] **Validate:** Manual test on the reference machine (service install + IPC).
+- **TDD Contract & Test Cases:**
+  - **Unit Test Cases (Happy Path):** (1) The pipe server reads a request + responds with a frame. (2) Service stop kills the host child (G10).
+  - **Boundary & Edge Case Test Cases (cite G10, G16):** (1) Host crash → service detects + restarts it (liveness probe). (2) Multiple sidebar UIs connecting → one frame per request (no contention).
+- **Explicit Swarm Guardrails:** HITL mandatory (G11/G19) — a LocalSystem service is the highest-trust binary in the product. The `windows-service` crate addition requires a G3 license audit. Cite G10 + G16.
+
+### STORY 16.2: Sidebar UI IPC client (named-pipe consumer)
+- **User Story:** As the sidebar UI, I want to talk to the service over a named pipe instead of spawning an elevated child myself, so I never need UAC after install.
+- **Technical Context:** `crates/sidebar-platform/src/ohm_supervisor.rs` — replace `launch_elevated` (ShellExecuteExW runas) with a named-pipe client connect to `\\.\pipe\sidebar-monitor`. If the service is not running (portable / non-installed mode), fall back to the current `launch_elevated` path (so the portable ZIP still works). guardrails.md G16 (named pipe is local, not network).
+- **Wiring:**
+  - **Layer:** unit + integration
+  - **Depends-On:** [16.1]
+  - **Blocks:** [16.3]
+  - **Next:** 16.3
+  - **Parallel-With:** —
+  - **DoD:** `OhmSupervisor` tries the pipe first; on connection, uses it as the `SensorSource`. On failure (service not installed), falls back to `launch_elevated` (the Epic 15 pipe-host path). The user sees no UAC in installed mode; the portable mode still works with per-launch UAC.
+- **Gentle-AI SDD Phase Checklist:**
+  1. [ ] **Plan:** The pipe client is a new `SensorSource` impl (`PipeServiceSource`) alongside `PipeSource` (direct host) + `HttpSource` (test).
+  2. [ ] **Implement:** `OhmSupervisor::new()` probes the pipe; if present, wraps it; else falls back.
+  3. [ ] **Validate:** Integration test both paths.
+- **TDD Contract & Test Cases:**
+  - **Unit Test Cases (Happy Path):** (1) Pipe available → uses service. (2) Pipe absent → falls back to direct host.
+  - **Boundary & Edge Case Test Cases (cite G16):** (1) Pipe connect timeout (1s) → fall back. (2) Service dies mid-session → child-liveness degrades to Basic (existing 12.8 wiring).
+- **Explicit Swarm Guardrails:** Cite G16.
+
+### STORY 16.3: Inno Setup installer (.iss) + service registration
+- **User Story:** As a non-technical user, I want to download one installer, run it, accept one UAC prompt, and have sidebar + the service + the sensor host installed + the service auto-started — so I never think about elevation again.
+- **Technical Context:** New `installer/sidebar.iss` (Inno Setup script). `PrivilegesRequired=admin` (service install needs elevation) + `PrivilegesRequiredOverridesAllowed=dialog` (winget compatibility per [winget-cli #254](https://github.com/microsoft/winget-cli/issues/254)). `[Run]` section: `sc create sidebar-monitor-svc binPath= ... start= auto` + `sc start`. `[UninstallRun]`: `sc stop` + `sc delete`. Signs the installer EXE via SignPath (the installer itself, not just the payload). guardrails.md G19 (HITL on the installer — it's the trust entry point) + nfr-thresholds.md T-47 (installer thresholds).
+- **Wiring:**
+  - **Layer:** smoke (L4)
+  - **Depends-On:** [16.2]
+  - **Blocks:** [16.4]
+  - **Next:** 16.4
+  - **Parallel-With:** —
+  - **DoD:** `sidebar-setup.exe` (Inno Setup output) installs: sidebar-app.exe, sidebar-monitor-svc.exe, sidebar-monitor-host.exe, LibreHardwareMonitorLib.dll + dependencies, to `%PROGRAMFILES%\sidebar`. Registers + starts the service. Creates Start Menu shortcut. Uninstalls cleanly (stops + deletes service). Signed via SignPath.
+- **Gentle-AI SDD Phase Checklist:**
+  1. [ ] **Plan:** Inno Setup is free (OSS), used by VS Code, winget `InstallerType: inno`. The winget elevation caveat ([#254](https://github.com/microsoft/winget-cli/issues/254)) is worked around via `PrivilegesRequiredOverridesAllowed=dialog` + `Scope: machine` in the winget manifest.
+  2. [ ] **Implement:** `installer/sidebar.iss`. Build step compiles it via `iscc.exe` (Inno Setup Compiler, free). Output: `sidebar-setup.exe`.
+  3. [ ] **Validate:** Manual install/uninstall on the reference machine.
+- **TDD Contract & Test Cases:**
+  - **Unit Test Cases (Happy Path):** (1) The .iss parses via `iscc /qp` (compile-only check). (2) The output EXE is signed.
+  - **Boundary & Edge Case Test Cases (cite T-47, G19):** (1) Uninstall removes the service. (2) Reinstall upgrades without error. (3) The installer works when invoked by winget (`winget install` path).
+- **Explicit Swarm Guardrails:** HITL mandatory (G11/G19) — the installer is the trust entry point. Inno Setup itself is free + OSS; the `iscc` compiler is a build-tool dependency (like `actionlint`). Cite T-47.
+
+### STORY 16.4: winget manifest + release pipeline integration
+- **User Story:** As a user, I want to `winget install sidebar` and get the installed + serviced version, not a portable ZIP.
+- **Technical Context:** New `installer/winget/manifest.yaml` (winget package manifest). `.github/workflows/release.yml` updated: build stage produces sidebar-app.exe + sidebar-monitor-svc.exe + sidebar-monitor-host.exe + LHM sidecar; a new "Build installer" step runs `iscc sidebar.iss` to produce `sidebar-setup.exe`; the sign stage signs all three EXEs + the installer; the publish stage uploads the installer as the primary release artifact + submits the winget manifest PR.
+- **Wiring:**
+  - **Layer:** integration + smoke
+  - **Depends-On:** [16.3]
+  - **Blocks:** — (terminal for Epic 16)
+  - **Next:** 17.1
+  - **Parallel-With:** —
+  - **DoD:** `release.yml` produces a signed `sidebar-setup-vX.Y.Z.exe`. The winget manifest references it as `InstallerType: inno`, `Scope: machine`. A winget PR submission step (manual trigger, HITL-gated) opens the PR to `microsoft/winget-pkgs`.
+- **Gentle-AI SDD Phase Checklist:**
+  1. [ ] **Plan:** winget manifest schema (see [winget-cli #412](https://github.com/microsoft/winget-cli/issues/412) for InstallerType values).
+  2. [ ] **Implement:** Add the build + sign + publish stages to release.yml. Add the winget manifest.
+  3. [ ] **Validate:** Dry-run the release workflow.
+- **TDD Contract & Test Cases:**
+  - **Unit Test Cases (Happy Path):** (1) `release.yml` actionlint-clean. (2) The winget manifest validates against the schema.
+  - **Boundary & Edge Case Test Cases (cite T-47, G19):** (1) SignPath failure → unsigned draft (existing fallback). (2) winget PR submission is manual (HITL).
+- **Explicit Swarm Guardrails:** HITL on the winget PR submission (G19 — public artifact). Cite T-47.
+
+### STORY 16.5: Installer upgrade + rollback testing
+- **User Story:** As a user upgrading from v1.0.0 to v1.0.1, I want the installer to upgrade cleanly (stop old service, replace files, start new service) without losing my config or bandwidth data — and if the new version is broken, I want to roll back.
+- **Technical Context:** Inno Setup `[Code]` section with Pascal scripting for service stop-before-overwrite + start-after. The installer MUST detect an existing installation (registry key or service presence), stop the service, overwrite files, restart the service. Config (`%APPDATA%\sidebar\`) + bandwidth DB live outside `%PROGRAMFILES%` so they survive upgrades. Rollback: Inno Setup's `CreateBackupCopy` + a documented "uninstall v1.0.1, reinstall v1.0.0" path. guardrails.md G19 (HITL on the upgrade path) + nfr-thresholds.md T-47.
+- **Wiring:**
+  - **Layer:** smoke (L4)
+  - **Depends-On:** [16.3, 16.4]
+  - **Blocks:** — (terminal for Epic 16)
+  - **Next:** 17.1
+  - **Parallel-With:** —
+  - **DoD:** (1) Upgrade v1.0.0 → v1.0.1 preserves config + bandwidth.db + re-registers the service. (2) Uninstall + reinstall older version works (rollback path). (3) A smoke test documents the upgrade steps for the reference-machine runner.
+- **Gentle-AI SDD Phase Checklist:**
+  1. [ ] **Plan:** Inno Setup `[InstallDelete]` + `[Run]` with `Check: IsServiceInstalled('sidebar-monitor-svc')` Pascal functions.
+  2. [ ] **Implement:** `installer/sidebar.iss` `[Code]` section: `function IsServiceInstalled(name: String): Boolean;` via `sc query`. Stop-before-overwrite, start-after-overwrite.
+  3. [ ] **Validate:** Manual upgrade on the reference machine (install v1.0.0, add config + bandwidth data, upgrade to a dummy v1.0.1, verify preservation).
+- **TDD Contract & Test Cases:**
+  - **Unit Test Cases (Happy Path):** (1) `IsServiceInstalled` detects a running service. (2) The .iss compiles with the `[Code]` section.
+  - **Boundary & Edge Case Test Cases (cite T-47):** (1) First install (no prior service) → skip the stop/upgrade logic. (2) Service is installed but stopped → start-after-overwrite fires. (3) `%PROGRAMFILES%\sidebar` is locked (files in use) → installer prompts to close sidebar first.
+- **Explicit Swarm Guardrails:** HITL mandatory (G19 — upgrades can brick an installation). Cite T-47.
+
+### STORY 16.6: Portable ZIP dual-distribution
+- **User Story:** As a power user who doesn't want an installer, I want a portable ZIP that works without admin rights — with the tradeoff that I'll see a UAC prompt on each Full-mode launch (no service).
+- **Technical Context:** The Inno Setup installer is the primary distribution. The portable ZIP (current `release.yml` output) remains as a secondary artifact for users who can't or won't install. The portable path uses the Epic 15 pipe-host directly (Story 15.2 `PipeSource`), bypassing the service entirely — so UAC recurs per-launch (the `launch_elevated` fallback from Story 16.2). guardrails.md G16 (the portable host still emits via pipe, not HTTP).
+- **Wiring:**
+  - **Layer:** smoke (L4)
+  - **Depends-On:** [16.2]
+  - **Blocks:** —
+  - **Next:** 17.1
+  - **Parallel-With:** [16.5]
+  - **DoD:** The release pipeline produces TWO artifacts: `sidebar-setup-vX.Y.Z.exe` (installer, primary) + `sidebar-portable-vX.Y.Z.zip` (portable, secondary). The portable ZIP contains sidebar-app.exe + sidebar-monitor-host.exe + LibreHardwareMonitorLib.dll + dependencies + a README.txt explaining the UAC-per-launch tradeoff. Both are linked from the GitHub Release body.
+- **Gentle-AI SDD Phase Checklist:**
+  1. [ ] **Plan:** `release.yml` publish stage runs both `iscc` (installer) + `zip` (portable).
+  2. [ ] **Implement:** Add a "Package portable ZIP" step alongside the installer step. Add `installer/PORTABLE-README.txt` explaining the tradeoff.
+  3. [ ] **Validate:** Dry-run the release workflow; confirm both artifacts are produced.
+- **TDD Contract & Test Cases:**
+  - **Unit Test Cases (Happy Path):** (1) `release.yml` actionlint-clean with both artifacts. (2) The portable ZIP contains all required files.
+  - **Boundary & Edge Case Test Cases (cite T-47):** (1) Portable ZIP runs without admin rights (Basic mode). (2) Portable ZIP Full mode prompts UAC (expected — no service).
+- **Explicit Swarm Guardrails:** Cite T-47.
+
+---
+
+## EPIC 17 — UX Polish + Feature Gaps (Productization Pass, 2026-07-16)
+- **System Objective:** Close the remaining UX gaps that prevent sidebar from being the best software in its category: alert ack persistence, threshold UI, bandwidth CSV export, DPI-change handling, crash-recovery messaging, discoverability polish, monitor-picker dropdown. These are the items that make the product feel *complete* rather than *functional*.
+- **Status:** Planned 2026-07-16. MUST land before v1.0.0 (per maintainer directive). All stories are independent + parallelizable.
+- **Dependency convention:** Epic 17 is post-Epic 14 (the message-stack framework from 14.5 is used by several stories here). Stories 17.1-17.7 are parallelizable.
+
+### STORY 17.1: Alert ack persistence (acks.toml sidecar)
+- **User Story:** As a user who snoozed a CPU-temp alert, I want the snooze to survive a restart — not re-fire immediately on next launch.
+- **Technical Context:** `SidebarView.alert_acks` (`gui/mod.rs:1247-1250`) is session-only. Persist to `%APPDATA%\sidebar\acks.toml` using the existing `toml` workspace dep + `atomic_write_config` pattern (no serde in sidebar-domain — hand-roll a small `AckEntry` struct in sidebar-app). guardrails.md G28.
+- **Wiring:**
+  - **Layer:** unit + integration
+  - **Depends-On:** [12.6, 13.1]
+  - **Blocks:** —
+  - **Next:** —
+  - **Parallel-With:** [17.2, 17.3, 17.4, 17.5, 17.6, 17.7]
+  - **DoD:** `acks.toml` persists active acks. On startup, load + prune expired snoozes. On ack mutation, persist. On restart, snoozes that haven't expired are restored.
+- **Gentle-AI SDD Phase Checklist:**
+  1. [ ] **Plan:** `AlertAck` is `Copy + Eq + Hash`; `Snoozed(i64)` carries an epoch. Define `AckEntry { category, instance, kind, variant, until }` in sidebar-app (Serialize/Deserialize via toml).
+  2. [ ] **Implement:** `crates/sidebar-app/src/gui/acks_store.rs`. Load on startup, persist on mutation (debounced), prune on load.
+  3. [ ] **Validate:** Unit test the round-trip + prune logic.
+- **TDD Contract & Test Cases:**
+  - **Unit Test Cases (Happy Path):** (1) A snooze with `until > now` survives restart. (2) A snooze with `until < now` is pruned on load.
+  - **Boundary & Edge Case Test Cases (cite G28):** (1) Corrupt `acks.toml` → recover to empty (no crash). (2) Atomic write (temp + rename).
+- **Explicit Swarm Guardrails:** No new dependency (toml is already a workspace dep). Cite G28.
+
+### STORY 17.2: Threshold configuration UI
+- **User Story:** As a user, I want to set "warn me when CPU temp > 80°C" via the settings panel — not by hand-editing config.toml.
+- **Technical Context:** `ThresholdConfig` exists (`config.rs:172-190`: cpu_temp_warn/critical, gpu_temp_warn/critical). The settings panel (`settings_panel.rs:107-238`) never surfaces them. guardrails.md G28.
+- **Wiring:**
+  - **Layer:** ui + unit
+  - **Depends-On:** [8.5]
+  - **Blocks:** —
+  - **Next:** —
+  - **Parallel-With:** [17.1, 17.3, 17.4, 17.5, 17.6, 17.7]
+  - **DoD:** A "Temperature alerts" section in the settings panel with two `egui::Slider`s (warn, critical) for CPU + GPU. Validated `warn < critical`. Fires `on_change` (autosave). The existing `alert_indicator::classify` consumer reads the new values with no downstream change.
+- **TDD Contract & Test Cases:**
+  - **Unit Test Cases (Happy Path):** (1) Sliders render with the current config values. (2) Changing a slider fires on_change + persists.
+  - **Boundary & Edge Case Test Cases (cite G28):** (1) warn >= critical → clamped + warning shown.
+- **Explicit Swarm Guardrails:** Cite G28.
+
+### STORY 17.3: Bandwidth CSV export
+- **User Story:** As a user tracking my bandwidth usage, I want to export my history to CSV.
+- **Technical Context:** `sidebar-persistence::bandwidth_repo` has the data. `bandwidth_panel.rs` is pure-render. Add an Export button + `bandwidth_repo::export_csv(conn, &path)`. Cross-thread DB access via the accountant (owns the `!Send` Connection). guardrails.md G28.
+- **Wiring:**
+  - **Layer:** integration + ui
+  - **Depends-On:** [8.4]
+  - **Blocks:** —
+  - **Next:** —
+  - **Parallel-With:** [17.1, 17.2, 17.4, 17.5, 17.6, 17.7]
+  - **DoD:** "Export CSV" button in the bandwidth panel. On click, a native Save dialog prompts for a path; the accountant thread exports `current_cycle` + `bandwidth_history` to CSV.
+- **TDD Contract & Test Cases:**
+  - **Unit Test Cases (Happy Path):** (1) `export_csv` produces valid CSV with headers.
+  - **Boundary & Edge Case Test Cases (cite G28):** (1) Empty DB → CSV with headers only.
+- **Explicit Swarm Guardrails:** Cite G28.
+
+### STORY 17.4: DPI-change handling (WM_DPICHANGED)
+- **User Story:** As a user who changes Windows display scaling mid-session, I want the sidebar to re-render at the new DPI — not stay tiny or overflow.
+- **Technical Context:** `WM_DPICHANGED` is not handled (`gui/mod.rs:648-711` handles WM_SETTINGCHANGE + WM_DISPLAYCHANGE but not DPI). egui 0.35 supports `ctx.set_pixels_per_point()`. guardrails.md G28.
+- **Wiring:**
+  - **Layer:** integration
+  - **Depends-On:** [6.3]
+  - **Blocks:** —
+  - **Next:** —
+  - **Parallel-With:** [17.1, 17.2, 17.3, 17.5, 17.6, 17.7]
+  - **DoD:** `WM_DPICHANGED` added to the `PlatformRuntime::poll` PeekMessageW filter. On receipt, `ctx.set_pixels_per_point(new_dpi / 96.0)` + re-fire `send_dock_position`.
+- **TDD Contract & Test Cases:**
+  - **Unit Test Cases (Happy Path):** (1) The DPI message is decoded + `set_pixels_per_point` called.
+  - **Boundary & Edge Case Test Cases (cite G28):** (1) DPI = 96 (100%) → no-op.
+- **Explicit Swarm Guardrails:** Cite G28. Unsafe FFI per G2.
+
+### STORY 17.5: Crash-recovery messaging (last_tier sentinel)
+- **User Story:** As a user whose sidebar crashed while in Full mode, I want to know on next launch that Full mode needs re-enabling — not a surprising gray pill.
+- **Technical Context:** After a crash, sidebar restarts at Basic (Job Object reaped the elevated child). Persist a `last_tier` sentinel; on restart, if it was Full, surface a one-shot message via the 14.5 stack. guardrails.md G29.
+- **Wiring:**
+  - **Layer:** unit + integration
+  - **Depends-On:** [14.5, 12.8]
+  - **Blocks:** —
+  - **Next:** —
+  - **Parallel-With:** [17.1, 17.2, 17.3, 17.4, 17.6, 17.7]
+  - **DoD:** `last_tier` persisted to config (or sidecar). On launch, if `last_tier == Full` and current is Basic, push a `UserMessage::Info` "sidebar closed unexpectedly. Click the pill to re-enable Full mode." Do NOT auto-relaunch (would re-prompt UAC without intent).
+- **TDD Contract & Test Cases:**
+  - **Unit Test Cases (Happy Path):** (1) `last_tier=Full` + current=Basic → message fires once.
+  - **Boundary & Edge Case Test Cases (cite G29):** (1) Message is one-shot (dismissed on first pill click).
+- **Explicit Swarm Guardrails:** Cite G29.
+
+### STORY 17.6: Discoverability polish (hotkey + drag label + About wording)
+- **User Story:** As a non-technical user, I want to discover the click-through hotkey, the drag-to-move grip, and the honest UAC cadence without reading docs.
+- **Technical Context:** `gui/about.rs` (add hotkey line reading from config; fix "one-time setup" wording to be honest about recurring UAC in portable mode vs one-time in installed mode). `gui/mod.rs:1490` (change "⠿ drag to move" to "Drag here to move" + tooltip). `gui/status_pill.rs` (tooltip hint). guardrails.md G28.
+- **Wiring:**
+  - **Layer:** ui + unit
+  - **Depends-On:** [13.4]
+  - **Blocks:** —
+  - **Next:** —
+  - **Parallel-With:** [17.1, 17.2, 17.3, 17.4, 17.5, 17.7]
+  - **DoD:** About dialog shows the configured hotkey + honest UAC cadence. Drag grip label is plain English. Status-pill tooltip hints at the click-through toggle.
+- **TDD Contract & Test Cases:**
+  - **Unit Test Cases (Happy Path):** (1) About renders the config hotkey. (2) Drag label is "Drag here to move".
+  - **Boundary & Edge Case Test Cases (cite G28):** (1) Custom hotkey string reflected in About.
+- **Explicit Swarm Guardrails:** HITL on wording (G19). Cite G28.
+
+### STORY 17.7: Monitor-picker dropdown (wizard + settings)
+- **User Story:** As a multi-monitor user, I want to pick my target monitor from a dropdown — not type a DeviceID string.
+- **Technical Context:** `first_run.rs:122-138` (raw TextEdit for monitor_id). `settings_panel.rs` (no monitor picker). `monitors::enumerate()` provides the list. Replace TextEdit with `egui::ComboBox` populated from enumerate. guardrails.md G28.
+- **Wiring:**
+  - **Layer:** ui + unit
+  - **Depends-On:** [6.6, 8.5]
+  - **Blocks:** —
+  - **Next:** —
+  - **Parallel-With:** [17.1, 17.2, 17.3, 17.4, 17.5, 17.6]
+  - **DoD:** Wizard + settings panel use a ComboBox of friendly monitor names → DeviceID mapping. Falls back to TextEdit only if enumerate fails.
+- **TDD Contract & Test Cases:**
+  - **Unit Test Cases (Happy Path):** (1) ComboBox renders the enumerated monitors. (2) Selecting one sets `config.dock.monitor_id`.
+  - **Boundary & Edge Case Test Cases (cite G28):** (1) Enumerate fails → TextEdit fallback.
+- **Explicit Swarm Guardrails:** Cite G28.
+
+---
+
 ## APPENDIX: Story Wiring Matrix (Audit Pass 4)
 
 Every story's `Wiring:` block in a single lookup table. The swarm consults this appendix to compute the ready set and the critical-path next pickup. See `regression-harness.md` §3 for the schema and §4 for the critical path.
@@ -1586,7 +1989,28 @@ Every story's `Wiring:` block in a single lookup table. The swarm consults this 
 | 13.2 | unit + integration | [4.1, 4.2] | [13.5] | 13.3 | [13.1, 13.3, 13.4] |
 | 13.3 | unit + integration | [0.1, 6.4] | [13.5] | 13.4 | [13.1, 13.2, 13.4] |
 | 13.4 | ui + unit | [8.5, 8.6] | [13.5] | 13.5 | [13.1, 13.2, 13.3] |
-| 13.5 | smoke + integration | [13.1, 13.2, 13.3, 13.4, 10.2] | — (terminal) | — | — |
+| 13.5 | smoke + integration | [13.1, 13.2, 13.3, 13.4, 10.2] | [14.1] | 14.1 | — |
+| 14.1 | unit + integration | [12.8] | [14.5] | 14.2 | [14.2, 14.3, 14.4, 14.5] |
+| 14.2 | integration | [8.10, 7.2, 7.5] | [14.5] | 14.3 | [14.1, 14.3, 14.4, 14.5] |
+| 14.3 | ui + unit | [8.3] | [14.5] | 14.4 | [14.1, 14.2, 14.4, 14.5] |
+| 14.4 | unit + integration | [13.1, 13.2] | [14.5] | 14.5 | [14.1, 14.2, 14.3, 14.5] |
+| 14.5 | ui + unit | [14.1, 14.2, 14.3, 14.4] | — (terminal) | 15.1 | — |
+| 15.1 | integration + smoke | [14.1] | [15.2] | 15.2 | — |
+| 15.2 | unit + integration | [15.1] | [15.3] | 15.3 | — |
+| 15.3 | unit | [15.2] | — (terminal) | 16.1 | — |
+| 16.1 | integration + smoke | [15.1] | [16.2] | 16.2 | — |
+| 16.2 | unit + integration | [16.1] | [16.3] | 16.3 | — |
+| 16.3 | smoke (L4) | [16.2] | [16.4] | 16.4 | — |
+| 16.4 | integration + smoke | [16.3] | [16.5] | 16.5 | — |
+| 16.5 | smoke (L4) | [16.3, 16.4] | — (terminal) | 17.1 | [16.6] |
+| 16.6 | smoke (L4) | [16.2] | — | 17.1 | [16.5] |
+| 17.1 | unit + integration | [12.6, 13.1] | — | — | [17.2, 17.3, 17.4, 17.5, 17.6, 17.7] |
+| 17.2 | ui + unit | [8.5] | — | — | [17.1, 17.3, 17.4, 17.5, 17.6, 17.7] |
+| 17.3 | integration + ui | [8.4] | — | — | [17.1, 17.2, 17.4, 17.5, 17.6, 17.7] |
+| 17.4 | integration | [6.3] | — | — | [17.1, 17.2, 17.3, 17.5, 17.6, 17.7] |
+| 17.5 | unit + integration | [14.5, 12.8] | — | — | [17.1, 17.2, 17.3, 17.4, 17.6, 17.7] |
+| 17.6 | ui + unit | [13.4] | — | — | [17.1, 17.2, 17.3, 17.4, 17.5, 17.7] |
+| 17.7 | ui + unit | [6.6, 8.5] | — | — | [17.1, 17.2, 17.3, 17.4, 17.5, 17.6] |
 
 ### Reading the matrix
 
@@ -1612,6 +2036,10 @@ Every story's `Wiring:` block in a single lookup table. The swarm consults this 
   → 10.1 → 10.2
   → 11.4 → 12.1 → 12.2 → 12.3 → 12.4 → 12.5 → 12.6 → 12.7 → 12.8 (post-release parity/closure; optional/deferred rows may be skipped)
   → 13.1 → 13.2 → 13.3 → 13.4 → 13.5 (hardening for non-technical users; SHOULD merge before v1.0.0 tag)
+  → 14.1 → 14.2 → 14.3 → 14.4 → 14.5 (silent-failure elimination; MUST merge before v1.0.0)
+  → 15.1 → 15.2 → 15.3 (LHM library host — eliminates HTTP auto-start regression; MUST merge before v1.0.0)
+  → 16.1 → 16.2 → 16.3 → 16.4 → 16.5 → 16.6 (Windows Service + Inno Setup installer + upgrade/rollback + portable ZIP; MUST merge before v1.0.0)
+  → 17.1 → 17.2 → 17.3 → 17.4 → 17.5 → 17.6 → 17.7 (UX polish + feature gaps; MUST merge before v1.0.0)
 ```
 
 Length: 48 stories on the current delivery critical path (out of 60 current
@@ -1642,9 +2070,10 @@ A story is `merged` iff ALL of:
 
 ---
 
-**END OF EPICS & STORIES (AUDIT PASS 4 + current-state parity extension + Epic 13 hardening).** 14
-Epics, 73 Stories (60 current delivery rows including INT + 8 Epic 12
-parity/closure + 5 Epic 13 hardening). Companion:
-`README.md`, `guardrails.md` (G1–G28), `nfr-thresholds.md` (T-1–T-46),
+**END OF EPICS & STORIES (AUDIT PASS 4 + current-state parity extension + Epic 13-17 productization).** 18
+Epics, 96 Stories (60 current delivery rows including INT + 8 Epic 12
+parity/closure + 5 Epic 13 hardening + 5 Epic 14 silent-failure + 3 Epic 15
+LHM-host + 6 Epic 16 service/installer + 7 Epic 17 UX-polish). Companion:
+`README.md`, `guardrails.md` (G1–G29), `nfr-thresholds.md` (T-1–T-48),
 `tdd-fixtures.md` (F1–F15), `regression-harness.md`, `PROGRESS.md`,
 `docs/dev-env.md`. Source: `docs/PRD.md`, `docs/architecture.md`,

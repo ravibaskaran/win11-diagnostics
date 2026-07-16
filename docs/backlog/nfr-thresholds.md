@@ -319,3 +319,24 @@ Cross-references: PRD §6 (NFR statements), architecture.md §7 (testing strateg
 - **Bundle contents (mandatory):** `workspace-tests.txt` (full L0-L3 matrix output), `ignored-suite.txt` (all 13 `#[ignore]`'d integration tests — real HW / UAC / desktop), `poll_cost.txt` (NFR-1 criterion bench + calibration constant), `scriptable-smoke.txt` (the 6 automatable smoke items), `sha256.txt` (release exe SHA-256), `manual-smoke.md` (the 12 human-walked items with PASS/FAIL per row).
 - **Exit convention:** `0` on full PASS (all automated stages green + all manual items PASS); `1` on any failure. The script MUST NOT exit 0 if any automated stage failed, even if the manual items were not yet walked.
 - **Cited by:** Story 13.5, guardrails.md G28.
+
+### T-47 — Installer requirements (Productization Pass, 2026-07-16)
+- **Value:** The v1.0.0 release MUST ship an Inno Setup installer (`sidebar-setup.exe`) that:
+  1. Installs sidebar-app.exe + sidebar-monitor-svc.exe + sidebar-monitor-host.exe + LibreHardwareMonitorLib.dll + dependencies to `%PROGRAMFILES%\sidebar`.
+  2. Registers + starts the Windows Service (`sidebar-monitor-svc`) as `LocalSystem`, `start= auto`.
+  3. Creates a Start Menu shortcut.
+  4. Requests elevation ONCE at install time (`PrivilegesRequired=admin` + `PrivilegesRequiredOverridesAllowed=dialog` for winget compatibility per [winget-cli #254](https://github.com/microsoft/winget-cli/issues/254)).
+  5. Uninstalls cleanly: stops + deletes the service, removes files + shortcut.
+  6. Is itself signed via SignPath (the installer EXE, not just the payload).
+- **winget compatibility:** The installer MUST be winget-installable via `InstallerType: inno`, `Scope: machine`. The winget manifest MUST be validated against the schema.
+- **Cost:** Inno Setup is free (OSS, used by VS Code). The `iscc` compiler is a build-tool dep (like `actionlint`).
+- **Cited by:** Story 16.3, Story 16.4, guardrails.md G29.
+
+### T-48 — Windows Service IPC thresholds (Productization Pass, 2026-07-16)
+- **Value:** The `sidebar-monitor-svc` service MUST:
+  1. Respond to a named-pipe IPC request (`\\.\pipe\sidebar-monitor`) within `500 ms` (same as T-10 LHM HTTP timeout).
+  2. Restart the sensor host child within `2 s` if it crashes (liveness probe).
+  3. Shut down the host child within `1 s` of `SERVICE_CONTROL_STOP` (G10 ownership).
+  4. Survive a sidebar UI crash (the service is independent; the next sidebar launch reconnects).
+- **Named-pipe contract:** Local-process only (G16 — `\\.\pipe\` namespace, not network). One frame per request (no streaming).
+- **Cited by:** Story 16.1, Story 16.2, guardrails.md G10 + G16 + G29.

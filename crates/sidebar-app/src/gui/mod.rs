@@ -115,6 +115,17 @@ fn recover_write<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
     }
 }
 
+/// Blend two colors. `t=0` → a, `t=1` → b. Story 14.3 per-sensor staleness.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn blend(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
+    let lerp = |x: u8, y: u8| -> u8 {
+        let xf = f32::from(x);
+        let yf = f32::from(y);
+        (xf + (yf - xf) * t) as u8
+    };
+    egui::Color32::from_rgb(lerp(a.r(), b.r()), lerp(a.g(), b.g()), lerp(a.b(), b.b()))
+}
+
 /// Shared application state. Held inside `Arc` by both the [`SidebarApp`]
 /// (GUI thread) and future background tasks.
 pub struct AppState {
@@ -377,9 +388,30 @@ pub struct SidebarApp {
     /// Basic status pill (requesting Full-mode LHM elevation). `None` in
     /// tests + when no supervisor is attached.
     launch_fn: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Story 14.1 — closure that reads the shared launch-message storage
+    /// (written by the supervisor thread on launch failure). Returns a
+    /// user-facing error string if the last launch failed, or None.
+    launch_message_fn: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
+    /// Story 14.4 — closure that reads the shared recovery-message storage
+    /// (written by load_config on config corruption). Returns a one-shot
+    /// user-facing message with the backup path, or None.
+    recovery_message_fn: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
+    /// Story 14.4 — latches false after the recovery banner is dismissed
+    /// so it doesn't re-render every frame.
+    recovery_dismissed: bool,
     /// Story 12.8 Gap 3 — latches `true` after the first Full→Basic
     /// degradation fires so we don't repeatedly broadcast.
     child_exit_degraded: bool,
+    /// Cert P1 (2026-07-15) — a user-facing message set when the elevated
+    /// LHM child exits mid-session (Full→Basic degradation). Rendered in
+    /// the sidebar so a non-technical user sees *why* sensors vanished,
+    /// not just a silent gray pill. Cleared on the next successful Full.
+    degraded_message: Option<&'static str>,
+    /// Cert P1 (2026-07-15) — `Instant` of the last fresh readings broadcast.
+    /// Used to detect staleness (LHM hung: process alive, HTTP wedged) which
+    /// the child-liveness probe (crash-only) cannot catch. None before the
+    /// first broadcast.
+    last_readings_at: Option<std::time::Instant>,
     #[cfg(windows)]
     platform: Option<PlatformRuntime>,
 }
@@ -403,6 +435,11 @@ impl SidebarApp {
             child_alive_fn: None,
             launch_fn: None,
             child_exit_degraded: false,
+            degraded_message: None,
+            last_readings_at: None,
+            launch_message_fn: None,
+            recovery_message_fn: None,
+            recovery_dismissed: false,
             #[cfg(windows)]
             platform: None,
         }
@@ -430,6 +467,11 @@ impl SidebarApp {
             child_alive_fn: None,
             launch_fn: None,
             child_exit_degraded: false,
+            degraded_message: None,
+            last_readings_at: None,
+            launch_message_fn: None,
+            recovery_message_fn: None,
+            recovery_dismissed: false,
             #[cfg(windows)]
             platform: None,
         }
@@ -469,6 +511,30 @@ impl SidebarApp {
     #[must_use]
     pub fn with_launch_fn(mut self, launch: Arc<dyn Fn() + Send + Sync>) -> Self {
         self.launch_fn = Some(launch);
+        self
+    }
+
+    /// Story 14.1 — attach the launch-message reader (reads the shared
+    /// storage the supervisor thread writes on launch failure). The GUI
+    /// polls this each frame to surface actionable error banners.
+    #[must_use]
+    pub fn with_launch_message_fn(
+        mut self,
+        reader: Arc<dyn Fn() -> Option<String> + Send + Sync>,
+    ) -> Self {
+        self.launch_message_fn = Some(reader);
+        self
+    }
+
+    /// Story 14.4 — attach the recovery-message reader (reads the shared
+    /// storage load_config writes on config corruption). The GUI surfaces
+    /// a one-shot dismissible banner with the backup path.
+    #[must_use]
+    pub fn with_recovery_message_fn(
+        mut self,
+        reader: Arc<dyn Fn() -> Option<String> + Send + Sync>,
+    ) -> Self {
+        self.recovery_message_fn = Some(reader);
         self
     }
 
@@ -852,6 +918,25 @@ fn configure_platform(cc: &eframe::CreationContext<'_>, app: &mut SidebarApp) {
                         RegisterHotKey, UnregisterHotKey,
                     };
                     use windows::Win32::UI::WindowsAndMessaging::{GetMessageW, WM_HOTKEY};
+                    // Force-create this thread's message queue BEFORE capturing
+                    // + sending the TID. Without this, PostThreadMessageW from
+                    // `unregister` can race ahead of GetMessageW and fail with
+                    // ERROR_INVALID_THREAD_ID (the queue doesn't exist yet).
+                    // PeekMessageW(PM_NOREMOVE) is the documented Win32 idiom
+                    // to force queue creation without consuming any message.
+                    let mut probe = windows::Win32::UI::WindowsAndMessaging::MSG::default();
+                    // SAFETY: PeekMessageW with an empty filter + PM_NOREMOVE
+                    // on this thread is a no-op queue-creation probe; the
+                    // `probe` MSG is stack-owned + lives for the call.
+                    let _ = unsafe {
+                        windows::Win32::UI::WindowsAndMessaging::PeekMessageW(
+                            &raw mut probe,
+                            None,
+                            0,
+                            0,
+                            windows::Win32::UI::WindowsAndMessaging::PM_NOREMOVE,
+                        )
+                    };
                     // Capture this thread's TID and report it back to the
                     // spawner BEFORE registering or blocking. `unregister`
                     // uses this TID to post WM_QUIT during shutdown. Sending
@@ -958,6 +1043,75 @@ fn monitor_id_is_real_fallback(configured_id: &str, resolved_id: &str) -> bool {
 }
 
 #[cfg(windows)]
+/// Story 12.3 — handle a header drag to reposition the sidebar along its
+/// docked edge. Clamped via `compute_new_offset` so the sidebar stays on-
+/// screen. The drag anchor (pointer pos + starting offset) is tracked in
+/// `view.drag_anchor` so frame-delta drift can't accumulate. The new offset
+/// is persisted via `on_change` on drag end.
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+fn handle_grip_drag(
+    grip: &egui::Response,
+    ui: &mut Ui,
+    config: &mut Config,
+    view: &mut SidebarView,
+    on_change: &dyn Fn(),
+) {
+    const SIDEBAR_HEIGHT: i32 = 720;
+    const SIDEBAR_WIDTH: i32 = 280;
+    if grip.dragged_by(egui::PointerButton::Primary) {
+        // Capture the anchor on the first drag frame.
+        if view.drag_anchor.is_none() {
+            let pos = ui.ctx().pointer_interact_pos().unwrap_or_default();
+            view.drag_anchor = Some((pos.y as i32, pos.x as i32, config.dock.offset_px));
+        }
+        let Some((anchor_y, anchor_x, start_offset)) = view.drag_anchor else {
+            return;
+        };
+        let now_pos = ui.ctx().pointer_interact_pos().unwrap_or_default();
+        let is_horizontal_edge = config.dock.edge.eq_ignore_ascii_case("top")
+            || config.dock.edge.eq_ignore_ascii_case("bottom");
+        let monitor_extent = match monitors::enumerate() {
+            Ok(displays) => monitors::resolve_target(&displays, &config.dock.monitor_id).map(|m| {
+                if is_horizontal_edge {
+                    m.width
+                } else {
+                    m.height
+                }
+            }),
+            Err(_) => None,
+        }
+        .unwrap_or(if is_horizontal_edge { 1920 } else { 1080 });
+        let sidebar_extent = if is_horizontal_edge {
+            SIDEBAR_WIDTH
+        } else {
+            SIDEBAR_HEIGHT
+        };
+        let delta = if is_horizontal_edge {
+            now_pos.x as i32 - anchor_x
+        } else {
+            now_pos.y as i32 - anchor_y
+        };
+        let new_offset = sidebar_domain::reposition::compute_new_offset(
+            start_offset,
+            delta,
+            monitor_extent,
+            sidebar_extent,
+        );
+        if new_offset != config.dock.offset_px {
+            config.dock.offset_px = new_offset;
+            if let Ok(displays) = monitors::enumerate() {
+                if let Some(target) = monitors::resolve_target(&displays, &config.dock.monitor_id) {
+                    send_dock_position(ui.ctx(), target, &config.dock.edge, config.dock.offset_px);
+                }
+            }
+        }
+    } else if view.drag_anchor.is_some() {
+        // Drag ended — persist the new offset + clear the anchor.
+        view.drag_anchor = None;
+        on_change();
+    }
+}
+
 #[allow(clippy::cast_precision_loss)]
 fn send_dock_position(
     ctx: &egui::Context,
@@ -1025,7 +1179,21 @@ impl eframe::App for SidebarApp {
             }
         }
         if let Some(readings) = self.state.drain_broadcast() {
+            let had_readings = !readings.is_empty();
             self.state.replace_readings(readings);
+            // Cert P1 — stamp the freshness instant ONLY when real readings
+            // arrived. An empty broadcast (LHM returned no sensors) does NOT
+            // refresh the clock, so the stale badge fires correctly even when
+            // the poller is alive but the LHM adapter is returning empty.
+            if had_readings {
+                self.last_readings_at = Some(std::time::Instant::now());
+                // A fresh non-empty broadcast means sensors are flowing —
+                // clear any degradation message (the user re-launched Full
+                // successfully). Empty broadcasts do NOT clear it.
+                if self.state.tier() == ProviderTier::Full {
+                    self.degraded_message = None;
+                }
+            }
             repaint = true;
         }
         // Story 12.8 Gap 2 — drain the accountant's BandwidthView watch
@@ -1051,6 +1219,11 @@ impl eframe::App for SidebarApp {
                     }
                     self.state.set_tier(ProviderTier::Basic);
                     self.child_exit_degraded = true;
+                    // Cert P1 — surface a user-facing message so a non-technical
+                    // user understands why sensors vanished (not just a silent
+                    // gray pill). Cleared on the next successful Full broadcast.
+                    self.degraded_message =
+                        Some("Hardware monitor stopped. Click the pill to restart it.");
                     repaint = true;
                 }
             }
@@ -1096,7 +1269,11 @@ impl eframe::App for SidebarApp {
         // Story 8.10: if the first-run wizard should show, render it instead
         // of the live sidebar. The poller is gated (G24) at the launch
         // sequence level — when the wizard completes (writes config + flips
-        // first_run_complete), the user restarts and the poller spawns.
+        // first_run_complete), the poller needs a fresh process to spawn
+        // (the runtime + channels are constructed before eframe launches +
+        // cannot be safely hot-wired post-construction without re-architecting
+        // the background-task lifecycle). Story 14.2 replaces the dead
+        // "Restart sidebar" string with an actionable Restart button.
         if self.wizard_active {
             let action = first_run::render_wizard(ui, &mut self.config);
             match action {
@@ -1104,7 +1281,26 @@ impl eframe::App for SidebarApp {
                 first_run::WizardAction::Continue | first_run::WizardAction::Skip => {
                     self.config.first_run_complete = true;
                     self.persist_config();
-                    ui.label("Setup saved. Restart sidebar to begin monitoring.");
+                    self.wizard_active = false;
+                    // Story 14.2 — actionable restart button. Spawns a fresh
+                    // process (same exe) + closes this window. The single-
+                    // instance guard (Story 13.3) is released on our exit +
+                    // re-acquired by the new process. This is the simplest
+                    // correct approach (ponytail): avoids re-wiring tokio
+                    // tasks + channels post-construction.
+                    ui.vertical_centered(|ui| {
+                        ui.label("Setup saved.");
+                        if ui.button("Start monitoring").clicked() {
+                            // Spawn the new instance.
+                            if let Ok(exe) = std::env::current_exe() {
+                                let _ = std::process::Command::new(exe).spawn().map_err(|e| {
+                                    tracing::warn!(error = %e, "failed to restart sidebar");
+                                });
+                            }
+                            // Close this window; the new instance takes over.
+                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                    });
                 }
             }
             return;
@@ -1115,6 +1311,59 @@ impl eframe::App for SidebarApp {
         // settings panel.
         let snapshot = self.state.snapshot();
         let tier = self.state.tier();
+        // Cert P1 (2026-07-15) — surface a degradation banner if the LHM child
+        // exited mid-session, OR a staleness badge if readings are stale
+        // (poller hung / LHM HTTP wedged). These must appear ABOVE the metric
+        // rows so a non-technical user sees *why* data stopped, not just
+        // silent gray/frozen numbers.
+        // Story 14.1 — also surface launch-failure messages (UAC declined,
+        // timeout, binary missing) so the pill click is never silent.
+        if let Some(ref reader) = self.launch_message_fn {
+            if let Some(msg) = reader() {
+                ui.label(
+                    egui::RichText::new(msg)
+                        .small()
+                        .color(egui::Color32::from_rgb(220, 80, 80)),
+                );
+            }
+        }
+        // Story 14.4 — config/DB corruption banner with a dismiss button.
+        if !self.recovery_dismissed {
+            if let Some(ref reader) = self.recovery_message_fn {
+                if let Some(msg) = reader() {
+                    ui.horizontal(|row| {
+                        row.label(
+                            egui::RichText::new(&msg)
+                                .small()
+                                .color(egui::Color32::from_rgb(200, 160, 40)),
+                        );
+                        if row.small_button("×").clicked() {
+                            self.recovery_dismissed = true;
+                        }
+                    });
+                }
+            }
+        }
+        if let Some(msg) = self.degraded_message {
+            ui.label(
+                egui::RichText::new(msg)
+                    .small()
+                    .color(egui::Color32::from_rgb(220, 120, 40)),
+            );
+        }
+        if let Some(last) = self.last_readings_at {
+            // 3× the poll interval (clamped to [15s, 120s]) = "stale".
+            let stale_threshold = (self.config.poll_interval_seconds * 3).clamp(15, 120);
+            if last.elapsed() > std::time::Duration::from_secs(u64::from(stale_threshold)) {
+                ui.label(
+                    egui::RichText::new(
+                        "Sensor data is stale. The hardware monitor may be unresponsive.",
+                    )
+                    .small()
+                    .color(egui::Color32::from_rgb(180, 120, 40)),
+                );
+            }
+        }
         // render_sidebar mutates self.config (settings panel) + reads
         // self.view. The on_change callback is a no-op at this layer — the
         // actual persistence happens AFTER render_sidebar returns (below)
@@ -1258,6 +1507,10 @@ pub struct SidebarView {
     /// Story 13.4 — when true, render the About dialog. Toggled by the "ⓘ"
     /// button in the header (next to the gear).
     pub about_open: bool,
+    /// Story 12.3 — drag anchor. `Some((pointer_y_at_start, pointer_x_at_start,
+    /// offset_px_at_start))` while a header drag is in progress; `None` at rest.
+    /// Tracks the exact drag origin so frame-delta drift can't accumulate.
+    pub drag_anchor: Option<(i32, i32, i32)>,
 }
 
 /// Compatibility wrapper for callers that only need a read-only render.
@@ -1304,7 +1557,9 @@ pub fn render_sidebar_mut(
 
     // Header: status pill (left) + gear toggle (right). The gear toggles the
     // settings panel (Story 8.5 HITL guardrail G11 — no-retroactive-resplit
-    // surfaced as a tooltip inside the settings panel).
+    // surfaced as a tooltip inside the settings panel). The header is also
+    // the drag handle (Story 12.3): dragging it vertically repositions the
+    // sidebar along the docked edge.
     ui.horizontal(|header| {
         status_pill::render(header, tier, on_launch);
         // Story 12.1 — clock/date header. Locale-stable 24h HH:MM, rendered
@@ -1326,6 +1581,21 @@ pub fn render_sidebar_mut(
             }
         });
     });
+
+    // Story 12.3 — drag bar. A dedicated thin strip with a grip icon,
+    // rendered AFTER the header so it doesn't overlap the gear/About
+    // buttons. Dragging it vertically (Left/Right edges) or horizontally
+    // (Top/Bottom edges) repositions the sidebar along the docked edge,
+    // clamped via compute_new_offset. Persisted on release.
+    let grip_response = ui.add_sized(
+        [ui.available_width(), 12.0],
+        |ui: &mut egui::Ui| -> egui::Response {
+            let resp = ui.label(egui::RichText::new("⠿ drag to move").small().weak());
+            // Add drag sense to the label's response so the user can grab it.
+            ui.interact(resp.rect, resp.id, egui::Sense::drag())
+        },
+    );
+    handle_grip_drag(&grip_response, ui, config, view, on_change);
 
     ui.separator();
 
@@ -1400,7 +1670,17 @@ pub fn render_sidebar_mut(
             }
             let ack = view.alert_acks.get(&key).copied();
             let displayed_state = sidebar_domain::alert::displayed_state(raw_state, ack, now_epoch);
-            let color = alert_indicator::color_for_state(displayed_state, accent, default);
+            let mut color = alert_indicator::color_for_state(displayed_state, accent, default);
+            // Story 14.3 — per-sensor staleness: if this reading's timestamp
+            // is older than 3× poll interval (clamped [15s, 120s]), dim the
+            // row so the user sees the sensor is frozen, not a live value.
+            let stale_threshold_secs = (config.poll_interval_seconds * 3).clamp(15, 120);
+            if reading.timestamp.elapsed()
+                > std::time::Duration::from_secs(u64::from(stale_threshold_secs))
+            {
+                // Dim toward gray (50% blend with the default text color).
+                color = blend(color, egui::Color32::from_gray(128), 0.5);
+            }
             metric_row::render_with_color(ui, reading, &display, color);
             if matches!(
                 displayed_state,
@@ -1666,6 +1946,25 @@ mod tests {
             .collect()
     }
 
+    /// Story 14.1 — the launch_message_fn reader returns the failure message
+    /// set by the supervisor thread, or None if the last launch succeeded.
+    #[test]
+    fn launch_message_reader_returns_failure_or_none() {
+        let store: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
+        let reader: Arc<dyn Fn() -> Option<String> + Send + Sync> = Arc::new({
+            let s = Arc::clone(&store);
+            move || s.lock().ok().and_then(|g| g.clone())
+        });
+        // No failure → None.
+        assert!(reader().is_none(), "no failure → None");
+        // Set a failure → reader returns it.
+        *store.lock().unwrap() = Some("UAC declined".to_string());
+        assert_eq!(reader().as_deref(), Some("UAC declined"));
+        // Clear on success → None again.
+        *store.lock().unwrap() = None;
+        assert!(reader().is_none(), "cleared after success → None");
+    }
+
     #[test]
     fn gui_exit_requests_cancellation_and_shutdown_event() {
         let cancel = tokio_util::sync::CancellationToken::new();
@@ -1730,12 +2029,23 @@ mod tests {
         use std::sync::mpsc;
         use std::time::{Duration, Instant};
         use windows::Win32::System::Threading::GetCurrentThreadId;
-        use windows::Win32::UI::WindowsAndMessaging::{GetMessageW, PostThreadMessageW, WM_QUIT};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetMessageW, PeekMessageW, PostThreadMessageW, PM_NOREMOVE, WM_QUIT,
+        };
 
         let (tid_tx, tid_rx) = mpsc::channel::<u32>();
         let handle = std::thread::Builder::new()
             .name("test-hotkey-handshake".to_string())
             .spawn(move || {
+                // Force-create the message queue BEFORE sending the TID.
+                // PeekMessageW(PM_NOREMOVE) is the Win32 idiom; without it,
+                // the spawner's PostThreadMessageW races ahead of GetMessageW
+                // and fails with ERROR_INVALID_THREAD_ID (cert P0 fix).
+                let mut probe = windows::Win32::UI::WindowsAndMessaging::MSG::default();
+                // SAFETY: PeekMessageW with empty filter + PM_NOREMOVE on
+                // this thread is a no-op queue-creation probe; `probe` is
+                // stack-owned + lives for the call.
+                let _ = unsafe { PeekMessageW(&raw mut probe, None, 0, 0, PM_NOREMOVE) };
                 // SAFETY: GetCurrentThreadId returns the calling thread's id.
                 let tid = unsafe { GetCurrentThreadId() };
                 let _ = tid_tx.send(tid);
@@ -1750,11 +2060,12 @@ mod tests {
             .recv()
             .expect("thread must report its TID before blocking in GetMessageW");
 
-        // SAFETY: PostThreadMessageW against the known-live TID with the
-        // benign WM_QUIT message; matches the production unregister path.
+        // SAFETY: PostThreadMessageW against the known-live TID (whose
+        // message queue now exists per the PeekMessageW rendezvous above)
+        // with the benign WM_QUIT message; matches the production path.
         unsafe {
             PostThreadMessageW(tid, WM_QUIT, WPARAM(0), LPARAM(0))
-                .expect("PostThreadMessageW must succeed against a live TID");
+                .expect("PostThreadMessageW must succeed against a live TID with a queue");
         }
 
         // The thread must exit promptly once WM_QUIT is posted. Bound the
@@ -2174,6 +2485,7 @@ mod tests {
             alert_acks: std::collections::HashMap::new(),
             alert_states: std::collections::HashMap::new(),
             about_open: false,
+            drag_anchor: None,
         };
         let mut harness = Harness::new_ui(|ui| {
             render_sidebar(
@@ -2211,6 +2523,7 @@ mod tests {
             alert_acks: std::collections::HashMap::new(),
             alert_states: std::collections::HashMap::new(),
             about_open: false,
+            drag_anchor: None,
         };
         let mut harness = Harness::new_ui(|ui| {
             render_sidebar(
@@ -2282,6 +2595,7 @@ mod tests {
             alert_acks: std::collections::HashMap::new(),
             alert_states: std::collections::HashMap::new(),
             about_open: false,
+            drag_anchor: None,
         };
         let mut harness = Harness::new_ui(|ui| {
             render_sidebar(
@@ -2709,5 +3023,32 @@ mod tests {
         assert!(rebound.bandwidth_view_rx.is_some());
         assert!(rebound.child_alive_fn.is_some());
         assert!(rebound.launch_fn.is_some());
+    }
+
+    /// Story 12.3 — drag handler is wired + doesn't panic when no drag is
+    /// active. The drag_anchor must stay None at rest (no spurious state).
+    /// The pure clamp math is covered in sidebar_domain::reposition; this
+    /// test covers the production wiring path (no panic + anchor cleared).
+    #[test]
+    fn handle_header_drag_is_safe_when_idle() {
+        let mut config = Config::default();
+        let mut view = SidebarView::default();
+        assert!(view.drag_anchor.is_none(), "anchor starts None");
+        {
+            let mut harness = egui_kittest::Harness::new_ui(|ui| {
+                let grip = ui.add(|ui: &mut egui::Ui| -> egui::Response {
+                    let resp = ui.label(egui::RichText::new("⠿").small());
+                    ui.interact(resp.rect, resp.id, egui::Sense::drag())
+                });
+                handle_grip_drag(&grip, ui, &mut config, &mut view, &|| {});
+            });
+            harness.run();
+        }
+        // harness dropped; now safe to inspect config/view.
+        assert!(
+            view.drag_anchor.is_none(),
+            "drag_anchor must stay None when pointer is not dragging"
+        );
+        assert_eq!(config.dock.offset_px, 0, "offset unchanged when no drag");
     }
 }

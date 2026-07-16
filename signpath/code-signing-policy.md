@@ -20,11 +20,25 @@ This document is the authoritative policy referenced by:
   Foundation in CI. No self-signing. If SignPath is unavailable, CI may create
   an explicitly labelled **draft-only** unsigned artifact for maintainer
   review; it must not be treated as a signed public release.
-- **Bundled LHM (`LibreHardwareMonitor.exe`)**: MPL-2.0, upstream-signed by
-  the LibreHardwareMonitor maintainers. We re-verify the SHA-256 pin
-  (`fe216a48...1ba22`) at every CI run. We do NOT re-sign the bundled LHM.
-- **User distribution channels**: GitHub Releases + winget only. No direct
-  download from any other source.
+- **Sensor host binary (`sidebar-monitor-host.exe`, Story 15.1)**: MIT-licensed
+  (the C# source is in the repo), runs elevated, loads LibreHardwareMonitorLib.dll.
+  Signed by SignPath Foundation in CI. Hash-pinned like the LHM binary.
+- **Service binary (`sidebar-monitor-svc.exe`, Story 16.1)**: MIT-licensed, runs
+  as `LocalSystem`, owns the sensor host. Signed by SignPath Foundation in CI.
+  This is the highest-trust binary in the product — a LocalSystem service
+  requires the strictest review (G11/G19 HITL on every change).
+- **Installer (`sidebar-setup.exe`, Story 16.3)**: The Inno Setup output EXE,
+  signed by SignPath Foundation in CI. It is the user-facing trust entry point.
+- **Bundled LHM library (`LibreHardwareMonitorLib.dll`)**: MPL-2.0, loaded by
+  `sidebar-monitor-host.exe`. We re-verify the SHA-256 pin at every CI run.
+  We do NOT re-sign the bundled library. (Note: Epic 15 replaces the LHM GUI
+  binary with the library directly; the `LibreHardwareMonitor.exe` trust
+  boundary entry becomes historical once Story 15.3 deletes the HTTP path.)
+- **Bundled LHM GUI (`LibreHardwareMonitor.exe`, DEPRECATED by Epic 15)**:
+  MPL-2.0, upstream-signed. Retained only for the portable fallback path until
+  Story 15.3 removes the HTTP dependency entirely.
+- **User distribution channels**: GitHub Releases (installer EXE) + winget
+  (`InstallerType: inno`). No direct download from any other source.
 
 ## SignPath Foundation submission
 

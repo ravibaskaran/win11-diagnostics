@@ -105,7 +105,10 @@ fn main() -> eframe::Result {
     let config_dir = resolve_config_dir();
     let lhm_dir = resolve_lhm_dir();
     let config_path = config_dir.join("config.toml");
-    let config = load_config(&config_path);
+    // Story 14.4 — shared recovery-message storage so load_config can
+    // surface corrupt-file backup paths to the GUI.
+    let recovery_msg: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
+    let config = load_config_with_recovery(&config_path, &recovery_msg);
     tracing::info!(
         path = %config_path.display(),
         poll_interval_seconds = config.poll_interval_seconds,
@@ -191,6 +194,10 @@ fn main() -> eframe::Result {
     // (b) the OHM child-liveness poll (Gap 3). The supervisor stays on this
     // thread from construction to shutdown (no Arc-Mutex needed). The main
     // thread joins this handle during the T-39 teardown phase.
+    // Story 14.1 — shared launch-message storage so the supervisor
+    // thread can surface launch-failure reasons to the GUI without a
+    // new channel type. Mirrors the AtomicBool liveness pattern.
+    let launch_msg: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
     let (launch_tx, child_alive_flag, child_launched_flag, supervisor_thread): SupervisorHandles =
         if supervisor.is_some() {
             let (tx, rx) = std::sync::mpsc::channel::<()>();
@@ -198,6 +205,7 @@ fn main() -> eframe::Result {
             let alive_clone = Arc::clone(&alive);
             let launched = Arc::new(AtomicBool::new(false));
             let launched_clone = Arc::clone(&launched);
+            let launch_msg_clone = Arc::clone(&launch_msg);
             let mut sv = supervisor.take().expect("supervisor was Some");
             let shutdown_token = cancel.clone();
             let handle = std::thread::Builder::new()
@@ -216,11 +224,36 @@ fn main() -> eframe::Result {
                                 Ok(port) => {
                                     launched_clone.store(true, Ordering::SeqCst);
                                     alive_clone.store(true, Ordering::SeqCst);
+                                    // Clear any prior launch-failure message.
+                                    if let Ok(mut guard) = launch_msg_clone.lock() {
+                                        *guard = None;
+                                    }
                                     tracing::info!(port, "LHM launched elevated via status-pill click");
                                 }
                                 Err(e) => {
                                     launched_clone.store(sv.sidebar_launched(), Ordering::SeqCst);
                                     tracing::warn!(error = %e, "launch_elevated failed (UAC declined?)");
+                                    // Story 14.1 — surface the failure to the
+                                    // GUI with actionable copy.
+                                    let msg = if e.to_string().contains("UAC")
+                                        || e.to_string().contains("runas")
+                                        || e.to_string().contains("ShellExecute")
+                                    {
+                                        "You declined the permission prompt. Click the pill to try again.".to_string()
+                                    } else if e.to_string().contains("timed out")
+                                        || e.to_string().contains("timeout")
+                                    {
+                                        "The hardware monitor didn't respond. Click again, or restart sidebar.".to_string()
+                                    } else if e.to_string().contains("not found")
+                                        || e.to_string().contains("missing")
+                                    {
+                                        "Bundled monitor binary is missing. Reinstall sidebar.".to_string()
+                                    } else {
+                                        format!("Hardware monitor launch failed: {e}")
+                                    };
+                                    if let Ok(mut guard) = launch_msg_clone.lock() {
+                                        *guard = Some(msg);
+                                    }
                                 }
                             }
                         }
@@ -257,6 +290,7 @@ fn main() -> eframe::Result {
                 None,
             )
         };
+    // launch_msg is now shared between the supervisor thread (writer) + GUI (reader).
 
     let readings_tx = broadcast::channel::<Vec<Reading>>(READINGS_CHANNEL_CAPACITY).0;
     let readings_rx_for_gui = readings_tx.subscribe();
@@ -325,6 +359,25 @@ fn main() -> eframe::Result {
         app.with_child_alive_fn(probe)
     } else {
         app
+    };
+    // Story 14.1 — wire the launch-message reader so the GUI can surface
+    // launch-failure banners (UAC declined, timeout, binary missing).
+    let app = if has_supervisor {
+        let reader: Arc<dyn Fn() -> Option<String> + Send + Sync> = Arc::new({
+            let store = Arc::clone(&launch_msg);
+            move || store.lock().ok().and_then(|g| g.clone())
+        });
+        app.with_launch_message_fn(reader)
+    } else {
+        app
+    };
+    // Story 14.4 — wire the recovery-message reader (config corruption).
+    let app = {
+        let reader: Arc<dyn Fn() -> Option<String> + Send + Sync> = Arc::new({
+            let store = Arc::clone(&recovery_msg);
+            move || store.lock().ok().and_then(|g| g.clone())
+        });
+        app.with_recovery_message_fn(reader)
     };
 
     tracing::info!("sidebar binary launching — entering eframe GUI loop");
@@ -927,6 +980,8 @@ fn resolve_lhm_dir_from(exe_dir: Option<PathBuf>, cwd_resources: Option<PathBuf>
 /// returning `Config::default()`, so forensic evidence is preserved and
 /// the next `persist_config` write goes to a clean file. Cited: Story 13.1,
 /// guardrails.md G15/G28, tdd-fixtures.md F15.
+/// Retained for test callers; production uses load_config_with_recovery.
+#[cfg(test)]
 fn load_config(path: &PathBuf) -> Config {
     let Ok(content) = std::fs::read_to_string(path) else {
         tracing::info!(
@@ -949,11 +1004,47 @@ fn load_config(path: &PathBuf) -> Config {
     }
 }
 
+/// Story 14.4 — load_config variant that records the backup path in the
+/// shared recovery-msg storage so the GUI can surface a corruption banner.
+fn load_config_with_recovery(
+    path: &PathBuf,
+    recovery_msg: &Arc<std::sync::Mutex<Option<String>>>,
+) -> Config {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return Config::default();
+    };
+    match Config::from_toml_str(&content) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, path = %path.display(), "config malformed — backing up");
+            let backup = backup_corrupt_file_returning_path(path);
+            if let Ok(mut guard) = recovery_msg.lock() {
+                *guard = Some(format!(
+                    "Your settings file was unreadable and we reset to defaults. {}",
+                    match backup {
+                        Some(p) => format!("Old file backed up at: {}", p.display()),
+                        None => "Backup failed.".to_string(),
+                    }
+                ));
+            }
+            Config::default()
+        }
+    }
+}
+
 /// Back up a corrupt file to `<path>.corrupt-<unix_timestamp>`. Best-effort
 /// per G15: if the backup fails (disk full, permissions), log at `warn!`
 /// and return — the caller (`load_config`) still recovers to defaults.
 /// Cited: Story 13.1, G28, F15.
+/// Retained for test callers; production uses load_config_with_recovery.
+#[cfg(test)]
 fn backup_corrupt_file(path: &PathBuf) {
+    let _ = backup_corrupt_file_returning_path(path);
+}
+
+/// Story 14.4 — same as backup_corrupt_file but returns the backup path so
+/// the GUI can reference it in the corruption banner.
+fn backup_corrupt_file_returning_path(path: &PathBuf) -> Option<std::path::PathBuf> {
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
@@ -965,6 +1056,7 @@ fn backup_corrupt_file(path: &PathBuf) {
                 backup = %backup.display(),
                 "corrupt config backed up (Story 13.1, G28)"
             );
+            Some(backup)
         }
         Err(e) => {
             tracing::warn!(
@@ -973,6 +1065,7 @@ fn backup_corrupt_file(path: &PathBuf) {
                 error = %e,
                 "failed to back up corrupt config (G15 — non-fatal, recovering to defaults anyway)"
             );
+            None
         }
     }
 }

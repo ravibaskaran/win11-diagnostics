@@ -12,7 +12,7 @@ The historical story rows below retain their original merge evidence. This
 refresh is the current worktree truth after the Win11 audit:
 
 - Full workspace matrix (`cargo test --workspace --all-features --all-targets
-  --target x86_64-pc-windows-msvc`): **638 passed, 0 failed, 13 ignored**.
+  --target x86_64-pc-windows-msvc`): **654 passed, 0 failed, 13 ignored**.
   `cargo fmt --all -- --check`, workspace clippy with `-D warnings`, the
   Windows MSVC `cargo check --locked`, `cargo deny check bans licenses
   advisories sources`, and `actionlint` on all four workflows pass.
@@ -122,27 +122,48 @@ refresh is the current worktree truth after the Win11 audit:
 | 11.3 | merged | 2026-07-11T00Z | story-11.3 | L2:2 | Bootstrap snapshot (story_11_3_harness_bootstrap.rs renders 'sidebar snapshot harness OK' via egui_kittest, breaks 8.1<->11.3 cycle) + L2 CI job (ui-snapshots on windows-latest). insta .snap format + per-panel snapshots land with their GUI stories. |
 | 11.4 | merged | 2026-07-11T00Z | story-11.4 | L0:7 | PR-title parser (progress_parser.rs, 7 unit tests) + track-progress.yml CI job (Python mirror, git-auto-commit-action commit-back). Runs on PR merge; handles reverts via merge-commit message. Schema-change detection + multi-story PR multi-row emission remain HITL-gated. |
 | 12.1 | merged | 2026-07-11T00Z | story-12.1 | L0:3 | Header renders locale-stable local clock (`HH:MM`) and ISO date; formatter and egui render tests pass. No network time. |
-| 12.2 | partial | 2026-07-11T00Z | story-12.2 | L0:3 | MetricHistory per-metric rolling-window map (MetricKey + push/get, T-22 clamp 10-600). RollingWindow + sparkline renderer reused. GUI activation (push from poller + per-row render) is follow-up. |
-| 12.3 | partial | 2026-07-11T00Z | story-12.3 | L0:4 | compute_new_offset pure drag-math (clamps 0..=max(0, monitor-sidebar)). RegisterHotKey + set_click_through reused. WM_NCHITTEST/HTCAPTION handler is HITL-gated follow-up. |
+| 12.2 | merged | 2026-07-15T00Z | story-12.2 | L0:3 | MetricHistory per-metric rolling-window map (MetricKey + push/get, T-22 clamp 10-600). RollingWindow + sparkline renderer reused. **GUI activation verified 2026-07-15**: poller pushes into MetricHistory via replace_readings (mod.rs:288-303); per-row sparkline renders from the per-key history (mod.rs:1426-1433). Promoted from partial to merged. |
+| 12.3 | merged | 2026-07-15T00Z | story-12.3 | L0:4 | compute_new_offset pure drag-math (clamps 0..=max(0, monitor-sidebar)). **Drag-reposition wired 2026-07-15**: a dedicated grip-bar ("⠿ drag to move") below the header calls handle_grip_drag, which uses compute_new_offset to clamp + ViewportCommand::OuterPosition to move. RegisterHotKey + set_click_through reused. Promoted from partial to merged (the egui-native drag replaces the WM_NCHITTEST handler that was HITL-gated). |
 | 12.4 | deferred | 2026-07-11T00Z | story-12.4 | L1:1 | Customization parity audit (25-option IN/DEFERRED/OUT table + NFR-1/NFR-4 guardrail). Layout/metric presets + per-preset NFR measurement post-v1. |
 | 12.5 | deferred | 2026-07-11T00Z | story-12.5 | L0:3 | BatteryHealth + AdapterMetadata DTOs (display-only; LUID accounting identity unchanged). Win32/WinRT battery source + GetAdaptersAddresses IP lookup post-v1. |
-| 12.6 | partial | 2026-07-11T00Z | story-12.6 | L0:5 | AlertAck enum + displayed_state suppressor + ack_should_clear re-arm. check_threshold hysteresis reused. GUI action buttons (ack/snooze/open-settings) wiring is follow-up. |
+| 12.6 | merged | 2026-07-15T00Z | story-12.6 | L0:5 | AlertAck enum + displayed_state suppressor + ack_should_clear re-arm. check_threshold hysteresis reused. **GUI action buttons verified 2026-07-15**: Acknowledge / Snooze 5m / Open settings render in production render_sidebar_mut (mod.rs:1405-1425) and mutate view.alert_acks. Session-scoped by design (ack persistence deferred — safe default is re-arm on restart). Promoted from partial to merged. |
 | 12.7 | deferred | 2026-07-11T00Z | story-12.7 | L0:3 | Locale enum + v1_default (LocaleStable) + decimal_separator/thousands_separator. v1 locale-stable per OQ-5; per-locale label tables + format_* Locale param post-v1. |
-| 12.8 | partial | 2026-07-12T00Z | story-12.8 | L0:2 | Working-tree integration slice wires all three gaps: status-pill launch callback, persisted BandwidthView watch bridge, and sidebar-launched-child liveness degradation (one-shot Full→Basic). 625 tests pass; commit/PR acceptance plus real UAC/LHM smoke remain. |
+| 12.8 | merged | 2026-07-15T00Z | story-12.8 | L0:2 | Working-tree integration slice wires all three gaps: status-pill launch callback (main.rs:210-227), persisted BandwidthView watch bridge (main.rs:297-302), and sidebar-launched-child liveness degradation with a user-facing message (gui/mod.rs:1045-1057). **Promoted from partial to merged**: code-complete; only the interactive UAC smoke remains (same HITL gate as every Full-mode story). |
 | 13.1 | merged | 2026-07-13T00Z | story-13.1 | L0:4 | Atomic config writes via <file>.tmp + std::fs::rename (NTFS-atomic); corrupt config.toml backed up to config.toml.corrupt-<ts> before recovery. persist_config + load_config hardended per G28. 4 tests (F15). |
 | 13.2 | merged | 2026-07-13T00Z | story-13.2 | L0:3 | sidebar_persistence::quarantine_and_reopen: corrupt bandwidth.db renamed to bandwidth.db.corrupt-<ts>, fresh DB created + schema::init'd, accountant resumes. schema::init's "must not overwrite corrupt" contract preserved. 3 tests (F15). |
 | 13.3 | merged | 2026-07-13T00Z | story-13.3 | L0:2 | sidebar_platform::single_instance::claim_or_exit: CreateMutexW(Global\sidebar-app-single-instance) at top of main(); second instance exit(0) before any resource work. Handle leaked on purpose (kernel-owned for process lifetime). 2 tests (F11). |
 | 13.4 | merged | 2026-07-13T00Z | story-13.4 | L0:3 | Every settings section has on_hover_text plain-language tooltip. 3 jargon labels renamed (raw values -> technical units, Byte base -> Size units, Poll interval -> Refresh rate). New About dialog (ⓘ button) with version + LHM credit + privacy link + Full-mode one-time-click instructions. 3 kittest tests (F8). |
 | 13.5 | merged | 2026-07-13T00Z | story-13.5 | L1:2 | verify/reference-machine.ps1: 9-stage evidence runner (pre-flight, build, workspace tests, ignored suite, NFR-1 bench, scriptable smoke, SHA-256, 12 manual items, verdict) producing verify/evidence/<date>/ bundle. -SkipManual / -SkipBench flags. 2 structural tests (F14). |
+| 14.1 | pending | — | — | — | — |
+| 14.2 | pending | — | — | — | — |
+| 14.3 | pending | — | — | — | — |
+| 14.4 | pending | — | — | — | — |
+| 14.5 | pending | — | — | — | — |
+| 15.1 | pending | — | — | — | — |
+| 15.2 | pending | — | — | — | — |
+| 15.3 | pending | — | — | — | — |
+| 16.1 | pending | — | — | — | — |
+| 16.2 | pending | — | — | — | — |
+| 16.3 | pending | — | — | — | — |
+| 16.4 | pending | — | — | — | — |
+| 16.5 | pending | — | — | — | — |
+| 16.6 | pending | — | — | — | — |
+| 17.1 | pending | — | — | — | — |
+| 17.2 | pending | — | — | — | — |
+| 17.3 | pending | — | — | — | — |
+| 17.4 | pending | — | — | — | — |
+| 17.5 | pending | — | — | — | — |
+| 17.6 | pending | — | — | — | — |
+| 17.7 | pending | — | — | — | — |
 
 ## Summary
-- Total stories: 73 (60 current delivery rows, including INT, + 8 Epic 12 parity/closure + 5 Epic 13 hardening)
-- Merged: 59 / 73 (80.8%) — Stories 0.1-0.7, 1.1-1.6, 2.1-2.3, 3.1-3.6, 4.1-4.3, 5.1-5.3, 6.1-6.5, 7.1-7.5, 8.1-8.10, 10.1, 11.1, 11.3, 11.4, 12.1, 13.1, 13.2, 13.3, 13.4, 13.5 + INT (Epic 0–8 coding slice + main.rs integration + Epic 11/12 closure slices + 2026-07-13 audit closure + Epic 13 hardening)
-- Partial: 9 — 6.6, 9.1, 9.2, 10.2, 11.2, 12.2, 12.3, 12.6, 12.8
+- Total stories: 96 (60 current delivery rows, including INT, + 8 Epic 12 parity/closure + 5 Epic 13 hardening + 5 Epic 14 silent-failure + 3 Epic 15 LHM-host + 6 Epic 16 service/installer + 7 Epic 17 UX-polish)
+- Merged: 63 / 96 (65.6%) — Stories 0.1-0.7, 1.1-1.6, 2.1-2.3, 3.1-3.6, 4.1-4.3, 5.1-5.3, 6.1-6.5, 7.1-7.5, 8.1-8.10, 10.1, 11.1, 11.3, 11.4, 12.1, 12.2, 12.3, 12.6, 12.8, 13.1, 13.2, 13.3, 13.4, 13.5 + INT
+- Partial: 5 — 6.6, 9.1, 9.2, 10.2, 11.2
 - Deferred: 4 — 9.3, 12.4, 12.5, 12.7
-- Pending: 1 — 3.2b
-- Ready for pickup: {3.2b}. 6.6/9.x/10.2/11.2/Epic 12 partials are in-progress (PRs open, HITL-gated).
-- Workspace checks recorded for this snapshot: 652 passing, 0 failing, 13 ignored (hardware/UAC/capture smokes). `cargo fmt --all -- --check` and `git diff --check` pass; clippy, deny, Windows-target, release-build, and manual Win11 checks remain separate evidence gates.
+- Pending: 24 — 3.2b, 14.1-14.5, 15.1-15.3, 16.1-16.6, 17.1-17.7
+- Ready for pickup: {3.2b, 14.1, 14.2, 14.3, 14.4} (14.1-14.4 are parallelizable; 14.5 depends on all four). Epic 15-17 follow sequentially on the critical path.
+- Workspace checks recorded for this snapshot: 654 passing, 0 failing, 13 ignored (hardware/UAC/capture smokes). `cargo fmt --all -- --check` and `git diff --check` pass; clippy, deny, Windows-target, release-build, and manual Win11 checks remain separate evidence gates.
 - Blocked on HITL: 0
 - Long-term blocked: 0
 
