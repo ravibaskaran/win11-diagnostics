@@ -1590,7 +1590,7 @@ pub fn render_sidebar_mut(
     let grip_response = ui.add_sized(
         [ui.available_width(), 12.0],
         |ui: &mut egui::Ui| -> egui::Response {
-            let resp = ui.label(egui::RichText::new("⠿ drag to move").small().weak());
+            let resp = ui.label(egui::RichText::new("≡ Drag here to move").small().weak());
             // Add drag sense to the label's response so the user can grab it.
             ui.interact(resp.rect, resp.id, egui::Sense::drag())
         },
