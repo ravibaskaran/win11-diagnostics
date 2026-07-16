@@ -48,6 +48,7 @@
 // three more submodules; their wiring into `render_sidebar` lands in the
 // GREEN commit for that batch.
 pub mod about;
+pub mod acks_store;
 pub mod alert_indicator;
 pub mod bandwidth_panel;
 pub mod first_run;
@@ -58,6 +59,7 @@ pub mod sparkline;
 pub mod status_pill;
 pub mod theme;
 
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use eframe::egui;
@@ -370,6 +372,8 @@ pub struct SidebarApp {
     /// without re-resolving %APPDATA% every frame). Empty when no on-disk
     /// path is in play (the wizard path or the Story 8.1 test path).
     config_path: std::path::PathBuf,
+    /// Story 17.1 — path to acks.toml sidecar. Empty in tests.
+    acks_path: std::path::PathBuf,
     /// Event producer used by the native platform bridge. Tests and
     /// headless callers leave this unset.
     event_tx: Option<broadcast::Sender<Event>>,
@@ -430,6 +434,7 @@ impl SidebarApp {
             view,
             wizard_active: false,
             config_path: std::path::PathBuf::new(),
+            acks_path: std::path::PathBuf::new(),
             event_tx: None,
             bandwidth_view_rx: None,
             child_alive_fn: None,
@@ -456,12 +461,14 @@ impl SidebarApp {
     ) -> Self {
         let config = state.config();
         let view = state.view();
+        let acks_path = config_path.with_file_name("acks.toml");
         Self {
             state,
             config,
             view,
             wizard_active,
             config_path,
+            acks_path,
             event_tx: None,
             bandwidth_view_rx: None,
             child_alive_fn: None,
@@ -536,6 +543,19 @@ impl SidebarApp {
     ) -> Self {
         self.recovery_message_fn = Some(reader);
         self
+    }
+
+    /// Story 17.1 — inject persisted alert acks into the view on startup.
+    pub fn state_snapshot_for_acks_init(
+        &self,
+        acks: HashMap<sidebar_domain::graph::MetricKey, sidebar_domain::alert::AlertAck>,
+    ) {
+        if acks.is_empty() {
+            return;
+        }
+        let mut view = self.state.view();
+        view.alert_acks.extend(acks);
+        self.state.replace_view(view);
     }
 
     fn apply_runtime_hooks(
@@ -699,7 +719,7 @@ impl PlatformRuntime {
 
     fn poll(&mut self, config: &mut Config, ctx: &egui::Context) -> Vec<Event> {
         use windows::Win32::UI::WindowsAndMessaging::{
-            PeekMessageW, MSG, PM_REMOVE, WM_DISPLAYCHANGE, WM_SETTINGCHANGE,
+            PeekMessageW, MSG, PM_REMOVE, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_SETTINGCHANGE,
         };
 
         let mut events = Vec::new();
@@ -758,6 +778,31 @@ impl PlatformRuntime {
                 break;
             }
             self.refresh_monitor(config, ctx, &mut events);
+        }
+
+        // Story 17.4 — WM_DPICHANGED: the user changed Windows display
+        // scaling. egui handles the rendering DPI natively, but we need to
+        // re-dock (the window may now be off-screen at the old coordinates).
+        loop {
+            let mut message = MSG::default();
+            // SAFETY: same PeekMessageW pattern; WM_DPICHANGED is a window
+            // message we peek + remove to trigger a re-dock.
+            let present = unsafe {
+                PeekMessageW(
+                    &raw mut message,
+                    None,
+                    WM_DPICHANGED,
+                    WM_DPICHANGED,
+                    PM_REMOVE,
+                )
+            };
+            if !present.as_bool() {
+                break;
+            }
+            // Force a monitor refresh + repaint so the window re-docks at the
+            // new DPI's work-area coordinates.
+            self.refresh_monitor(config, ctx, &mut events);
+            ctx.request_repaint();
         }
         events
     }
@@ -1239,6 +1284,12 @@ impl eframe::App for SidebarApp {
                         sidebar_domain::event::Tier::Full => ProviderTier::Full,
                     };
                     self.state.set_tier(mapped);
+                    // Story 17.5 — persist last_tier for crash recovery.
+                    self.config.last_tier = match mapped {
+                        ProviderTier::Full => "full".to_string(),
+                        _ => "basic".to_string(),
+                    };
+                    self.persist_config();
                     repaint = true;
                 }
                 Event::Shutdown => {
@@ -1395,6 +1446,13 @@ impl eframe::App for SidebarApp {
         self.state.replace_view(self.view.clone());
         if self.view.settings_open {
             self.persist_config();
+        }
+        // Story 17.1 — persist alert acks if any are active + the path is set.
+        // Cheap (tiny file); catches every ack/snooze mutation.
+        if !self.acks_path.as_os_str().is_empty() && !self.view.alert_acks.is_empty() {
+            let now_epoch = chrono::Local::now().timestamp();
+            acks_store::save_acks(&self.acks_path, &self.view.alert_acks);
+            let _ = now_epoch; // used in load for pruning; save stores raw
         }
     }
 }
