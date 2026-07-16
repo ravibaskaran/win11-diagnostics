@@ -65,6 +65,18 @@ pub fn render_about(ui: &mut Ui, open: &mut bool) {
                 ui.separator();
                 ui.heading("Full mode (temperature, fans, voltages)");
                 ui.label(LHM_ONE_TIME_CLICK_INSTRUCTIONS);
+                ui.label(
+                    egui::RichText::new("Note: Windows will ask for permission each time you enable Full mode. This is normal — the hardware monitor needs elevated access to read sensors.")
+                        .small()
+                        .weak(),
+                );
+
+                ui.separator();
+                ui.heading("Keyboard shortcuts");
+                ui.label(format!(
+                    "Click-through toggle: {} (clicks pass through the sidebar to windows behind it)",
+                    "Ctrl+Shift+S"
+                ));
 
                 ui.separator();
                 ui.heading("Credits");

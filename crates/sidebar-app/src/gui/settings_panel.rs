@@ -103,7 +103,7 @@ pub const METRICS_TOOLTIP: &str = "Choose which readings appear and in what \
 // metric list). Splitting each into its own fn would fragment the linear
 // top-to-bottom layout the panel presents visually; the 101-line count is the
 // natural floor for eight sections.
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::cast_possible_truncation, clippy::cast_precision_loss)]
 pub fn render(ui: &mut Ui, config: &mut Config, on_change: &dyn Fn()) {
     let mut changed = false;
 
@@ -226,6 +226,53 @@ pub fn render(ui: &mut Ui, config: &mut Config, on_change: &dyn Fn()) {
 
     // ---- Theme (T-35) ----
     theme_section(ui, &mut config.theme, &mut changed);
+
+    // ---- Story 17.2: Temperature alert thresholds ----
+    ui.separator();
+    ui.label("Temperature alerts")
+        .on_hover_text("Set the temperatures at which the sidebar shows a warning (orange) or critical (red) indicator for CPU and GPU sensors.");
+    ui.horizontal(|row| {
+        row.label("CPU warn:");
+        let mut v = config.thresholds.cpu_temp_warn as f32;
+        if row
+            .add(egui::Slider::new(&mut v, 40.0..=100.0).suffix(" °C"))
+            .changed()
+        {
+            config.thresholds.cpu_temp_warn = f64::from(v);
+            changed = true;
+        }
+        row.label("critical:");
+        let mut c = config.thresholds.cpu_temp_critical as f32;
+        if row
+            .add(egui::Slider::new(&mut c, 50.0..=110.0).suffix(" °C"))
+            .changed()
+        {
+            config.thresholds.cpu_temp_critical =
+                f64::from(c).max(config.thresholds.cpu_temp_warn + 5.0);
+            changed = true;
+        }
+    });
+    ui.horizontal(|row| {
+        row.label("GPU warn:");
+        let mut v = config.thresholds.gpu_temp_warn as f32;
+        if row
+            .add(egui::Slider::new(&mut v, 40.0..=100.0).suffix(" °C"))
+            .changed()
+        {
+            config.thresholds.gpu_temp_warn = f64::from(v);
+            changed = true;
+        }
+        row.label("critical:");
+        let mut c = config.thresholds.gpu_temp_critical as f32;
+        if row
+            .add(egui::Slider::new(&mut c, 50.0..=110.0).suffix(" °C"))
+            .changed()
+        {
+            config.thresholds.gpu_temp_critical =
+                f64::from(c).max(config.thresholds.gpu_temp_warn + 5.0);
+            changed = true;
+        }
+    });
 
     // ---- Story 8.9: metric enable/disable + reorder ----
     ui.separator();
