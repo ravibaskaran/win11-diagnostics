@@ -309,4 +309,22 @@ hardening invariants are mandatory for the v1.0.0 tag (Stories 13.1–13.5):
 - **Plain-language settings.** Every settings control MUST carry an `on_hover_text(...)` explanation comprehensible to a user who does not know what "binary" or "poll interval" means. Jargon labels MUST be renamed. (Story 13.4.)
 - **About dialog.** The app MUST expose an About dialog (ⓘ button) showing version, LHM credit + license link, privacy-policy link, GitHub issues link, and the LHM one-time-click Full-mode instructions. (Story 13.4.)
 - **Reference-machine evidence bundle.** The v1.0.0 tag MUST be backed by a `verify/reference-machine.ps1` run on the designated T-31 reference machine, producing a single evidence bundle under `verify/evidence/<date>/`. (Story 13.5, T-46.)
-- **LHM one-time-click documentation.** The bundled LHM v0.9.6 binary does NOT auto-start its HTTP server from any config key. This limitation MUST be documented in the first-run wizard + About dialog + `verify/smoke-checklist.md`. A v1.1 story may revisit the LHM upgrade; v1.0.0 ships with the documented one-time click.
+- **LHM one-time-click documentation.** The bundled LHM v0.9.6 binary does NOT auto-start its HTTP server from any config key. This limitation MUST be documented in the first-run wizard + About dialog + `verify/smoke-checklist.md`. (SUPERSEDED by Epic 15 — the LHM library host architecture eliminates the HTTP dependency entirely; this bullet remains as historical context for v0.9.x.)
+
+## G29 — Silent-Failure Surfaces (Productization Pass, 2026-07-16)
+
+A non-technical user MUST NEVER do something (click a button, complete a
+wizard, change a setting) and see nothing happen. Every user action MUST
+produce a visible response within 2 seconds, or a clear message explaining
+the delay / failure. The following silent-failure traps are FORBIDDEN in
+v1.0.0+ (Stories 14.1–14.5):
+
+- **Launch-failure visibility.** When the user clicks the status pill to enable Full mode, the outcome (success / UAC-declined / timeout / binary-missing) MUST be surfaced as a user-facing banner — NOT only as a `tracing::warn!`. (Story 14.1.)
+- **Wizard hot-start.** Completing the first-run wizard MUST hot-start the poller/accountant/supervisor in-session. The user MUST NOT be told to "restart sidebar." (Story 14.2.)
+- **Per-sensor staleness.** Each reading row MUST check its own `Reading.timestamp` against now. A stale sensor MUST render dimmed + a `⏱` glyph. Only a TOTAL blackout triggers the poller-level stale badge; a single hung sensor MUST be flagged individually. (Story 14.3.)
+- **Corruption banners.** Config corruption (`config.toml` malformed) + DB corruption (`bandwidth.db` garbage) MUST surface a dismissible banner naming the backup path — NOT a silent reset to defaults. (Story 14.4.)
+- **Generalized message stack.** All user-facing messages (info/warning/error) MUST feed into a single `Vec<UserMessage>` framework with severity + dismiss semantics — NOT ad-hoc `Option<&'static str>` fields. (Story 14.5.)
+
+The architectural move that underpins this guardrail is Epic 15 (LHM
+library host) — it removes the root cause of the most common silent failure
+(the HTTP auto-start regression). Epic 14 surfaces the rest.

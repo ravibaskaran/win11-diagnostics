@@ -719,6 +719,59 @@ mod tests {
         );
     }
 
+    /// Cert P1 (2026-07-15) — real SQLITE_BUSY concurrency test. Hold a
+    /// write transaction on a second connection (simulating another process
+    /// like sqlite3.exe), then call `save_accumulator` from the first. The
+    /// T-12 busy-retry loop MUST surface `Err(Error::Sqlite(...BUSY...))`
+    /// after the 5-attempt ceiling rather than hanging or silently succeeding.
+    /// Cited: T-12, cert P1.
+    #[test]
+    fn save_accumulator_surfaces_busy_after_retry_ceiling() {
+        let dir = TempDir::new().expect("TempDir::new");
+        let path = dir.path().join("busy.db");
+        let conn1 = Connection::open(&path).expect("open conn1");
+        super::super::schema::init(&conn1).expect("init conn1");
+        // conn2 holds a write transaction for the whole test, forcing conn1's
+        // write to hit SQLITE_BUSY on every retry attempt.
+        let conn2 = Connection::open(&path).expect("open conn2");
+        conn2
+            .execute("BEGIN IMMEDIATE", [])
+            .expect("begin txn on conn2");
+        conn2
+            .execute(
+                "INSERT INTO current_cycle (adapter_luid, adapter_name, cycle_start, rx_bytes, tx_bytes, updated_at)
+                 VALUES (999, 'lock-holder', '2026-01-01', 0, 0, '2026-01-01T00:00:00Z')",
+                [],
+            )
+            .expect("hold write txn on conn2");
+        // conn1 tries to write — should hit BUSY on every retry + surface Err.
+        let result = save_accumulator(
+            &conn1,
+            1,
+            "eth0",
+            100,
+            200,
+            "2026-01-01",
+            "2026-01-01T00:00:00Z",
+        );
+        // Release conn2's lock so the test teardown is clean.
+        let _ = conn2.execute("ROLLBACK", []);
+        assert!(
+            result.is_err(),
+            "save_accumulator under a held write lock MUST surface Err after T-12 retries, got {result:?}"
+        );
+        let err_msg = format!("{:?}", result.unwrap_err());
+        // The error should mention the SQLITE_BUSY path (the exact string varies
+        // by rusqlite version, but it MUST surface the busy failure, not a
+        // generic or silent success).
+        assert!(
+            err_msg.to_lowercase().contains("sqlite")
+                || err_msg.to_lowercase().contains("busy")
+                || err_msg.to_lowercase().contains("locked"),
+            "error MUST surface the SQLITE_BUSY/LOCKED failure, got: {err_msg}"
+        );
+    }
+
     // -----------------------------------------------------------------
     // Bonus contract assertion — `CurrentCycleRow` fields match the
     // AD-11 column set verbatim. Catches a future column rename that
