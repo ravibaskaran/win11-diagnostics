@@ -1,143 +1,164 @@
 // Story 15.1 — sidebar-monitor-host: elevated .NET sensor host.
+// Compatible with csc.exe v4.0.30319 (C# 5.0 / .NET Framework 4.x).
 //
 // Loads LibreHardwareMonitorLib.dll directly (no HTTP server dependency),
 // walks Computer.Hardware[].Sensors[], and emits JSON to stdout in the
-// exact same shape as LHM's /data.json (Vec<LhmNode> tree) so the Rust
-// adapter can consume it unchanged.
-//
-// The host runs elevated (spawned via ShellExecuteExW runas by the sidebar
-// OhmSupervisor, wrapped in a Job Object for G10 ownership). It emits one
-// JSON frame per second on stdout; the Rust side reads the latest line.
-//
-// Build: csc Program.cs -r:LibreHardwareMonitorLib.dll -out:sidebar-monitor-host.exe
-//   (or via the .csproj + dotnet build if .NET SDK is available)
+// same shape as LHM's /data.json tree so the Rust adapter consumes it
+// unchanged.
 //
 // Cited: Story 15.1, guardrails.md G10 (ownership) + G16 (pipe, not HTTP).
-// License: MIT (same as the host workspace).
+// License: MIT.
 
 using System;
 using System.Collections.Generic;
-using System.Text.Json;
+using System.Globalization;
+using System.IO;
+using System.Text;
 using LibreHardwareMonitor.Hardware;
 
-namespace SidebarMonitorHost;
-
-internal static class Program
+namespace SidebarMonitorHost
 {
-    private static void Main(string[] args)
+    internal static class Program
     {
-        var computer = new Computer
+        private static void Main(string[] args)
         {
-            IsCpuEnabled = true,
-            IsGpuEnabled = true,
-            IsMemoryEnabled = true,
-            IsMotherboardEnabled = true,
-            IsStorageEnabled = true,
-            IsBatteryEnabled = true,
-            IsNetworkEnabled = true,
-            IsControllerEnabled = true,
-        };
-        computer.Open();
+            Computer computer = new Computer();
+            computer.IsCpuEnabled = true;
+            computer.IsGpuEnabled = true;
+            computer.IsMemoryEnabled = true;
+            computer.IsMotherboardEnabled = true;
+            computer.IsStorageEnabled = true;
+            computer.IsBatteryEnabled = true;
+            computer.IsNetworkEnabled = true;
+            computer.IsControllerEnabled = true;
+            computer.Open();
 
-        // Signal readiness: emit one line "READY" so the Rust side knows
-        // the library loaded + Open() succeeded (before the first frame).
-        Console.Out.WriteLine("READY");
-        Console.Out.Flush();
-
-        var intervalMs = 1000; // default 1s
-        if (args.Length > 0 && int.TryParse(args[0], out var parsed))
-            intervalMs = Math.Clamp(parsed, 500, 10000);
-
-        while (true)
-        {
-            var tree = BuildTree(computer);
-            var json = JsonSerializer.Serialize(tree);
-            Console.Out.WriteLine(json);
+            // Signal readiness so the Rust side knows the library loaded.
+            Console.Out.WriteLine("READY");
             Console.Out.Flush();
-            System.Threading.Thread.Sleep(intervalMs);
-        }
-    }
 
-    private static List<Dictionary<string, object?>> BuildTree(IComputer computer)
-    {
-        var nodes = new List<Dictionary<string, object?>>();
-        foreach (IHardware hw in computer.Hardware)
-        {
-            hw.Update();
-            var hwNode = new Dictionary<string, object?>
+            int intervalMs = 1000;
+            if (args.Length > 0)
             {
-                ["id"] = hw.Identifier.ToString(),
-                ["text"] = hw.Name,
-                ["type"] = "Node",
-                ["children"] = BuildSensorChildren(hw),
-                ["min"] = null as double?,
-                ["max"] = null as double?,
-                ["value"] = null as double?,
-                ["imageindex"] = 0,
-            };
-            nodes.Add(hwNode);
-        }
-        return nodes;
-    }
-
-    private static List<Dictionary<string, object?>> BuildSensorChildren(IHardware hw)
-    {
-        var children = new List<Dictionary<string, object?>>();
-        // Group sensors by SensorType → one folder node per type.
-        var byType = new Dictionary<SensorType, List<ISensor>>();
-        foreach (ISensor s in hw.Sensors)
-        {
-            if (!byType.ContainsKey(s.SensorType))
-                byType[s.SensorType] = new List<ISensor>();
-            byType[s.SensorType].Add(s);
-        }
-        foreach (var (st, sensors) in byType)
-        {
-            var typeName = st.ToString().ToLowerInvariant();
-            var typeNode = new Dictionary<string, object?>
-            {
-                ["id"] = $"{hw.Identifier}{typeName}",
-                ["text"] = typeName,
-                ["type"] = "Node",
-                ["children"] = new List<Dictionary<string, object?>>(),
-                ["min"] = null as double?,
-                ["max"] = null as double?,
-                ["value"] = null as double?,
-                ["imageindex"] = 0,
-            };
-            foreach (ISensor s in sensors)
-            {
-                var sensorNode = new Dictionary<string, object?>
+                int parsed;
+                if (int.TryParse(args[0], out parsed))
                 {
-                    ["id"] = s.Identifier.ToString(),
-                    ["text"] = s.Name,
-                    ["type"] = "Sensor",
-                    ["children"] = new List<Dictionary<string, object?>>(),
-                    ["min"] = s.Min as double?,
-                    ["max"] = s.Max as double?,
-                    ["value"] = s.Value as double?,
-                    ["imageindex"] = 0,
-                };
-                ((List<Dictionary<string, object?>>)typeNode["children"]!).Add(sensorNode);
+                    if (parsed < 500) parsed = 500;
+                    if (parsed > 10000) parsed = 10000;
+                    intervalMs = parsed;
+                }
             }
-            children.Add(typeNode);
-        }
-        // Also include sub-hardware (e.g. motherboard → superIO).
-        foreach (IHardware sub in hw.SubHardware)
-        {
-            sub.Update();
-            children.Add(new Dictionary<string, object?>
+
+            while (true)
             {
-                ["id"] = sub.Identifier.ToString(),
-                ["text"] = sub.Name,
-                ["type"] = "Node",
-                ["children"] = BuildSensorChildren(sub),
-                ["min"] = null as double?,
-                ["max"] = null as double?,
-                ["value"] = null as double?,
-                ["imageindex"] = 0,
-            });
+                string json = BuildJson(computer);
+                Console.Out.WriteLine(json);
+                Console.Out.Flush();
+                System.Threading.Thread.Sleep(intervalMs);
+            }
         }
-        return children;
+
+        // Hand-rolled JSON serializer (avoids System.Text.Json dependency
+        // which requires .NET 5+ or NuGet package on Framework 4.x).
+        private static string BuildJson(IComputer computer)
+        {
+            StringBuilder sb = new StringBuilder();
+            sb.Append("[");
+            bool first = true;
+            foreach (IHardware hw in computer.Hardware)
+            {
+                hw.Update();
+                if (!first) sb.Append(",");
+                first = false;
+                AppendNode(sb, hw.Identifier.ToString(), hw.Name, BuildSensorChildren(hw));
+            }
+            sb.Append("]");
+            return sb.ToString();
+        }
+
+        private static string BuildSensorChildren(IHardware hw)
+        {
+            StringBuilder sb = new StringBuilder();
+            sb.Append("[");
+            bool first = true;
+
+            // Group sensors by SensorType — one folder node per type.
+            Dictionary<SensorType, List<ISensor>> byType = new Dictionary<SensorType, List<ISensor>>();
+            foreach (ISensor s in hw.Sensors)
+            {
+                if (!byType.ContainsKey(s.SensorType))
+                    byType[s.SensorType] = new List<ISensor>();
+                byType[s.SensorType].Add(s);
+            }
+            foreach (KeyValuePair<SensorType, List<ISensor>> entry in byType)
+            {
+                SensorType st = entry.Key;
+                List<ISensor> sensors = entry.Value;
+                string typeName = st.ToString().ToLowerInvariant();
+                string folderId = hw.Identifier.ToString() + typeName;
+
+                if (!first) sb.Append(",");
+                first = false;
+                sb.Append("{");
+                sb.Append("\"id\":\"").Append(EscapeJson(folderId)).Append("\",");
+                sb.Append("\"text\":\"").Append(EscapeJson(typeName)).Append("\",");
+                sb.Append("\"type\":\"Node\",");
+                sb.Append("\"children\":[");
+                bool firstSensor = true;
+                foreach (ISensor s in sensors)
+                {
+                    if (!firstSensor) sb.Append(",");
+                    firstSensor = false;
+                    sb.Append("{");
+                    sb.Append("\"id\":\"").Append(EscapeJson(s.Identifier.ToString())).Append("\",");
+                    sb.Append("\"text\":\"").Append(EscapeJson(s.Name)).Append("\",");
+                    sb.Append("\"type\":\"Sensor\",");
+                    sb.Append("\"children\":[],");
+                    sb.Append("\"min\":").Append(FormatDouble(s.Min)).Append(",");
+                    sb.Append("\"max\":").Append(FormatDouble(s.Max)).Append(",");
+                    sb.Append("\"value\":").Append(FormatDouble(s.Value)).Append(",");
+                    sb.Append("\"imageindex\":0");
+                    sb.Append("}");
+                }
+                sb.Append("],");
+                sb.Append("\"min\":null,\"max\":null,\"value\":null,\"imageindex\":0");
+                sb.Append("}");
+            }
+            // Sub-hardware (e.g. motherboard -> superIO).
+            foreach (IHardware sub in hw.SubHardware)
+            {
+                sub.Update();
+                if (!first) sb.Append(",");
+                first = false;
+                AppendNode(sb, sub.Identifier.ToString(), sub.Name, BuildSensorChildren(sub));
+            }
+            sb.Append("]");
+            return sb.ToString();
+        }
+
+        private static void AppendNode(StringBuilder sb, string id, string text, string childrenJson)
+        {
+            sb.Append("{");
+            sb.Append("\"id\":\"").Append(EscapeJson(id)).Append("\",");
+            sb.Append("\"text\":\"").Append(EscapeJson(text)).Append("\",");
+            sb.Append("\"type\":\"Node\",");
+            sb.Append("\"children\":").Append(childrenJson).Append(",");
+            sb.Append("\"min\":null,\"max\":null,\"value\":null,\"imageindex\":0");
+            sb.Append("}");
+        }
+
+        private static string FormatDouble(double? value)
+        {
+            if (!value.HasValue) return "null";
+            double d = value.Value;
+            if (double.IsNaN(d) || double.IsInfinity(d)) return "null";
+            return d.ToString("R", CultureInfo.InvariantCulture);
+        }
+
+        private static string EscapeJson(string s)
+        {
+            if (s == null) return "";
+            return s.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        }
     }
 }
