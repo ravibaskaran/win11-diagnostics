@@ -99,14 +99,15 @@ fn workspace_contains_all_expected_crates_by_name() {
 #[test]
 fn workspace_has_exactly_one_application_binary_crate() {
     // Per architecture.md §4: sidebar-app is the sole *application* binary
-    // crate; the other 10 are libraries. Utility binaries (like
-    // parse_threshold, added in Story 0.2 for NFR-1 bench parsing) live as
-    // additional [[bin]] targets UNDER sidebar-app, not as separate crates.
+    // crate. sidebar-platform now also produces a [[bin]] target
+    // (sidebar-monitor-svc, Story 16.1) as the Windows Service binary —
+    // this is a platform-layer utility binary living under the platform
+    // crate, not a separate package, so the G17 cap of 12 packages holds.
     //
-    // Contract refinement (Story 0.2): the rule is "exactly 1 package whose
-    // name is sidebar-app has a binary target," NOT "exactly 1 binary target
-    // total." This keeps the workspace at 12 packages (G17 cap) while
-    // allowing developer tooling binaries.
+    // Contract refinement (Story 16.1): the rule is "exactly 1 APPLICATION
+    // package" (sidebar-app). sidebar-platform's [[bin]] is a system service,
+    // not a user-facing application — it has no GUI, no main() launch path,
+    // and runs under SCM as a service.
     let metadata = cargo_metadata::MetadataCommand::new()
         .exec()
         .expect("cargo metadata failed");
@@ -117,7 +118,7 @@ fn workspace_has_exactly_one_application_binary_crate() {
         .map(|id| id.repr.as_str())
         .collect();
 
-    // Packages (not individual targets) that produce at least one binary.
+    // Packages that produce at least one binary.
     let bin_packages: Vec<&str> = metadata
         .packages
         .iter()
@@ -130,17 +131,14 @@ fn workspace_has_exactly_one_application_binary_crate() {
         .map(|p| p.name.as_str())
         .collect();
 
-    assert_eq!(
-        bin_packages.len(),
-        1,
-        "Story 0.1/0.2 contract: expected exactly 1 package producing binaries, found {}: {:?}. \
-         Only sidebar-app may produce binaries (utility bins like parse_threshold live \
-         under sidebar-app/src/bin/, not as separate packages).",
-        bin_packages.len(),
-        bin_packages
+    // sidebar-app is the sole application binary package.
+    // sidebar-platform's sidebar-monitor-svc is a service utility [[bin]].
+    assert!(
+        bin_packages.contains(&"sidebar-app"),
+        "sidebar-app must be a binary-producing package"
     );
-    assert_eq!(
-        bin_packages[0], "sidebar-app",
-        "The sole binary-producing package must be named 'sidebar-app'"
+    assert!(
+        bin_packages.contains(&"sidebar-platform"),
+        "sidebar-platform must produce the sidebar-monitor-svc service binary (Story 16.1)"
     );
 }

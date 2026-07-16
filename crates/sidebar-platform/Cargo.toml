@@ -23,9 +23,13 @@ windows = { workspace = true, features = [
     "Win32_Graphics_Gdi",               # EnumDisplayMonitors + EnumDisplayDevices (monitors.rs)
     "Win32_System_Registry",            # AppsUseLightTheme (theme_bridge.rs)
     "Win32_System_JobObjects",         # CreateJobObjectW + SetInformationJobObject + JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE (Story 6.4 G10)
-    "Win32_System_Threading",          # OpenProcess + WaitForSingleObject + PROCESS_QUERY_* (Story 6.4 monitor)
+    "Win32_System_Threading",          # OpenProcess + WaitForSingleObject + CreateProcessW (Story 6.4 + 16.1)
     "Win32_Security",                  # SECURITY_ATTRIBUTES (required by CreateJobObjectW signature, Story 6.4)
-] }                                    # MIT OR Apache-2.0 — Win32 FFI (DWM peek/cloak, AppBar, SetWindowPos, DPI v2, OhmSupervisor)
+    "Win32_System_Services",           # ServiceMain + StartServiceCtrlDispatcherW + SetServiceStatus + RegisterServiceCtrlHandlerExW (Story 16.1)
+    "Win32_Storage_FileSystem",        # CreateFileW + named pipe file handles (Story 16.1)
+    "Win32_System_Pipes",              # CreateNamedPipeW (named pipe server, Story 16.1)
+    "Win32_System_IO",                 # OVERLAPPED type required by WriteFile (Story 16.1)
+] }                                    # MIT OR Apache-2.0 — Win32 FFI (DWM peek/cloak, AppBar, SetWindowPos, DPI v2, OhmSupervisor, Windows Service)
 tracing = { workspace = true }         # MIT — debug!/warn! for platform diagnostics
 
 [dev-dependencies]
@@ -34,3 +38,7 @@ tempfile = { workspace = true }        # MIT OR Apache-2.0 — TempDir for LHM c
 
 [lints]
 workspace = true
+
+[[bin]]
+name = "sidebar-monitor-svc"
+path = "src/bin/sidebar-monitor-svc.rs"

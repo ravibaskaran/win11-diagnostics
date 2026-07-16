@@ -1,0 +1,40 @@
+# Story 16.4 — winget package manifest for sidebar v1.0.0
+# Cited: Story 16.4, T-47, G19.
+# Submit via: wingetcreate submit --token <PAT> winget/manifest.yaml
+
+PackageIdentifier: ravibaskaran.sidebar
+PackageVersion: 1.0.0
+PackageLocale: en-US
+Publisher: ravibaskaran
+PublisherUrl: https://github.com/ravibaskaran/win11-diagnostics
+PublisherSupportUrl: https://github.com/ravibaskaran/win11-diagnostics/issues
+PackageName: sidebar
+PackageUrl: https://github.com/ravibaskaran/win11-diagnostics
+License: MIT
+LicenseUrl: https://github.com/ravibaskaran/win11-diagnostics/blob/main/LICENSE
+ShortDescription: Glanceable system health, calmly. A lightweight desktop sidebar for Windows 11.
+Description: |
+  A ground-up Rust reimagining of SidebarDiagnostics for Windows 11.
+  Shows live hardware telemetry (CPU, GPU, RAM, disk, network) + monthly
+  bandwidth tracking. No telemetry, no account, no cloud — all readings
+  stay on your machine.
+Tags:
+  - hardware
+  - monitor
+  - sidebar
+  - diagnostics
+  - system
+  - temperature
+  - bandwidth
+Installers:
+  - InstallerLocale: en-US
+    Architecture: x64
+    InstallerType: inno
+    InstallerUrl: https://github.com/ravibaskaran/win11-diagnostics/releases/download/v1.0.0/sidebar-setup.exe
+    InstallerSha256: REPLACE_AT_RELEASE
+    Scope: machine
+    Switches:
+      Silent: /VERYSILENT /SUPPRESSMSGBOXES
+      SilentWithProgress: /SILENT /SUPPRESSMSGBOXES
+ManifestType: merged
+ManifestVersion: 1.6.0
