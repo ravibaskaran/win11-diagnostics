@@ -57,6 +57,7 @@ use tracing::{debug, warn};
 
 pub mod http;
 pub mod lhm_model;
+pub mod pipe;
 
 use crate::http::{HttpClient, OhmError, RealHttpClient, DEFAULT_OHM_PORT};
 use crate::lhm_model::LhmNode;
