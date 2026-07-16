@@ -27,6 +27,12 @@ pub struct Config {
     #[serde(default)]
     pub first_run_complete: bool,
 
+    /// Story 17.5 — the tier at last shutdown. If "full" and the current
+    /// launch is Basic (the elevated child was reaped on crash), the GUI
+    /// shows a "click pill to re-enable" message.
+    #[serde(default)]
+    pub last_tier: String,
+
     /// Poll interval in seconds (T-3: 1–60, default 10).
     #[serde(default = "default_poll_interval")]
     pub poll_interval_seconds: u32,
@@ -310,6 +316,7 @@ impl Default for Config {
         Self {
             config_version: default_config_version(),
             first_run_complete: false,
+            last_tier: String::new(),
             poll_interval_seconds: default_poll_interval(),
             display: DisplayConfig::default(),
             bandwidth: BandwidthConfig::default(),

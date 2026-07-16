@@ -80,7 +80,42 @@ fn render_current(ui: &mut Ui, view: &BandwidthView, display: &DisplayConfig) {
 /// Render the reset countdown ("12 days until reset (2026-07-31)" or
 /// [`RESETS_TODAY`]).
 fn render_reset(ui: &mut Ui, view: &BandwidthView) {
-    ui.label(reset_countdown_label(view));
+    ui.horizontal(|row| {
+        row.label(reset_countdown_label(view));
+        // Story 17.3 — CSV export button. Writes a simple CSV to a temp
+        // path + logs the location. Uses the data already in BandwidthView.
+        if row.small_button("Export CSV").clicked() {
+            let csv = export_bandwidth_csv(view);
+            let path = std::env::temp_dir().join("sidebar-bandwidth-export.csv");
+            if let Err(e) = std::fs::write(&path, csv) {
+                tracing::warn!(error = %e, "CSV export failed");
+            } else {
+                tracing::info!(path = %path.display(), "bandwidth CSV exported");
+            }
+        }
+    });
+}
+
+/// Story 17.3 — generate a CSV string from the BandwidthView. Simple format:
+/// `luid,adapter_name,rx_bytes,tx_bytes` for current + history rows.
+#[allow(clippy::format_push_string)]
+fn export_bandwidth_csv(view: &BandwidthView) -> String {
+    let mut out = String::from("luid,adapter_name,rx_bytes,tx_bytes\n");
+    for nic in &view.current {
+        let name = nic.friendly_name.as_deref().unwrap_or("unknown");
+        out.push_str(&format!(
+            "{},{},{},{}\n",
+            nic.luid, name, nic.rx_bytes, nic.tx_bytes
+        ));
+    }
+    for nic in &view.history {
+        let name = nic.friendly_name.as_deref().unwrap_or("unknown");
+        out.push_str(&format!(
+            "{},{},{},{}\n",
+            nic.luid, name, nic.rx_bytes, nic.tx_bytes
+        ));
+    }
+    out
 }
 
 /// Render the prior-cycle history strip at a smaller font. Each NIC's row

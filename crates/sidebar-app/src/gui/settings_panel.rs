@@ -103,7 +103,11 @@ pub const METRICS_TOOLTIP: &str = "Choose which readings appear and in what \
 // metric list). Splitting each into its own fn would fragment the linear
 // top-to-bottom layout the panel presents visually; the 101-line count is the
 // natural floor for eight sections.
-#[allow(clippy::too_many_lines, clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+#[allow(
+    clippy::too_many_lines,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss
+)]
 pub fn render(ui: &mut Ui, config: &mut Config, on_change: &dyn Fn()) {
     let mut changed = false;
 
@@ -296,6 +300,56 @@ fn dock_edge_section(ui: &mut Ui, dock: &mut DockConfig, changed: &mut bool) {
             }
         }
     });
+    // Story 17.7 — monitor-picker dropdown (replaces the raw TextEdit).
+    // Populated from monitors::enumerate(); falls back to a text field
+    // if enumeration fails.
+    ui.label("Target monitor")
+        .on_hover_text("Which screen the sidebar docks to. 'primary' uses your main display.");
+    #[cfg(windows)]
+    {
+        if let Ok(displays) = crate::gui::monitors::enumerate() {
+            let current = &dock.monitor_id;
+            let mut selected_idx = displays.iter().position(|d| &d.id == current).unwrap_or(0);
+            let labels: Vec<String> = displays
+                .iter()
+                .map(|d| {
+                    if d.primary {
+                        format!("{} (primary, {}x{})", d.id, d.width, d.height)
+                    } else {
+                        format!("{} ({}x{})", d.id, d.width, d.height)
+                    }
+                })
+                .collect();
+            let mut cb = egui::ComboBox::from_label("");
+            cb = cb.selected_text(
+                labels
+                    .get(selected_idx)
+                    .cloned()
+                    .unwrap_or_else(|| "primary".into()),
+            );
+            cb.show_ui(ui, |ui| {
+                for (i, label) in labels.iter().enumerate() {
+                    if ui.selectable_label(selected_idx == i, label).clicked() {
+                        selected_idx = i;
+                    }
+                }
+            });
+            if let Some(d) = displays.get(selected_idx) {
+                if d.id != dock.monitor_id {
+                    dock.monitor_id.clone_from(&d.id);
+                    *changed = true;
+                }
+            }
+        } else {
+            // Fallback: raw text field.
+            ui.text_edit_singleline(&mut dock.monitor_id);
+            *changed = true;
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        ui.text_edit_singlevalue(&mut dock.monitor_id);
+    }
 }
 
 /// Render the theme-mode radio section.

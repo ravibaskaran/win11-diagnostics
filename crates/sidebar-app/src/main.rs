@@ -108,7 +108,7 @@ fn main() -> eframe::Result {
     // Story 14.4 — shared recovery-message storage so load_config can
     // surface corrupt-file backup paths to the GUI.
     let recovery_msg: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
-    let config = load_config_with_recovery(&config_path, &recovery_msg);
+    let mut config = load_config_with_recovery(&config_path, &recovery_msg);
     tracing::info!(
         path = %config_path.display(),
         poll_interval_seconds = config.poll_interval_seconds,
@@ -318,6 +318,19 @@ fn main() -> eframe::Result {
 
     let mut signal_join = spawn_signal_handler_with_signal(shutdown_signal.clone());
 
+    // Story 17.5 — crash-recovery check BEFORE config is moved into AppState.
+    let was_full = config.last_tier == "full";
+    if was_full {
+        if let Ok(mut guard) = launch_msg.lock() {
+            *guard = Some(
+                "sidebar was in Full mode last time. Click the status pill to re-enable it."
+                    .to_string(),
+            );
+        }
+    }
+    // Reset last_tier to basic for this launch; GUI updates on TierChanged.
+    config.last_tier = "basic".to_string();
+
     let state = AppState::new_full(
         tier,
         Some(readings_rx_for_gui),
@@ -326,8 +339,19 @@ fn main() -> eframe::Result {
         SidebarView::default(),
     );
     state.set_shutdown_signal(shutdown_signal.clone());
-    let app = SidebarApp::with_config_path(state, config_path, wizard_active)
+    let app = SidebarApp::with_config_path(state, config_path.clone(), wizard_active)
         .with_event_sender(event_channel.raw_tx.clone());
+    // Story 17.1 — load persisted alert acks on startup (prune expired).
+    {
+        let acks_path = config_path.with_file_name("acks.toml");
+        let now_epoch = chrono::Local::now().timestamp();
+        let acks = sidebar_app::gui::acks_store::load_acks(&acks_path, now_epoch);
+        if !acks.is_empty() {
+            tracing::info!(count = acks.len(), "loaded persisted alert acks");
+        }
+        // Inject into AppState via replace_view.
+        app.state_snapshot_for_acks_init(acks);
+    }
     // Story 12.8 Gap 2 — wire the accountant's BandwidthView receiver.
     let app = if let Some(rx) = background_tasks.bandwidth_view_rx.take() {
         app.with_bandwidth_view_rx(rx)
