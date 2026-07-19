@@ -915,7 +915,7 @@ pub fn patch_lhm_config(config_path: &Path, port: u16) -> Result<()> {
         let content = format!(
             "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<configuration>\n{app_settings_block}</configuration>\n"
         );
-        std::fs::write(config_path, content).map_err(|e| {
+        crate::fs::atomic_write(config_path, &content).map_err(|e| {
             Error::Platform(format!(
                 "failed to write LHM config {}: {e}",
                 config_path.display()
@@ -937,7 +937,7 @@ pub fn patch_lhm_config(config_path: &Path, port: u16) -> Result<()> {
         // (no-op write is harmless).
         return Ok(());
     }
-    std::fs::write(config_path, patched).map_err(|e| {
+    crate::fs::atomic_write(config_path, &patched).map_err(|e| {
         Error::Platform(format!(
             "failed to write patched LHM config {}: {e}",
             config_path.display()
@@ -1023,7 +1023,7 @@ fn patch_lhm_user_config(config_path: &Path, port: u16) -> Result<()> {
              <add key=\"{CONFIG_KEY_LISTENER_PORT}\" value=\"{port}\" />\n  \
              </appSettings>\n</configuration>\n"
         );
-        std::fs::write(config_path, content).map_err(|e| {
+        crate::fs::atomic_write(config_path, &content).map_err(|e| {
             Error::Platform(format!(
                 "failed to write LHM user config {}: {e}",
                 config_path.display()
@@ -1048,7 +1048,7 @@ fn patch_lhm_user_config(config_path: &Path, port: u16) -> Result<()> {
     patched = update_app_setting_key(&patched, CONFIG_KEY_LISTENER_PORT, &port.to_string());
 
     if patched != original {
-        std::fs::write(config_path, patched).map_err(|e| {
+        crate::fs::atomic_write(config_path, &patched).map_err(|e| {
             Error::Platform(format!(
                 "failed to write patched LHM user config {}: {e}",
                 config_path.display()

@@ -22,6 +22,7 @@
 pub mod appbar;
 pub mod dpi;
 pub mod dwm;
+pub mod fs;
 pub mod hotkey;
 pub mod monitors;
 pub mod net_info;
