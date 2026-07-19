@@ -801,7 +801,13 @@ const THRESHOLD_GAP: f64 = 5.0;
 ///
 /// Pure helper extracted so the contract is unit-tested independently of
 /// the egui slider widget (audit 1-B).
+///
+/// The `f64 → f32` cast is intentional: threshold config is stored as `f64`
+/// (T-26 / TOML schema) but egui's `Slider::new` takes `f32`. The values
+/// are °C integers in practice (40..=110); f32 mantissa has 23 bits of
+/// precision, more than enough. Truncation is impossible in the legal range.
 #[must_use]
+#[allow(clippy::cast_possible_truncation)]
 fn warn_slider_max(critical: f64, floor: f64) -> f32 {
     ((critical - THRESHOLD_GAP) as f32).max(floor as f32)
 }
@@ -812,13 +818,16 @@ fn warn_slider_max(critical: f64, floor: f64) -> f32 {
 /// absolute ceiling (which would produce an inverted range).
 ///
 /// Pure helper extracted so the contract is unit-tested independently of
-/// the egui slider widget (audit 1-B).
+/// the egui slider widget (audit 1-B). See [`warn_slider_max`] for why the
+/// `f64 → f32` cast is safe.
 #[must_use]
+#[allow(clippy::cast_possible_truncation)]
 fn critical_slider_min(warn: f64, ceil: f64) -> f32 {
     ((warn + THRESHOLD_GAP) as f32).min(ceil as f32)
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)]
 mod tests {
     //! Story 8.5 TDD contract tests (F8 egui_kittest + pure-fn unit tests).
 
@@ -1104,13 +1113,12 @@ mod tests {
     #[test]
     fn constrained_slider_bounds_preserve_gap_invariant() {
         for critical in [50_f64, 70.0, 90.0, 110.0] {
-            let warn_max = warn_slider_max(critical, 40.0) as f64;
+            let warn_max = f64::from(warn_slider_max(critical, 40.0));
             // Walk a few warn values inside the reachable range.
-            for warn in [40_f64, (40.0 + warn_max) / 2.0, warn_max] {
+            for warn in [40_f64, f64::midpoint(40.0, warn_max), warn_max] {
                 assert!(
                     warn <= critical - THRESHOLD_GAP + 1e-6,
-                    "warn {warn} must stay <= critical {critical} - gap {}: invariant violated",
-                    THRESHOLD_GAP
+                    "warn {warn} must stay <= critical {critical} - gap {THRESHOLD_GAP}: invariant violated"
                 );
             }
         }

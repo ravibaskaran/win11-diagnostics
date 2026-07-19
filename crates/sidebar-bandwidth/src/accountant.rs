@@ -96,18 +96,6 @@ impl AccountantConfig {
     }
 }
 
-/// The BandwidthAccountant. Construct via [`BandwidthAccountant::new`], then
-/// spawn [`BandwidthAccountant::run`] on a tokio runtime.
-///
-/// Holds:
-/// - `rx` — the broadcast receiver subscribed to the poller's `Vec<Reading>`
-///   stream.
-/// - `conn` — owned SQLite connection (all access via `bandwidth_repo`; G21).
-/// - `clock` — injectable wall-clock (HITL — G11).
-/// - `config` — debounce + billing + retention config.
-/// - `accumulator` — per-LUID in-memory state (Story 5.1).
-/// - `cycle_start` — the start date of the current billing cycle (stamped
-///   on `current_cycle` rows; advanced on rollover).
 /// Deferral escalation threshold for `check_rollover` archive failures.
 ///
 /// A single transient `archive_cycle` failure (e.g. SQLITE_BUSY exhausted) is
@@ -120,6 +108,18 @@ impl AccountantConfig {
 /// render a visible banner.
 const ARCHIVE_DEFER_ESCALATION_THRESHOLD: u32 = 3;
 
+/// The BandwidthAccountant. Construct via [`BandwidthAccountant::new`], then
+/// spawn [`BandwidthAccountant::run`] on a tokio runtime.
+///
+/// Holds:
+/// - `rx` — the broadcast receiver subscribed to the poller's `Vec<Reading>`
+///   stream.
+/// - `conn` — owned SQLite connection (all access via `bandwidth_repo`; G21).
+/// - `clock` — injectable wall-clock (HITL — G11).
+/// - `config` — debounce + billing + retention config.
+/// - `accumulator` — per-LUID in-memory state (Story 5.1).
+/// - `cycle_start` — the start date of the current billing cycle (stamped
+///   on `current_cycle` rows; advanced on rollover).
 pub struct BandwidthAccountant {
     rx: broadcast::Receiver<Vec<Reading>>,
     conn: Connection,

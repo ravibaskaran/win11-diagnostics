@@ -56,10 +56,10 @@ fn tmp_sibling(path: &Path) -> std::path::PathBuf {
     // Append ".tmp" to the filename. `with_extension` would REPLACE the
     // extension, which is wrong for files like `LibreHardwareMonitor.config`
     // (becomes `LibreHardwareMonitor.tmp` — different file, not a sibling).
-    let mut name = path
-        .file_name()
-        .map(std::ffi::OsStr::to_os_string)
-        .unwrap_or_else(|| std::ffi::OsString::from("atomic.tmp"));
+    let mut name = path.file_name().map_or_else(
+        || std::ffi::OsString::from("atomic.tmp"),
+        std::ffi::OsStr::to_os_string,
+    );
     name.push(".tmp");
     path.with_file_name(name)
 }
