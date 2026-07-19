@@ -86,6 +86,12 @@ pub struct DisplayConfig {
     #[serde(default = "default_temp_unit")]
     pub temp_unit: TempUnit,
 
+    /// UI language code (v1.0 parity: `en` default, `es` shipped). The
+    /// sidebar-app i18n module parses this into a `Language`; unknown codes
+    /// fall back to English.
+    #[serde(default = "default_language")]
+    pub language: String,
+
     /// Show raw values (Hz/bytes/bps) instead of human-readable (T-28).
     #[serde(default)]
     pub raw_values: bool,
@@ -105,6 +111,65 @@ pub struct DisplayConfig {
     /// is suppressed and the window renders cleanly as borderless-opaque.
     #[serde(default)]
     pub force_opaque: bool,
+
+    /// Font size in pixels (v1.0 parity: 10/12/14/16/18 presets, default 14).
+    /// Applied as egui's base font size; title/small sizes derive from it.
+    /// Stored as u16 so the `as f32` zoom conversion is lossless (u16 fits in
+    /// f32's 24-bit mantissa, satisfying clippy::cast_precision_loss).
+    #[serde(default = "default_font_size")]
+    pub font_size: u16,
+
+    /// Whether alerting metrics blink between normal and alert color (default
+    /// ON for accessibility — color alone is insufficient for color-blind
+    /// users). v1.0 parity with reference's AlertBlink.
+    #[serde(default = "default_alert_blink")]
+    pub alert_blink: bool,
+
+    /// Whether sidebar launches on Windows startup (default OFF). v1.0 parity
+    /// with reference's RunAtStartup. Implemented via the Windows Run
+    /// registry key (HKCU\...\Run) — per-user, no admin required.
+    #[serde(default)]
+    pub run_at_startup: bool,
+
+    /// UI scale multiplier (v1.0 parity: 0.5–3.0, default 1.0). Composes with
+    /// `font_size` so the user can independently tune text size and overall
+    /// scale. Stored as a fixed-point u16 (scale × 100) so serde is exact.
+    #[serde(default = "default_ui_scale")]
+    pub ui_scale_percent: u16,
+
+    /// Sidebar background color as `#RRGGBB` (v1.0 parity: reference BGColor).
+    /// Empty string = use theme-derived background (the v1 default).
+    #[serde(default)]
+    pub bg_color: String,
+
+    /// Background opacity 0–100 (v1.0 parity: reference BGOpacity × 100).
+    /// Default 85 (matches reference's 0.85). 100 = fully opaque.
+    #[serde(default = "default_bg_opacity")]
+    pub bg_opacity_percent: u16,
+
+    /// Font color as `#RRGGBB` (v1.0 parity: reference FontColor). Empty =
+    /// use theme-derived text color (the v1 default).
+    #[serde(default)]
+    pub font_color: String,
+
+    /// Whether to show the per-row 📈 graph-popup buttons (v1.0 UI/UX:
+    /// default OFF — the buttons double every row's height which breaks the
+    /// glanceable-sidebar mandate. Users who want per-metric graphs enable
+    /// this in Settings; the popup is a power-user feature).
+    #[serde(default)]
+    pub show_graph_buttons: bool,
+
+    /// Whether the sidebar starts hidden on launch (v1.0 parity: reference
+    /// InitiallyHidden, default OFF). When true, sidebar launches minimized
+    /// to the tray and the user shows it via the tray icon or hotkey.
+    #[serde(default)]
+    pub initially_hidden: bool,
+
+    /// Whether polling pauses while the sidebar window is hidden (v1.0 parity:
+    /// reference pause-when-hidden, default ON to save CPU/battery when the
+    /// user has hidden the sidebar).
+    #[serde(default = "default_pause_when_hidden")]
+    pub pause_when_hidden: bool,
 }
 
 /// Bandwidth tracking settings.
@@ -113,10 +178,6 @@ pub struct BandwidthConfig {
     /// Billing-cycle start day (T-26).
     #[serde(default = "default_cycle_start_day")]
     pub cycle_start_day: CycleStartDaySerde,
-
-    /// LUIDs to track (empty = all non-loopback).
-    #[serde(default)]
-    pub tracked_luids: Vec<u64>,
 }
 
 /// Process list settings (T-21).
@@ -158,9 +219,45 @@ pub struct DockConfig {
     #[serde(default = "default_monitor_id")]
     pub monitor_id: String,
 
-    /// Pixel offset from screen edge.
+    /// Pixel offset from screen edge (legacy 1D offset; superseded by
+    /// `offset_x_px`/`offset_y_px` for new configs but retained for TOML
+    /// back-compat with pre-v1.0 configs).
     #[serde(default)]
     pub offset_px: i32,
+
+    /// Horizontal pixel offset from the docked edge (v1.0 parity: reference
+    /// XOffset, range -2000..2000, default 0).
+    #[serde(default)]
+    pub offset_x_px: i32,
+
+    /// Vertical pixel offset from the docked edge (v1.0 parity: reference
+    /// YOffset, range -2000..2000, default 0).
+    #[serde(default)]
+    pub offset_y_px: i32,
+
+    /// Sidebar window width in pixels (v1.0 parity: 100–300, default 180).
+    /// The reference product exposes this as `SidebarWidth`. Stored as u16
+    /// so the `as f32` viewport conversion is lossless.
+    #[serde(default = "default_sidebar_width")]
+    pub width_px: u16,
+}
+
+impl DockConfig {
+    /// Return true if any field that affects the window's on-screen position
+    /// differs between `self` and `other`. Used by the GUI to detect settings-
+    /// panel mutations of edge / monitor_id / offset_x / offset_y and re-dock
+    /// the window live (v1.0 audit 2 — P1: previously the four controls
+    /// silently flipped config with zero visible effect).
+    ///
+    /// `width_px` is deliberately excluded: it is applied live via a separate
+    /// `ViewportCommand::InnerSize` path and does not require re-docking.
+    #[must_use]
+    pub fn position_changed(&self, other: &Self) -> bool {
+        self.edge != other.edge
+            || self.monitor_id != other.monitor_id
+            || self.offset_x_px != other.offset_x_px
+            || self.offset_y_px != other.offset_y_px
+    }
 }
 
 /// LHM subprocess settings (T-45).
@@ -193,14 +290,60 @@ pub struct ThresholdConfig {
     /// GPU temperature critical threshold (°C).
     #[serde(default = "default_gpu_temp_crit")]
     pub gpu_temp_critical: f64,
+
+    /// Drive used-space warning threshold (%, 0 = disabled). v1.0 parity
+    /// with reference's `UsedSpaceAlert`. A drive whose used fraction
+    /// exceeds this flips to the alert color (and blinks if alert_blink).
+    #[serde(default = "default_drive_used_warn")]
+    pub drive_used_warn: u32,
+
+    /// Per-NIC inbound bandwidth alert threshold in Mbps (0 = disabled). v1.0
+    /// parity with reference's `BandwidthInAlert`. A NIC whose live RX rate
+    /// exceeds this flips to the alert color.
+    #[serde(default)]
+    pub bandwidth_in_alert_mbps: u32,
+
+    /// Per-NIC outbound bandwidth alert threshold in Mbps (0 = disabled). v1.0
+    /// parity with reference's `BandwidthOutAlert`.
+    #[serde(default)]
+    pub bandwidth_out_alert_mbps: u32,
 }
 
-/// Global hotkey settings (T-34).
+/// Global hotkey settings (T-34 + v1.0 parity with reference's 8 hotkeys).
+///
+/// Each field is a config string like `"Ctrl+Shift+S"` or empty `""` to
+/// disable that hotkey. Empty strings are the default for all but
+/// `click_through` (which ships enabled) — matching the reference's
+/// "all default unbound" posture so the user opts into the ones they want.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HotkeyConfig {
     /// Click-through toggle hotkey (default "Ctrl+Shift+S").
     #[serde(default = "default_click_through_hotkey")]
     pub click_through: String,
+    /// Toggle sidebar visibility (show if hidden / hide if shown). v1.0 parity.
+    #[serde(default)]
+    pub toggle_visibility: String,
+    /// Show the sidebar (un-hide). v1.0 parity.
+    #[serde(default)]
+    pub show: String,
+    /// Hide the sidebar. v1.0 parity.
+    #[serde(default)]
+    pub hide: String,
+    /// Cycle dock edge (Left→Right→Top→Bottom→Left). v1.0 parity.
+    #[serde(default)]
+    pub cycle_edge: String,
+    /// Cycle target screen (rotate through enumerated monitors). v1.0 parity.
+    #[serde(default)]
+    pub cycle_screen: String,
+    /// Reload settings from config.toml. v1.0 parity.
+    #[serde(default)]
+    pub reload: String,
+    /// Toggle AppBar reserve-space on/off. v1.0 parity.
+    #[serde(default)]
+    pub toggle_reserve_space: String,
+    /// Close the app. v1.0 parity.
+    #[serde(default)]
+    pub close: String,
 }
 
 /// Per-metric enable/disable + reorder.
@@ -307,6 +450,39 @@ fn default_gpu_temp_warn() -> f64 {
 fn default_gpu_temp_crit() -> f64 {
     95.0
 }
+/// v1.0 parity — drive used-space alert, 90% default.
+fn default_drive_used_warn() -> u32 {
+    90
+}
+/// v1.0 parity — font size in px (reference default x14).
+fn default_font_size() -> u16 {
+    14
+}
+/// v1.0 parity — alert blink ON by default for accessibility.
+fn default_alert_blink() -> bool {
+    true
+}
+/// v1.0 parity — sidebar width default 180px (reference default).
+fn default_sidebar_width() -> u16 {
+    180
+}
+/// v1.0 parity — UI scale default 100 (= 1.0× multiplier).
+fn default_ui_scale() -> u16 {
+    100
+}
+/// v1.0 parity — background opacity default 85% (reference 0.85).
+fn default_bg_opacity() -> u16 {
+    85
+}
+/// v1.0 parity — pause-when-hidden default ON (saves CPU/battery).
+fn default_pause_when_hidden() -> bool {
+    true
+}
+
+/// v1.0 parity — UI language default English (`en`).
+fn default_language() -> String {
+    "en".to_string()
+}
 fn default_click_through_hotkey() -> String {
     "Ctrl+Shift+S".into()
 }
@@ -336,10 +512,21 @@ impl Default for DisplayConfig {
     fn default() -> Self {
         Self {
             temp_unit: default_temp_unit(),
+            language: default_language(),
             raw_values: false,
             decimal_base: default_decimal_base(),
             hide_from_capture: false,
             force_opaque: false,
+            font_size: default_font_size(),
+            alert_blink: default_alert_blink(),
+            run_at_startup: false,
+            ui_scale_percent: default_ui_scale(),
+            bg_color: String::new(),
+            bg_opacity_percent: default_bg_opacity(),
+            font_color: String::new(),
+            show_graph_buttons: false,
+            initially_hidden: false,
+            pause_when_hidden: default_pause_when_hidden(),
         }
     }
 }
@@ -348,7 +535,6 @@ impl Default for BandwidthConfig {
     fn default() -> Self {
         Self {
             cycle_start_day: default_cycle_start_day(),
-            tracked_luids: Vec::new(),
         }
     }
 }
@@ -384,6 +570,9 @@ impl Default for DockConfig {
             edge: default_dock_edge(),
             monitor_id: default_monitor_id(),
             offset_px: 0,
+            offset_x_px: 0,
+            offset_y_px: 0,
+            width_px: default_sidebar_width(),
         }
     }
 }
@@ -404,6 +593,9 @@ impl Default for ThresholdConfig {
             cpu_temp_critical: default_cpu_temp_crit(),
             gpu_temp_warn: default_gpu_temp_warn(),
             gpu_temp_critical: default_gpu_temp_crit(),
+            drive_used_warn: default_drive_used_warn(),
+            bandwidth_in_alert_mbps: 0,
+            bandwidth_out_alert_mbps: 0,
         }
     }
 }
@@ -412,6 +604,14 @@ impl Default for HotkeyConfig {
     fn default() -> Self {
         Self {
             click_through: default_click_through_hotkey(),
+            toggle_visibility: String::new(),
+            show: String::new(),
+            hide: String::new(),
+            cycle_edge: String::new(),
+            cycle_screen: String::new(),
+            reload: String::new(),
+            toggle_reserve_space: String::new(),
+            close: String::new(),
         }
     }
 }
@@ -666,5 +866,60 @@ mod tests {
             config.bandwidth.cycle_start_day,
             CycleStartDaySerde::LastDayOfMonth
         );
+    }
+
+    // ===== v1.0 audit 2 — DockConfig::position_changed =====
+    //
+    // The bug: settings-panel mutations of edge / monitor_id / offset_x /
+    // offset_y flipped config but never called send_dock_position, so the
+    // window stayed put. The fix detects the change post-render + re-docks.
+    // This test pins the diff helper.
+
+    #[test]
+    fn position_changed_false_for_identical_dock() {
+        let a = DockConfig::default();
+        assert!(!a.position_changed(&DockConfig::default()));
+    }
+
+    #[test]
+    fn position_changed_true_when_edge_differs() {
+        let a = DockConfig::default();
+        let mut b = a.clone();
+        b.edge = "Top".to_string();
+        assert!(a.position_changed(&b));
+    }
+
+    #[test]
+    fn position_changed_true_when_monitor_id_differs() {
+        let a = DockConfig::default();
+        let mut b = a.clone();
+        b.monitor_id = "DISPLAY2".to_string();
+        assert!(a.position_changed(&b));
+    }
+
+    #[test]
+    fn position_changed_true_when_offset_x_differs() {
+        let a = DockConfig::default();
+        let mut b = a.clone();
+        b.offset_x_px = 42;
+        assert!(a.position_changed(&b));
+    }
+
+    #[test]
+    fn position_changed_true_when_offset_y_differs() {
+        let a = DockConfig::default();
+        let mut b = a.clone();
+        b.offset_y_px = -17;
+        assert!(a.position_changed(&b));
+    }
+
+    /// width_px changes do NOT count as a position change — width is applied
+    /// live via InnerSize and never requires re-docking.
+    #[test]
+    fn position_changed_false_when_only_width_differs() {
+        let a = DockConfig::default();
+        let mut b = a.clone();
+        b.width_px = 250;
+        assert!(!a.position_changed(&b));
     }
 }

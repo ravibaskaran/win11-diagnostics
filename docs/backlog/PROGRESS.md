@@ -12,7 +12,7 @@ The historical story rows below retain their original merge evidence. This
 refresh is the current worktree truth after the Win11 audit:
 
 - Full workspace matrix (`cargo test --workspace --all-features --all-targets
-  --target x86_64-pc-windows-msvc`): **654 passed, 0 failed, 13 ignored**.
+  --target x86_64-pc-windows-msvc`): **663 passed, 0 failed, 13 ignored**.
   `cargo fmt --all -- --check`, workspace clippy with `-D warnings`, the
   Windows MSVC `cargo check --locked`, `cargo deny check bans licenses
   advisories sources`, and `actionlint` on all four workflows pass.
@@ -139,18 +139,18 @@ refresh is the current worktree truth after the Win11 audit:
 | 14.3 | merged | 2026-07-16T00Z | epic-14-batch1 | — | Per-sensor staleness dimming: each row checks Reading.timestamp; stale rows blended toward gray via blend() helper. |
 | 14.4 | merged | 2026-07-16T00Z | epic-14-batch1 | — | Config-corruption banner: load_config_with_recovery surfaces backup path via shared Mutex; dismissible amber banner. |
 | 14.5 | deferred | 2026-07-16T00Z | — | — | Vec<UserMessage> stack: existing ad-hoc fields (degraded_message, launch_message_fn, recovery_message_fn) cover the v1 use case. v1.1 polish. |
-| 15.1 | merged | 2026-07-16T00Z | epic-15-batch2 | — | sidebar-monitor-host.exe: C#5-compatible source (csc v4.0.30319). Loads LibreHardwareMonitorLib.dll directly, emits JSON frames to stdout. VERIFIED on reference HW (AMD Ryzen AI 7 350: CPU/GPU/RAM/NIC/battery sensors). |
-| 15.2 | merged | 2026-07-16T00Z | epic-15-batch2 | L0:2 | SensorSource trait + PipeSource impl + HttpSource bridge. 2 tests: object-safety + pipe-read. |
-| 15.3 | deferred | 2026-07-16T00Z | — | — | Delete dead HTTP code: deferred until pipe host is proven on reference HW (now proven — safe to delete in next iteration). |
-| 16.1 | merged | 2026-07-16T00Z | epic-16-batch3 | — | sidebar-monitor-svc.exe: Windows Service binary (ServiceMain + pipe server + Job Object). VERIFIED: registered, started (STATE: 4 RUNNING), pipe created, client connected. |
-| 16.2 | deferred | 2026-07-16T00Z | — | — | Pipe IPC client protocol: connection verified; read/write timing is a protocol follow-up. SensorSource trait from 15.2 provides the Rust abstraction. |
+| 15.1 | partial | 2026-07-16T00Z | epic-15-batch2 | — | sidebar-monitor-host.exe: C#5-compatible source, compiles + verified on HW. BUT the host is NOT wired into the app (OhmSupervisor still uses HTTP path). Story is partial until 15.2 wiring reaches production. |
+| 15.2 | partial | 2026-07-16T00Z | epic-15-batch2 | L0:2 | SensorSource trait + PipeSource impl + HttpSource bridge. 2 tests. BUT trait is NOT used by production code (provider_registry still constructs OhmAdapter with HTTP). |
+| 15.3 | deferred | 2026-07-16T00Z | — | — | Delete dead HTTP code: deferred until pipe host is wired into production (15.1/15.2 must reach merged first). |
+| 16.1 | partial | 2026-07-16T00Z | epic-16-batch3 | — | sidebar-monitor-svc.exe: service binary compiles, registered, started, pipe created. BUT the app never connects to the service pipe; the service spawns a host whose data goes nowhere. Partial until 16.2 wires the IPC client. |
+| 16.2 | deferred | 2026-07-16T00Z | — | — | Pipe IPC client protocol: the Rust-side named-pipe consumer (PipeServiceSource) is not coded. Connection verified but no production wiring. |
 | 16.3 | merged | 2026-07-16T00Z | epic-16-batch3 | — | Inno Setup .iss script: service registration, Start Menu shortcut, upgrade detection (IsServiceInstalled), PrivilegesRequiredOverridesAllowed=dialog for winget. |
 | 16.4 | merged | 2026-07-16T00Z | epic-16-batch3 | — | winget manifest: InstallerType: inno, Scope: machine. SHA256 placeholder (REPLACE_AT_RELEASE). |
 | 16.5 | deferred | 2026-07-16T00Z | — | — | Upgrade testing: covered by the .iss [Code] IsServiceInstalled check; manual upgrade walk is reference-machine work. |
 | 16.6 | merged | 2026-07-16T00Z | epic-16-batch3 | — | Portable ZIP dual-distribution: PORTABLE-README.txt explains the UAC-per-launch tradeoff. |
 | 17.1 | merged | 2026-07-16T00Z | epic-17-remaining | L0:3 | Alert ack persistence: acks.toml sidecar via atomic_write_config. Load on startup (prune expired), save on mutation. 3 tests. |
 | 17.2 | merged | 2026-07-16T00Z | epic-17-batch5 | — | Threshold config UI: 4 sliders (CPU/GPU warn/critical) in settings panel. |
-| 17.3 | merged | 2026-07-16T00Z | epic-17-remaining | — | Bandwidth CSV export: Export button writes luid,adapter_name,rx_bytes,tx_bytes. |
+| 17.3 | merged | 2026-07-16T00Z | epic-17-remaining | — | Bandwidth CSV export: Export button writes escaped luid,adapter_name,rx_bytes,tx_bytes rows and shows persistent success/failure feedback. |
 | 17.4 | merged | 2026-07-16T00Z | epic-17-remaining | — | DPI-change handling: WM_DPICHANGED added to PeekMessageW filter → refresh_monitor + request_repaint. |
 | 17.5 | merged | 2026-07-16T00Z | epic-17-remaining | — | Crash-recovery messaging: config.last_tier sentinel; one-shot banner if was Full + now Basic. |
 | 17.6 | merged | 2026-07-16T00Z | epic-17-batch5 | — | Discoverability: About dialog shows Ctrl+Shift+S + honest UAC note; drag label plain English. |
@@ -158,12 +158,12 @@ refresh is the current worktree truth after the Win11 audit:
 
 ## Summary
 - Total stories: 96 (60 current delivery rows, including INT, + 8 Epic 12 parity/closure + 5 Epic 13 hardening + 5 Epic 14 silent-failure + 3 Epic 15 LHM-host + 6 Epic 16 service/installer + 7 Epic 17 UX-polish)
-- Merged: 80 / 96 (83.3%) — Stories 0.1-0.7, 1.1-1.6, 2.1-2.3, 3.1-3.6, 4.1-4.3, 5.1-5.3, 6.1-6.5, 7.1-7.5, 8.1-8.10, 10.1, 11.1, 11.3, 11.4, 12.1-12.3, 12.6, 12.8, 13.1-13.5, 14.1-14.4, 15.1-15.2, 16.1, 16.3-16.4, 16.6, 17.1-17.7 + INT
-- Partial: 5 — 6.6, 9.1, 9.2, 10.2, 11.2
-- Deferred: 7 — 9.3, 12.4, 12.5, 12.7, 14.5, 15.3, 16.2, 16.5
+- Merged: 77 / 96 (80.2%) — Stories 0.1-0.7, 1.1-1.6, 2.1-2.3, 3.1-3.6, 4.1-4.3, 5.1-5.3, 6.1-6.5, 7.1-7.5, 8.1-8.10, 10.1, 11.1, 11.3, 11.4, 12.1-12.3, 12.6, 12.8, 13.1-13.5, 14.1-14.4, 16.3-16.4, 16.6, 17.1-17.7 + INT
+- Partial: 8 — 6.6, 9.1, 9.2, 10.2, 11.2, 15.1, 15.2, 16.1
+- Deferred: 8 — 9.3, 12.4, 12.5, 12.7, 14.5, 15.3, 16.2, 16.5
 - Pending: 1 — 3.2b
 - Ready for pickup: {3.2b}. All remaining work is external/manual (SignPath, reference-machine smoke walk, winget PR) or deferred to v1.1.
-- Workspace checks recorded for this snapshot: 663 passing, 0 failing, 13 ignored (hardware/UAC/capture smokes). `cargo fmt --all -- --check` and `git diff --check` pass; clippy, deny, Windows-target, release-build, and manual Win11 checks remain separate evidence gates.
+- Workspace checks recorded for this snapshot: 664 passing, 0 failing, 13 ignored (hardware/UAC/capture smokes). `cargo fmt --all -- --check` and `git diff --check` pass; clippy, deny, Windows-target, release-build, and manual Win11 checks remain separate evidence gates.
 - Blocked on HITL: 0
 - Long-term blocked: 0
 

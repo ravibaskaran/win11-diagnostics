@@ -146,6 +146,23 @@ Network adapter throughput was previously **Out-of-Scope** in v1 (Appendix A). I
 | **Raw-values toggle** in Settings (show Hz/bytes/bps instead of GHz/GB/Mbps) *(v2, NFR-8)* | ✅ |
 | **Temperature unit toggle** (°C default / °F) *(v2, NFR-8)* | ✅ |
 | **State database (SQLite) at `%APPDATA%\sidebar\bandwidth.db`** *(v2)* | ✅ |
+| **Sidebar width** (100–300px slider) *(v1.0 parity with SidebarDiagnostics)* | ✅ |
+| **Font size** (10–22px, applied as zoom) *(v1.0 parity)* | ✅ |
+| **UI scale** (50–300%, composes with font zoom) *(v1.0 parity)* | ✅ |
+| **Alert blink** (Critical alerts flash ~1Hz; accessibility for color-blind users) *(v1.0 parity)* | ✅ |
+| **Custom background color + opacity** *(v1.0 parity)* | ✅ |
+| **Custom font color** *(v1.0 parity)* | ✅ |
+| **X/Y position offsets** (fine-tune dock position) *(v1.0 parity)* | ✅ |
+| **Run at Windows startup** (HKCU Run key, no admin) *(v1.0 parity)* | ✅ |
+| **Initially hidden** (start minimized to tray) *(v1.0 parity)* | ✅ |
+| **Pause sensors when hidden** (save CPU/battery) *(v1.0 parity)* | ✅ |
+| **Drive used-space alert** (configurable % threshold) *(v1.0 parity)* | ✅ |
+| **Bandwidth in/out alerts** (Mbps thresholds per NIC) *(v1.0 parity)* | ✅ |
+| **CPU bus clock (BCLK)** + **RAM clock + voltage** (Full mode via LHM) *(v1.0 parity)* | ✅ |
+| **Per-NIC IPv4 address** (shown next to each adapter in the bandwidth panel) *(v1.0 parity)* | ✅ |
+| **Extended hotkeys** (toggle/show/hide/cycle-edge/cycle-screen/reload/toggle-reserve/close) *(v1.0 parity)* | ✅ |
+| **Per-metric line-graph popup** (click 📈 next to any row → resizable history window with current/min/max) *(v1.0 parity)* | ✅ |
+| **Localization** (i18n: en + es shipped, extensible label-table system; Language selector in Settings) *(v1.0 parity)* | ✅ |
 
 ---
 

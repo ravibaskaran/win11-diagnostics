@@ -77,7 +77,7 @@ pub fn save_acks(path: &Path, acks: &HashMap<MetricKey, AlertAck>) {
             }
         }
     }
-    crate::gui::atomic_write_config(path, &lines);
+    let _ = crate::gui::atomic_write_config(path, &lines);
 }
 
 #[cfg(test)]

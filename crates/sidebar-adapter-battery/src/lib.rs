@@ -204,9 +204,6 @@ fn snapshot_state_to_domain(s: BatterySnapshotState) -> sidebar_domain::reading:
     }
 }
 
-// Re-export key types for downstream consumers (provider registry, poller).
-pub use backend::{BatterySnapshotState as State, RealBatteryBackend};
-
 #[cfg(test)]
 mod tests {
     //! Story 3.3 TDD contract tests.

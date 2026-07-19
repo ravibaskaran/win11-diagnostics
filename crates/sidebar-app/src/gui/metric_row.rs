@@ -14,7 +14,8 @@
 //!
 //! - NaN / ±Inf → `"--"` (T-20 defensive — adapters must not emit NaN, but we
 //!   guard).
-//! - Unknown `MetricKind × Unit` combination → `"unknown"`, logged at `warn!`.
+//! - Unknown `MetricKind × Unit` combination → `"--"` (v1.0 audit 2: was
+//!   `"unknown"`), logged at `warn!`.
 //!
 //! ## Format dispatch table (MetricKind × Unit → Story 1.3 fn)
 //!
@@ -32,8 +33,9 @@
 //! | Process{Cpu,Gpu}Percent                     | Percent         | `format_percent`          | (same)                  |
 //! | UptimeSeconds                               | Seconds         | `format_uptime`           | (same)                  |
 //!
-//! Any other pair → `"unknown"`, logged at `warn!` (defensive — adapters
-//! should never emit a mismatched kind × unit, but we never panic).
+//! Any other pair → `"--"` (v1.0 audit 2: was `"unknown"`), logged at
+//! `warn!` (defensive — adapters should never emit a mismatched kind ×
+//! unit, but we never panic).
 //!
 //! ## Cited
 //!
@@ -45,7 +47,7 @@
 
 use eframe::egui::{Color32, Ui};
 use sidebar_domain::config::DisplayConfig;
-use sidebar_domain::format::{self, Base, TempUnit};
+use sidebar_domain::format::{self, Base};
 use sidebar_domain::reading::{BatteryState, MetricKind, Reading, Unit};
 
 use crate::gui::kind_label;
@@ -81,9 +83,10 @@ pub fn render_with_color(ui: &mut Ui, reading: &Reading, display: &DisplayConfig
 }
 
 /// Format a reading's value per the MetricKind × Unit dispatch table, honoring
-/// the DisplayConfig toggles. Returns `"--"` for NaN (T-20) and `"unknown"`
+/// the DisplayConfig toggles. Returns `"--"` for NaN (T-20) and for unknown
 /// for unrecognized MetricKind × Unit combinations (logged at `warn!`).
 #[must_use]
+#[allow(clippy::too_many_lines)] // exhaustive MetricKind × Unit dispatch; splitting hurts readability
 pub(crate) fn format_reading_with_config(reading: &Reading, display: &DisplayConfig) -> String {
     let Reading {
         kind, value, unit, ..
@@ -99,13 +102,19 @@ pub(crate) fn format_reading_with_config(reading: &Reading, display: &DisplayCon
     // The dispatch table. We match on the (kind, unit) pair: the kind names
     // the *semantic* of the value (frequency, temperature, percent, ...), and
     // the unit names the *wire format*. A mismatched pair (e.g. CpuFrequency
-    // with Unit::Bytes) is an adapter bug — we render "unknown" and log.
+    // with Unit::Bytes) is an adapter bug — we render "--" and log.
     //
     // Variants are written fully qualified (no `use MetricKind::*`) per the
     // workspace `clippy::enum_glob_use = "deny"` policy.
     match (*kind, *unit) {
         // --- Frequency (Hertz) ---
-        (MetricKind::CpuFrequency | MetricKind::GpuFrequency, Unit::Hertz) => {
+        (
+            MetricKind::CpuFrequency
+            | MetricKind::GpuFrequency
+            | MetricKind::CpuBusClock
+            | MetricKind::RamClock,
+            Unit::Hertz,
+        ) => {
             let hz = clamp_u64(*value);
             if display.raw_values {
                 format!("{hz} Hz")
@@ -131,7 +140,8 @@ pub(crate) fn format_reading_with_config(reading: &Reading, display: &DisplayCon
             | MetricKind::GpuMemoryUtilization
             | MetricKind::BatteryPercent
             | MetricKind::ProcessCpuPercent
-            | MetricKind::ProcessGpuPercent,
+            | MetricKind::ProcessGpuPercent
+            | MetricKind::DiskSmartEndurance,
             Unit::Percent,
         ) => format::format_percent(*value),
         // --- Power (Watts) ---
@@ -140,7 +150,9 @@ pub(crate) fn format_reading_with_config(reading: &Reading, display: &DisplayCon
             Unit::Watts,
         ) => format::format_power(*value),
         // --- Voltage ---
-        (MetricKind::Voltage, Unit::Volts) => format::format_voltage(*value),
+        (MetricKind::Voltage | MetricKind::RamVoltage, Unit::Volts) => {
+            format::format_voltage(*value)
+        }
         // --- Fan speed (RPM) ---
         (MetricKind::FanSpeed | MetricKind::GpuFanSpeed, Unit::Rpm) => {
             format::format_rpm(clamp_u32(*value))
@@ -204,14 +216,17 @@ pub(crate) fn format_reading_with_config(reading: &Reading, display: &DisplayCon
         // --- Anything else: unknown combination ---
         // Logged at warn so an adapter emitting mismatched kind × unit is
         // surfaced in CI/manual smoke (G15 — structured logs, no panic).
+        // v1.0 audit 2 (P1) — render "--" (same sentinel as the NaN path)
+        // instead of the raw "unknown" string. A non-technical user can
+        // interpret "--"; "unknown" reads as a broken app.
         (kind, unit) => {
             tracing::warn!(
                 target = "sidebar.app.metric_row",
                 kind = ?kind,
                 unit = ?unit,
-                "unknown MetricKind × Unit combination — rendering 'unknown'"
+                "unknown MetricKind × Unit combination — rendering '--'"
             );
-            "unknown".to_string()
+            "--".to_string()
         }
     }
 }
@@ -227,43 +242,6 @@ pub(crate) fn base_from_config(decimal_base: bool) -> Base {
     } else {
         Base::Binary
     }
-}
-
-/// Map the configured `TempUnit` to the Story 1.3 enum. The Reading's `unit`
-/// field is ALWAYS Celsius at the trait boundary (canonical per architecture
-/// §5.1); the DisplayConfig controls only the display-side conversion (T-29).
-/// The config and format enums are the same type — this is an identity fn
-/// kept for API symmetry with `base_from_config` and used by tests.
-#[must_use]
-#[allow(dead_code)] // Pure helper exercised by tests; kept for API symmetry with base_from_config.
-pub(crate) fn temp_unit_from_config(unit: TempUnit) -> TempUnit {
-    unit
-}
-
-/// Whether a `MetricKind × Unit` pair is recognized by the dispatch table.
-/// Used by the Boundary #3 test path ("unknown MetricKind → 'unknown'").
-#[must_use]
-#[allow(dead_code)] // Pure helper exercised by tests; mirrors the dispatch table for assertions.
-pub(crate) fn is_known_combination(kind: MetricKind, unit: Unit) -> bool {
-    // A tiny pure-fn mirror of the dispatch match — returns true iff the
-    // pair lands in a real formatter (not the catch-all "unknown" arm). We
-    // re-dispatch via format_reading_with_config against a sentinel reading;
-    // the dispatch above is the single source of truth, so we don't risk
-    // drift between two match tables.
-    let sentinel = Reading::gauge(
-        sidebar_domain::reading::SensorId::new("probe", "test"),
-        kind,
-        1.0,
-        unit,
-    );
-    let display = DisplayConfig {
-        temp_unit: TempUnit::Celsius,
-        raw_values: false,
-        decimal_base: true,
-        hide_from_capture: false,
-        force_opaque: false,
-    };
-    format_reading_with_config(&sentinel, &display) != "unknown"
 }
 
 // ===========================================================================
@@ -371,8 +349,7 @@ mod tests {
             temp_unit: TempUnit::Celsius,
             raw_values: false,
             decimal_base: true,
-            hide_from_capture: false,
-            force_opaque: false,
+            ..Default::default()
         }
     }
 
@@ -456,19 +433,21 @@ mod tests {
         );
     }
 
-    // ===== Boundary #3: unknown MetricKind → "unknown", logged =====
+    // ===== Boundary #3: unknown MetricKind → "--" (v1.0 audit 2), logged =====
 
     #[test]
-    fn unknown_kind_renders_unknown() {
+    fn unknown_kind_renders_dash() {
         // Every MetricKind variant is known to the dispatch table at compile
         // time (exhaustive match), so this test exercises the Unit mismatch
         // path: a frequency kind paired with a Bytes unit is an unknown
-        // combination → "unknown".
+        // combination → "--" (v1.0 audit 2: was "unknown", now the same
+        // sentinel as the NaN path so non-technical users don't see a
+        // broken-app string).
         let r = reading(MetricKind::CpuFrequency, 1.0, Unit::Bytes);
         assert_eq!(
             format_reading_with_config(&r, &default_display()),
-            "unknown",
-            "an unrecognized MetricKind × Unit combination must render 'unknown'"
+            "--",
+            "an unrecognized MetricKind × Unit combination must render '--'"
         );
     }
 
@@ -481,26 +460,6 @@ mod tests {
 
     /// Sanity: temp_unit_from_config is the identity (config → format enum
     /// are the same type — T-29).
-    #[test]
-    fn temp_unit_from_config_is_identity() {
-        assert_eq!(temp_unit_from_config(TempUnit::Celsius), TempUnit::Celsius);
-        assert_eq!(
-            temp_unit_from_config(TempUnit::Fahrenheit),
-            TempUnit::Fahrenheit
-        );
-    }
-
-    /// Sanity: is_known_combination agrees with the dispatch.
-    #[test]
-    fn is_known_combination_agrees_with_dispatch() {
-        assert!(is_known_combination(MetricKind::CpuFrequency, Unit::Hertz));
-        assert!(is_known_combination(
-            MetricKind::CpuTemperature,
-            Unit::Celsius
-        ));
-        assert!(!is_known_combination(MetricKind::CpuFrequency, Unit::Bytes));
-    }
-
     /// Cross-check: format_percent for utilization.
     #[test]
     fn cpu_utilization_renders_percent() {

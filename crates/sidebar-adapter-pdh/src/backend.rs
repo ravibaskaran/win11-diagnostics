@@ -270,11 +270,18 @@ impl Default for RealPdhBackend {
 
 impl PdhBackend for RealPdhBackend {
     fn refresh_and_snapshot(&mut self) -> PdhSnapshot {
-        // SAFETY: `self.query` is a valid open handle (or null if
-        // construction failed, in which case this returns an error status
-        // and we return empty). CollectQueryData advances the internal
-        // timestamp window; the first call establishes a baseline and the
-        // second computes the actual rate.
+        // Cert v1.0 (backend audit I1) — if construction failed (PDH service
+        // unavailable on locked-down / Server Core builds), `query` is null.
+        // Skip the FFI call entirely; calling PdhCollectQueryData(NULL) is
+        // UB on older Windows builds and a per-tick wasted syscall on modern
+        // ones. Return empty so the adapter reports no disk telemetry rather
+        // than risking an AV.
+        if self.query.is_invalid() {
+            return PdhSnapshot::default();
+        }
+        // SAFETY: `self.query` is a valid open handle (checked above).
+        // CollectQueryData advances the internal timestamp window; the first
+        // call establishes a baseline and the second computes the actual rate.
         let collect_status = unsafe { PdhCollectQueryData(self.query) };
         if collect_status != ERROR_SUCCESS.0 {
             return PdhSnapshot::default();

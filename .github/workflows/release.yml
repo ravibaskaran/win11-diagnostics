@@ -64,11 +64,38 @@ jobs:
           ACTUAL=$(sha256sum staging/sidebar.exe | awk '{print $1}')
           echo "sidebar.exe SHA-256: $ACTUAL"
           echo "::notice::sidebar.exe SHA-256 is $ACTUAL"
+      - name: Build Inno Setup installer (sidebar-setup.exe)
+        # Story 16.3 + v1.0 cert B1 — the installer is the PRIMARY distribution
+        # artifact for non-technical users (double-click setup, Start Menu
+        # shortcut, Add/Remove Programs entry). ISCC is preinstalled on the
+        # windows-latest runner image. The .iss pulls the freshly-built
+        # sidebar-app.exe from target/ and the LHM runtime from resources/.
+        # The installer exe is unsigned at this stage — same security posture
+        # as the portable ZIP; SignPath signing of the installer is a future
+        # enhancement (requires a separate signing policy for setup.exe).
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            throw "ISCC.exe not found at $iscc — windows-latest image changed?"
+          }
+          & $iscc installer\sidebar.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
+          $setup = Get-Item sidebar-setup.exe
+          Write-Host "Built $($setup.FullName) ($([math]::Round($setup.Length/1MB,2)) MB)"
+          $hash = (Get-FileHash sidebar-setup.exe -Algorithm SHA256).Hash
+          echo "::notice::sidebar-setup.exe SHA-256 is $hash"
       - id: upload_unsigned
         uses: actions/upload-artifact@v4
         with:
           name: unsigned-build
           path: staging/
+      - id: upload_installer
+        name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sidebar-installer
+          path: sidebar-setup.exe
 
   sign:
     name: "Sign (SignPath Foundation)"
@@ -141,19 +168,34 @@ jobs:
         with:
           name: signed-build
           path: staging/
+      - name: Download installer artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: sidebar-installer
+          path: ./installers/
       - name: Package ZIP
         run: |
           cd staging
           zip -r ../sidebar-${{ inputs.version }}.zip .
+      - name: Rename installer for release
+        run: |
+          mv installers/sidebar-setup.exe sidebar-setup-${{ inputs.version }}.exe
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ inputs.version }}
-          files: sidebar-${{ inputs.version }}.zip
+          files: |
+            sidebar-${{ inputs.version }}.zip
+            sidebar-setup-${{ inputs.version }}.exe
           body: |
             Release v${{ inputs.version }}
 
             **Status**: ${{ needs.sign.outputs.unsigned_release == '1' && 'UNSIGNED (SignPath fallback; draft only)' || 'Signed via SignPath Foundation' }}
+
+            ## Downloads
+
+            - **`sidebar-setup-${{ inputs.version }}.exe`** — recommended for most users. Double-click to install; creates Start Menu + optional desktop shortcuts and an Add/Remove Programs entry.
+            - **`sidebar-${{ inputs.version }}.zip`** — portable build (no installer). Unzip anywhere and run `sidebar.exe`.
 
             See [signpath/code-signing-policy.md](signpath/code-signing-policy.md) for the trust policy.
           draft: true  # HITL review before public visibility

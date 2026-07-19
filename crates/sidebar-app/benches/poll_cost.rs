@@ -7,7 +7,7 @@ use std::hint::black_box;
 use std::time::Duration;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use sidebar_app::provider_registry::build_registry;
+use sidebar_app::provider_registry::build_registry_with_port;
 use sidebar_sensor::classifier::ActiveTier;
 use sysinfo::System;
 
@@ -25,7 +25,7 @@ fn measure_idle_cpu_percent() -> f64 {
 }
 
 fn poll_cost(c: &mut Criterion) {
-    let providers = build_registry(ActiveTier::Basic);
+    let providers = build_registry_with_port(ActiveTier::Basic, 17127);
     let path = std::path::Path::new("target/criterion/calibration.txt");
     if let Err(error) = std::fs::remove_file(path) {
         assert_eq!(

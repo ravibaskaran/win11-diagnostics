@@ -159,7 +159,14 @@ pub fn format_temp(celsius: f64, unit: TempUnit) -> String {
         TempUnit::Fahrenheit => (celsius * 9.0 / 5.0 + 32.0, "°F"),
     };
     // Integer temperature display: "62 °C", "144 °F" — no decimals.
-    let rounded = value.round();
+    let mut rounded = value.round();
+    // Cert v1.0 (frontend audit M1) — normalize -0.0 to 0.0 so a sensor
+    // reporting exactly negative zero (legitimate IEEE 754, common after
+    // small negative calibration corrections) renders as "0 °C" instead of
+    // the confusing "-0 °C".
+    if rounded == 0.0 {
+        rounded = 0.0;
+    }
     format!("{rounded:.0} {unit_str}")
 }
 

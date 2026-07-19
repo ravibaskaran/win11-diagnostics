@@ -88,8 +88,14 @@ pub fn render_about(ui: &mut Ui, open: &mut bool) {
 
                 ui.separator();
                 ui.heading("Links");
-                ui.label(format!("Privacy policy: {PRIVACY_POLICY_PATH}"));
-                ui.label(format!("Report a bug: {GITHUB_ISSUES_URL}"));
+                // v1.0 UI/UX (audit MJ-Z1) — use egui::Hyperlink so the
+                // links are clickable. A non-technical user can't copy-
+                // paste a URL from a plain label.
+                ui.hyperlink_to("Report a bug", GITHUB_ISSUES_URL);
+                ui.hyperlink_to(
+                    "Privacy policy",
+                    "https://github.com/ravibaskaran/win11-diagnostics/blob/main/docs/privacy-policy.md",
+                );
             });
         });
 }
@@ -132,11 +138,11 @@ mod tests {
             "About MUST credit LibreHardwareMonitor (got: {labels})"
         );
         assert!(
-            labels.contains("Privacy policy"),
+            labels.contains("Privacy policy") || labels.contains("privacy-policy"),
             "About MUST link the privacy policy (got: {labels})"
         );
         assert!(
-            labels.contains("github.com"),
+            labels.contains("Report a bug"),
             "About MUST link GitHub issues (got: {labels})"
         );
     }

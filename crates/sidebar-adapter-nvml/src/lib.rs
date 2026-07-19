@@ -191,7 +191,8 @@ fn readings_from_snapshot(s: &backend::NvmlSnapshot) -> Vec<Reading> {
     out
 }
 
-// Re-export key types for downstream consumers (provider registry, poller).
+// Re-export key snapshot types so the crate's tests (and any future consumer)
+// can name them without reaching into `backend::` directly.
 pub use backend::{GpuSnapshot, NvmlSnapshot, RealNvmlBackend};
 
 #[cfg(test)]

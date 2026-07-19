@@ -257,7 +257,8 @@ fn bytes_to_f64(v: u64) -> f64 {
     v as f64
 }
 
-// Re-export key types for downstream consumers (provider registry, poller).
+// Re-export key snapshot types so the crate's tests (and any future consumer)
+// can name them without reaching into `backend::` directly.
 pub use backend::{
     CpuSnapshot, DiskSnapshot, ProcessSnapshot, RealSysinfoBackend, SysinfoSnapshot,
 };

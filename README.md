@@ -16,6 +16,38 @@ unavailable.
 
 ---
 
+## Install (for everyday users)
+
+**Requirements:** Windows 10 or 11, 64-bit. About 15 MB of free space.
+
+1. Download **`sidebar-setup.exe`** from the latest
+   [GitHub Release](https://github.com/ravibaskaran/win11-diagnostics/releases).
+2. Double-click it. If Windows shows "Windows protected your PC" (SmartScreen),
+   click **More info** → **Run anyway**. This appears because the installer
+   isn't yet code-signed; it's safe.
+3. Follow the installer. It places Sidebar in
+   `C:\Program Files\Sidebar` and adds a Start Menu shortcut (and an optional
+   desktop shortcut).
+4. Launch **Sidebar** from the Start Menu.
+5. On first run, a small setup window appears. Pick your preferred **edge**
+   (left/right/top/bottom), **monitor**, **billing-cycle day** (for bandwidth
+   totals), and **theme**. Click **Continue**. The sidebar docks itself and
+   starts showing data.
+
+**What you'll see:** CPU load and temperature, memory usage, disk and network
+throughput, and a monthly bandwidth counter. Most sensors work without any
+extra setup (Basic mode). Temperature, fan, and voltage readings need one extra
+click — see **Full mode** below.
+
+**To uninstall:** Settings → Apps → Sidebar → Uninstall. Your bandwidth history
+stays behind in `%APPDATA%\sidebar` in case you reinstall; delete that folder
+to remove it completely.
+
+**Updating:** Download the new `sidebar-setup.exe` and run it — it upgrades
+in place. Your settings and bandwidth history are preserved.
+
+---
+
 ## Why Rust?
 
 SidebarDiagnostics (the original) is a C#/.NET/WPF application. This project

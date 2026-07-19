@@ -147,6 +147,16 @@ impl MetricHistory {
             .push(value);
     }
 
+    /// v1.0 audit 2 (P2) — drop any `MetricKey` NOT in `keep`. The caller
+    /// (`replace_readings`) passes the set of keys derived from the current
+    /// readings batch so transient sensors (hot-plug NIC, mounted ISO,
+    /// reconnected Bluetooth) don't leave permanent stale `RollingWindow`s
+    /// behind. Each window is ~500 B; over a long session this would be a
+    /// slow unbounded memory leak on a tool meant to stay running for days.
+    pub fn retain_recent(&mut self, keep: &std::collections::HashSet<MetricKey>) {
+        self.windows.retain(|key, _| keep.contains(key));
+    }
+
     /// Borrow the rolling window for `key`, if it exists.
     #[must_use]
     pub fn get(&self, key: &MetricKey) -> Option<&RollingWindow> {
@@ -156,6 +166,20 @@ impl MetricHistory {
     /// Borrow the rolling window for `key` mutably (for `as_slice`).
     pub fn get_mut(&mut self, key: &MetricKey) -> Option<&mut RollingWindow> {
         self.windows.get_mut(key)
+    }
+
+    /// v1.0 parity — flatten the first window whose MetricKey.kind matches
+    /// the given kind name into a chronological Vec<f64>, for the line-graph
+    /// popup. Empty if no window matches yet. The reference SidebarDiagnostics
+    /// popup plots a single metric's session history; we do the same.
+    #[must_use]
+    pub fn snapshot_for_kind(&self, kind_name: &str) -> Vec<f64> {
+        for (key, w) in &self.windows {
+            if key.kind == kind_name {
+                return w.to_vec();
+            }
+        }
+        Vec::new()
     }
 
     /// The configured window size (post-clamp).
@@ -296,5 +320,109 @@ mod tests {
         assert_eq!(h_small.window_size(), 10, "min window is 10 (T-22)");
         let h_big = MetricHistory::new(9999);
         assert_eq!(h_big.window_size(), 600, "max window is 600 (T-22)");
+    }
+
+    /// v1.0 parity — snapshot_for_kind returns the first matching window's
+    /// values for the graph popup. Empty when no window matches yet.
+    #[test]
+    fn snapshot_for_kind_returns_matching_window_values() {
+        let mut h = MetricHistory::new(60);
+        let cpu = MetricKey {
+            category: "cpu".into(),
+            instance: "cpu/0".into(),
+            kind: "CpuTemperature".into(),
+        };
+        let gpu = MetricKey {
+            category: "gpu".into(),
+            instance: "gpu/0".into(),
+            kind: "GpuTemperature".into(),
+        };
+        h.push(cpu.clone(), 50.0);
+        h.push(cpu.clone(), 51.0);
+        h.push(cpu, 52.0);
+        h.push(gpu, 60.0);
+        let snap = h.snapshot_for_kind("CpuTemperature");
+        assert_eq!(snap, vec![50.0, 51.0, 52.0]);
+        // Non-matching kind → empty.
+        assert!(h.snapshot_for_kind("RamClock").is_empty());
+        // GPU window is found when asked.
+        assert_eq!(h.snapshot_for_kind("GpuTemperature"), vec![60.0]);
+    }
+
+    /// v1.0 parity — snapshot_for_kind on an empty history is empty (the
+    /// popup shows "Waiting for samples…" rather than crashing).
+    #[test]
+    fn snapshot_for_kind_on_empty_history_is_empty() {
+        let h = MetricHistory::new(60);
+        assert!(h.snapshot_for_kind("CpuTemperature").is_empty());
+    }
+
+    // ===== v1.0 audit 2 (P2) — retain_recent evicts transient sensors =====
+
+    /// Cited: v1.0 audit Iteration 2. A sensor that disappears from the
+    /// readings batch (hot-plug NIC unplugged, USB drive unmounted) MUST
+    /// have its history window evicted so the map stays bounded.
+    #[test]
+    fn retain_recent_evicts_absent_keys() {
+        let mut h = MetricHistory::new(60);
+        let cpu = MetricKey {
+            category: "cpu".into(),
+            instance: "package".into(),
+            kind: "CpuTemperature".into(),
+        };
+        let stale_nic = MetricKey {
+            category: "net".into(),
+            instance: "999".into(),
+            kind: "NetRxBytes".into(),
+        };
+        h.push(cpu.clone(), 50.0);
+        h.push(stale_nic.clone(), 1000.0);
+        assert_eq!(h.len(), 2, "both windows seeded");
+
+        // New batch keeps CPU, drops the unplugged NIC.
+        let keep = std::collections::HashSet::from([cpu.clone()]);
+        h.retain_recent(&keep);
+        assert_eq!(h.len(), 1, "stale NIC window evicted");
+        assert!(h.get(&cpu).is_some(), "kept CPU window survives");
+        assert!(h.get(&stale_nic).is_none(), "stale NIC window gone");
+    }
+
+    /// Cited: v1.0 audit Iteration 2. An empty keep-set evicts everything.
+    #[test]
+    fn retain_recent_with_empty_keep_clears_all() {
+        let mut h = MetricHistory::new(60);
+        h.push(
+            MetricKey {
+                category: "cpu".into(),
+                instance: "package".into(),
+                kind: "CpuTemperature".into(),
+            },
+            50.0,
+        );
+        let keep = std::collections::HashSet::new();
+        h.retain_recent(&keep);
+        assert!(h.is_empty(), "empty keep-set must evict all windows");
+    }
+
+    /// Cited: v1.0 audit Iteration 2. A keep-set that covers everything
+    /// preserves all windows (no spurious eviction).
+    #[test]
+    fn retain_recent_with_full_keep_preserves_all() {
+        let mut h = MetricHistory::new(60);
+        let cpu = MetricKey {
+            category: "cpu".into(),
+            instance: "package".into(),
+            kind: "CpuTemperature".into(),
+        };
+        let gpu = MetricKey {
+            category: "gpu".into(),
+            instance: "package".into(),
+            kind: "GpuTemperature".into(),
+        };
+        h.push(cpu.clone(), 50.0);
+        h.push(gpu.clone(), 60.0);
+        let keep = std::collections::HashSet::from([cpu, gpu]);
+        h.retain_recent(&keep);
+        assert_eq!(h.len(), 2, "full keep-set preserves both windows");
     }
 }

@@ -435,10 +435,7 @@ mod tests {
     /// the phase. The `flush_behavior` / `ohm_behavior` closures return a
     /// boxed future so a test can simulate a hang via `pending()` (which IS
     /// cancellable by `tokio::time::timeout`, unlike `std::thread::sleep`).
-    #[allow(dead_code)]
     struct MockTargets {
-        flush_calls: Arc<Mutex<usize>>,
-        ohm_calls: Arc<Mutex<usize>>,
         flush_behavior: Box<dyn Fn() -> MockFuture + Send + Sync>,
         ohm_behavior: Box<dyn Fn() -> MockFuture + Send + Sync>,
     }
@@ -450,8 +447,6 @@ mod tests {
             let fc = flush_calls.clone();
             let oc = ohm_calls.clone();
             let me = Self {
-                flush_calls: flush_calls.clone(),
-                ohm_calls: ohm_calls.clone(),
                 flush_behavior: Box::new(move || {
                     *fc.lock().unwrap() += 1;
                     Box::pin(async { Ok(()) })
@@ -556,8 +551,6 @@ mod tests {
         let fc = flush_calls.clone();
         let oc = ohm_calls.clone();
         let mut targets = MockTargets {
-            flush_calls: flush_calls.clone(),
-            ohm_calls: ohm_calls.clone(),
             flush_behavior: Box::new(move || {
                 *fc.lock().unwrap() += 1;
                 // Signal that we entered, then hang. `pending()` is a
@@ -614,8 +607,6 @@ mod tests {
         let fc = flush_calls.clone();
         let oc = ohm_calls.clone();
         let mut targets = MockTargets {
-            flush_calls: flush_calls.clone(),
-            ohm_calls: ohm_calls.clone(),
             flush_behavior: Box::new(move || {
                 *fc.lock().unwrap() += 1;
                 Box::pin(async { Ok(()) })
@@ -664,8 +655,6 @@ mod tests {
         let fc = flush_calls.clone();
         let oc = ohm_calls.clone();
         let mut targets = MockTargets {
-            flush_calls: flush_calls.clone(),
-            ohm_calls: ohm_calls.clone(),
             flush_behavior: Box::new(move || {
                 *fc.lock().unwrap() += 1;
                 Box::pin(async {
@@ -800,8 +789,6 @@ mod tests {
         let oc = ohm_calls.clone();
         let os = ohm_start.clone();
         let mut targets = MockTargets {
-            flush_calls: flush_calls.clone(),
-            ohm_calls: ohm_calls.clone(),
             flush_behavior: Box::new(move || {
                 *fc.lock().unwrap() += 1;
                 // Hang — force the flush phase to time out at its budget.

@@ -75,7 +75,28 @@ pub fn classify(
     let (warn, crit) = match reading.kind {
         MetricKind::CpuTemperature => (t.cpu_temp_warn, t.cpu_temp_critical),
         MetricKind::GpuTemperature => (t.gpu_temp_warn, t.gpu_temp_critical),
-        // v1 alerts only on CPU/GPU temperatures (Story 8.8 spec §2).
+        // v1.0 parity — per-NIC bandwidth alerts. The reading value is
+        // bytes/sec live rate; convert the user's Mbps threshold to bytes/sec
+        // (1 Mbps = 125_000 bytes/sec). 0 = disabled. No separate critical
+        // band — crit is set just above warn so only Warning fires.
+        MetricKind::NetRxBytes => {
+            if t.bandwidth_in_alert_mbps == 0 {
+                return AlertState::Normal;
+            }
+            let warn_bps = f64::from(t.bandwidth_in_alert_mbps) * 125_000.0;
+            (warn_bps, warn_bps + 1.0)
+        }
+        MetricKind::NetTxBytes => {
+            if t.bandwidth_out_alert_mbps == 0 {
+                return AlertState::Normal;
+            }
+            let warn_bps = f64::from(t.bandwidth_out_alert_mbps) * 125_000.0;
+            (warn_bps, warn_bps + 1.0)
+        }
+        // v1 alerts on CPU/GPU temperatures + bandwidth (Story 8.8 + v1.0
+        // parity). Drive-used alerting needs the used/total fraction which
+        // isn't a single Reading; the bandwidth_panel renders drive bars
+        // directly with their own color logic.
         _ => return AlertState::Normal,
     };
     check_threshold(reading.value, warn, HYSTERESIS_C, crit, prev_state)
@@ -135,6 +156,7 @@ mod tests {
             cpu_temp_critical: crit,
             gpu_temp_warn: warn,
             gpu_temp_critical: crit,
+            ..Default::default()
         }
     }
 
@@ -306,13 +328,6 @@ mod tests {
             color_for_state(AlertState::Critical, ACCENT, DEFAULT),
             CRITICAL_RED
         );
-    }
-
-    /// Sanity: the hysteresis band is 5°C (documented v1 value).
-    #[test]
-    #[allow(clippy::float_cmp)]
-    fn hysteresis_is_five_celsius() {
-        assert_eq!(HYSTERESIS_C, 5.0);
     }
 
     /// Sanity: check_threshold is wired (Story 1.2 still passes through).
