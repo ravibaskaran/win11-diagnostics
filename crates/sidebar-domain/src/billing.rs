@@ -119,17 +119,26 @@ pub fn next_cycle_start(end: chrono::NaiveDate) -> chrono::NaiveDate {
 }
 
 /// Return the last day (1-indexed) of the given month, accounting for leap years.
+///
+/// v1.0 audit 3 (stdlib parity): rewritten from a 12-arm match + hand-rolled
+/// `is_leap_year` to chrono's calendar — `NaiveDate::from_ymd_opt(year,
+/// month+1, 1).pred()` yields the last day of the target month, leap-year-
+/// correct, in one call. The prior `_ => 30` defensive arm silently swallowed
+/// any `month > 12`; chrono surfaces invalid input as a fallback to day 28
+/// (the safest lower bound — produces a valid cycle for any sane caller).
 #[must_use]
 pub fn last_day_of_month(year: i32, month: u32) -> u32 {
-    match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 if is_leap_year(year) => 29,
-        2 => 28,
-        // Defensive: month should always be 1-12 from chrono.
-        #[allow(clippy::match_same_arms)]
-        _ => 30,
-    }
+    use chrono::Datelike;
+    // Compute the first day of the NEXT month, then step back one day.
+    // December wraps to January of the next year.
+    let (ny, nm) = if month == 12 {
+        (year + 1, 1)
+    } else {
+        (year, month + 1)
+    };
+    chrono::NaiveDate::from_ymd_opt(ny, nm, 1)
+        .and_then(|d| d.pred_opt())
+        .map_or(28, |d| d.day())
 }
 
 /// Standard leap-year check.
