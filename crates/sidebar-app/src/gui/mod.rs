@@ -298,6 +298,14 @@ impl AppState {
         // Story 12.2 — push each reading into the per-metric history map so
         // the GUI can render sparkline graphs (T-22 default 60 samples).
         if let Ok(mut history) = self.history.write() {
+            // v1.0 audit 2 (P2) — collect the set of keys present in this
+            // batch so we can evict stale windows for sensors no longer
+            // reporting (hot-plug NIC gone, USB drive unmounted). Without
+            // this the history map grows one ~500 B window per transient
+            // sensor forever — a slow leak on a tool meant to stay running
+            // for days.
+            let mut keep: std::collections::HashSet<sidebar_domain::graph::MetricKey> =
+                std::collections::HashSet::with_capacity(new_readings.len());
             for r in &new_readings {
                 let key = sidebar_domain::graph::MetricKey {
                     category: r.sensor.category.to_string(),
@@ -305,8 +313,10 @@ impl AppState {
                     kind: format!("{:?}", r.kind),
                 };
                 let value = r.value;
-                history.push(key, value);
+                history.push(key.clone(), value);
+                keep.insert(key);
             }
+            history.retain_recent(&keep);
         }
         *recover_write(&self.readings) = new_readings;
     }
@@ -1522,7 +1532,20 @@ impl eframe::App for SidebarApp {
         if self.wizard_active {
             self.config = Config::default();
             self.config.first_run_complete = true;
-            self.persist_config();
+            // v1.0 audit 2 (P1) — surface persist failures here. The prior
+            // `persist_config()` call silently discarded errors via `let _ =`.
+            // On a locked-down machine (read-only FS, AV-locked config.toml,
+            // permission denied) the in-memory first_run_complete=true never
+            // reached disk, so load_config_with_recovery re-read the unchanged
+            // file on next launch and the wizard reappeared — a confusing
+            // loop with zero diagnostic. Log at error so the user/CI can see
+            // why the wizard returned.
+            if let Err(e) = self.try_persist_config() {
+                tracing::error!(
+                    error = %e,
+                    "wizard on_exit: persist failed — wizard will re-show on next launch"
+                );
+            }
             self.wizard_active = false;
         }
         #[cfg(windows)]

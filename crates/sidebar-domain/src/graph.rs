@@ -147,6 +147,16 @@ impl MetricHistory {
             .push(value);
     }
 
+    /// v1.0 audit 2 (P2) — drop any `MetricKey` NOT in `keep`. The caller
+    /// (`replace_readings`) passes the set of keys derived from the current
+    /// readings batch so transient sensors (hot-plug NIC, mounted ISO,
+    /// reconnected Bluetooth) don't leave permanent stale `RollingWindow`s
+    /// behind. Each window is ~500 B; over a long session this would be a
+    /// slow unbounded memory leak on a tool meant to stay running for days.
+    pub fn retain_recent(&mut self, keep: &std::collections::HashSet<MetricKey>) {
+        self.windows.retain(|key, _| keep.contains(key));
+    }
+
     /// Borrow the rolling window for `key`, if it exists.
     #[must_use]
     pub fn get(&self, key: &MetricKey) -> Option<&RollingWindow> {
@@ -345,5 +355,74 @@ mod tests {
     fn snapshot_for_kind_on_empty_history_is_empty() {
         let h = MetricHistory::new(60);
         assert!(h.snapshot_for_kind("CpuTemperature").is_empty());
+    }
+
+    // ===== v1.0 audit 2 (P2) — retain_recent evicts transient sensors =====
+
+    /// Cited: v1.0 audit Iteration 2. A sensor that disappears from the
+    /// readings batch (hot-plug NIC unplugged, USB drive unmounted) MUST
+    /// have its history window evicted so the map stays bounded.
+    #[test]
+    fn retain_recent_evicts_absent_keys() {
+        let mut h = MetricHistory::new(60);
+        let cpu = MetricKey {
+            category: "cpu".into(),
+            instance: "package".into(),
+            kind: "CpuTemperature".into(),
+        };
+        let stale_nic = MetricKey {
+            category: "net".into(),
+            instance: "999".into(),
+            kind: "NetRxBytes".into(),
+        };
+        h.push(cpu.clone(), 50.0);
+        h.push(stale_nic.clone(), 1000.0);
+        assert_eq!(h.len(), 2, "both windows seeded");
+
+        // New batch keeps CPU, drops the unplugged NIC.
+        let keep = std::collections::HashSet::from([cpu.clone()]);
+        h.retain_recent(&keep);
+        assert_eq!(h.len(), 1, "stale NIC window evicted");
+        assert!(h.get(&cpu).is_some(), "kept CPU window survives");
+        assert!(h.get(&stale_nic).is_none(), "stale NIC window gone");
+    }
+
+    /// Cited: v1.0 audit Iteration 2. An empty keep-set evicts everything.
+    #[test]
+    fn retain_recent_with_empty_keep_clears_all() {
+        let mut h = MetricHistory::new(60);
+        h.push(
+            MetricKey {
+                category: "cpu".into(),
+                instance: "package".into(),
+                kind: "CpuTemperature".into(),
+            },
+            50.0,
+        );
+        let keep = std::collections::HashSet::new();
+        h.retain_recent(&keep);
+        assert!(h.is_empty(), "empty keep-set must evict all windows");
+    }
+
+    /// Cited: v1.0 audit Iteration 2. A keep-set that covers everything
+    /// preserves all windows (no spurious eviction).
+    #[test]
+    fn retain_recent_with_full_keep_preserves_all() {
+        let mut h = MetricHistory::new(60);
+        let cpu = MetricKey {
+            category: "cpu".into(),
+            instance: "package".into(),
+            kind: "CpuTemperature".into(),
+        };
+        let gpu = MetricKey {
+            category: "gpu".into(),
+            instance: "package".into(),
+            kind: "GpuTemperature".into(),
+        };
+        h.push(cpu.clone(), 50.0);
+        h.push(gpu.clone(), 60.0);
+        let keep = std::collections::HashSet::from([cpu, gpu]);
+        h.retain_recent(&keep);
+        assert_eq!(h.len(), 2, "full keep-set preserves both windows");
     }
 }
