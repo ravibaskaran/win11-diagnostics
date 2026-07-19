@@ -1012,9 +1012,11 @@ mod tests {
     fn cycle_start_day_29_rejected_at_ui() {
         // The slider constrains to [1, 28]. We verify the slider's range by
         // asserting the panel renders the "Last day" escape hatch and the
-        // cycle-start-day section.
-        assert_eq!(MIN_CYCLE_DAY, 1);
-        assert_eq!(MAX_CYCLE_DAY, 28);
+        // cycle-start-day section. (v1.0 audit 3: removed the
+        // `assert_eq!(MIN_CYCLE_DAY, 1)` / `MAX_CYCLE_DAY, 28` lines — they
+        // pinned a const to its own literal and passed regardless of any
+        // production code. The clamp behavior is exercised by
+        // sidebar-domain::billing::clamped_day tests.)
         let mut config = Config::default();
         let mut harness = Harness::new_ui(|ui| {
             render(ui, &mut config, &|| {});

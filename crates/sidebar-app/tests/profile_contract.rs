@@ -15,8 +15,6 @@
 //!   - guardrails.md G15 (panic-safety)
 //!   - architecture.md §6 (release profile note)
 
-use std::path::Path;
-
 /// Locate the root Cargo.toml by walking up from CARGO_MANIFEST_DIR until
 /// we find the [workspace] table. Returns the path + parsed TOML.
 fn load_workspace_manifest() -> (std::path::PathBuf, toml::Value) {
@@ -145,10 +143,4 @@ fn rust_toolchain_toml_pins_1_95() {
         }
         current = current.parent().expect("reached root");
     }
-}
-
-// Silence unused Path import warning — kept for future use.
-#[test]
-fn _path_in_scope() {
-    let _ = Path::new("");
 }

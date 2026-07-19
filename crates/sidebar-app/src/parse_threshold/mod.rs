@@ -676,11 +676,4 @@ mod tests {
             "group name should contain bench name, got: {name}"
         );
     }
-
-    /// PathBuf import silence — `PathBuf` is used by the binary target.
-    #[test]
-    fn _pathbuf_in_scope() {
-        use std::path::PathBuf;
-        let _ = PathBuf::new();
-    }
 }

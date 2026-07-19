@@ -2970,18 +2970,12 @@ mod tests {
     }
 
     // ===== Boundary #2: poisoned RwLock → last good snapshot (G15) =====
-
-    #[test]
-    fn snapshot_returns_readings_after_replace() {
-        let state = AppState::new(ProviderTier::Basic, None);
-        state.replace_readings(vec![reading(
-            MetricKind::CpuUtilization,
-            42.0,
-            Unit::Percent,
-        )]);
-        let snap = state.snapshot();
-        assert_eq!(snap.len(), 1);
-    }
+    //
+    // v1.0 audit 3 — removed `snapshot_returns_readings_after_replace` (a
+    // tautology that only checked snapshot returns the count just stored;
+    // strictly dominated by snapshot_falls_back_to_last_good_on_poison
+    // below, which exercises the same replace→snapshot path AND the poison
+    // recovery the section header promises).
 
     /// G15 poison recovery: genuinely poison the lock from a panicking writer,
     /// then verify the guarded value remains writable and readable.

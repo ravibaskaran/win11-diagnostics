@@ -484,13 +484,18 @@ mod tests {
         });
         harness.run();
         let labels = all_labels(&harness).join(" | ");
+        // v1.0 audit 3 — tightened from `contains("cycle") || contains("Billing")`
+        // (either substring alone passed). The contract is that BOTH the
+        // section header AND the day control surface — matches the
+        // settings_panel sibling test (cycle_start_day_29_rejected_at_ui).
         assert!(
-            labels.contains("cycle") || labels.contains("Billing"),
-            "wizard must surface the billing-cycle section (T-26) (got: {labels})"
+            labels.contains("Billing cycle start day"),
+            "wizard must surface the billing-cycle section header (got: {labels})"
         );
-        // The shared constraint bounds are the same as settings_panel.
-        assert_eq!(MIN_CYCLE_DAY, 1);
-        assert_eq!(MAX_CYCLE_DAY, 28);
+        assert!(
+            labels.contains("Last day"),
+            "wizard must surface the Last-day escape hatch (got: {labels})"
+        );
     }
 
     // ===== F1: complete → config.toml round-trip preserves first_run_complete =====

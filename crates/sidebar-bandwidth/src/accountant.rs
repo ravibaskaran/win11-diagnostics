@@ -54,7 +54,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use chrono::{Datelike, NaiveDate, NaiveDateTime};
+use chrono::{Datelike, NaiveDate};
 use rusqlite::Connection;
 use sidebar_domain::billing::{cycle_end, next_cycle_start, CycleStartDay};
 use sidebar_domain::reading::{MetricKind, Reading};
@@ -450,7 +450,7 @@ impl BandwidthAccountant {
             // flush so both the old cycle's tail and the new cycle's empty
             // baseline are persisted).
             self.flush();
-            let archived_at = iso_ts(self.clock.now());
+            let archived_at = self.clock.now().to_string();
             let cycle_end_str = cycle_end_date.to_string();
             // ponytail: gate the reset on archive success — if archive fails,
             // the old cycle's rows survive in current_cycle but the next
@@ -506,7 +506,7 @@ impl BandwidthAccountant {
     /// accountant continues. The accumulator is NOT cleared (a flush is a
     /// snapshot, not a rollover).
     fn flush(&self) {
-        let updated_at = iso_ts(self.clock.now());
+        let updated_at = self.clock.now().to_string();
         let cycle_start_str = self.cycle_start.to_string();
         let cycle_rule = cycle_rule_key(self.active_cycle_start_day);
         if let Err(e) = sidebar_persistence::bandwidth_repo::save_current_cycle_metadata(
@@ -687,12 +687,6 @@ fn parse_cycle_rule(rule: &str) -> Option<CycleStartDay> {
     }
 }
 
-/// Format a `NaiveDateTime` as the ISO 8601 string SQLite expects for
-/// `updated_at` / `archived_at` columns (e.g. `"2026-07-15 12:00:00"`).
-fn iso_ts(t: NaiveDateTime) -> String {
-    t.to_string()
-}
-
 #[cfg(test)]
 mod tests {
     //! Story 5.2 TDD contract tests.
@@ -721,7 +715,7 @@ mod tests {
 
     use super::*;
     use crate::clock::FakeClock;
-    use chrono::NaiveDate;
+    use chrono::{NaiveDate, NaiveDateTime};
     use rusqlite::Connection;
     use sidebar_domain::billing::CycleStartDay;
     use sidebar_domain::reading::{MetricKind, Reading, SensorId, Unit};
@@ -1896,14 +1890,5 @@ mod tests {
         assert_eq!(grouped.len(), 2);
         assert_eq!(grouped.get(&1), Some(&(10, 20)));
         assert_eq!(grouped.get(&2), Some(&(30, 40)));
-    }
-
-    #[test]
-    fn iso_ts_formats_naive_datetime() {
-        let t = NaiveDate::from_ymd_opt(2026, 7, 1)
-            .unwrap()
-            .and_hms_opt(12, 30, 0)
-            .unwrap();
-        assert_eq!(iso_ts(t), "2026-07-01 12:30:00");
     }
 }

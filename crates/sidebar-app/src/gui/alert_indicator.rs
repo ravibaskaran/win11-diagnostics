@@ -330,13 +330,6 @@ mod tests {
         );
     }
 
-    /// Sanity: the hysteresis band is 5°C (documented v1 value).
-    #[test]
-    #[allow(clippy::float_cmp)]
-    fn hysteresis_is_five_celsius() {
-        assert_eq!(HYSTERESIS_C, 5.0);
-    }
-
     /// Sanity: check_threshold is wired (Story 1.2 still passes through).
     #[test]
     fn check_threshold_wired_correctly() {
