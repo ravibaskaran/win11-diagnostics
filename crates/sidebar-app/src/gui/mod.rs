@@ -1928,6 +1928,13 @@ impl eframe::App for SidebarApp {
         let on_change_noop: &dyn Fn() = &|| {};
         let on_launch: &dyn Fn() = self.launch_fn.as_ref().map_or(&|| {}, |f| f.as_ref());
         let hist = self.state.history_snapshot();
+        // v1.0 audit 2 (P1) — snapshot dock config before render so we can
+        // detect when the user mutates edge / monitor_id / offset_x / offset_y
+        // via the settings panel and re-dock the window live. Without this,
+        // those four controls silently flip config with zero visible effect
+        // (the user expects the window to move; it doesn't). `width_px` is
+        // excluded — it's already applied live via InnerSize above.
+        let dock_before_render = self.config.dock.clone();
         // Cert v1.0 — snapshot alert_acks before render so we can detect any
         // mutation (insert/remove/update, e.g. Acknowledge→Snooze on the same
         // key) and set the dirty flag, avoiding the per-frame save_acks write
@@ -1945,6 +1952,15 @@ impl eframe::App for SidebarApp {
         );
         if self.view.alert_acks != acks_before_render {
             self.acks_dirty = true;
+        }
+        // v1.0 audit 2 (P1) — if the settings panel mutated dock position
+        // fields (edge / monitor_id / offset_x / offset_y), re-dock the
+        // window NOW so the change takes effect without a restart. One guard
+        // here covers all four controls (the settings panel is the only path
+        // that mutates these fields outside hotkey handlers, which call
+        // redock_now themselves). Excludes width_px (handled via InnerSize).
+        if self.config.dock.position_changed(&dock_before_render) {
+            self.redock_now(ui.ctx());
         }
 
         // v1.0 parity — per-metric line-graph popup window (reference

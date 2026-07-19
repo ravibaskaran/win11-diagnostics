@@ -50,7 +50,8 @@ pub(crate) const MAX_POLL_INTERVAL: u32 = 60;
 /// The exact tooltip text spelling out the no-retroactive-resplit rule
 /// (PRD §5.5.8 + HITL guardrail).
 pub const NO_RESPLIT_TOOLTIP: &str = "Billing-cycle start day applies to the \
-     NEXT rollover only. The current cycle is not re-split.";
+     NEXT rollover only. The current cycle is not re-split. \
+     Restart sidebar for the new date to take effect.";
 
 // ===== Story 13.4 — plain-language tooltips for every settings section =====
 // Cited: Story 13.4, guardrails.md G28, nfr-thresholds.md T-37.
@@ -231,6 +232,11 @@ pub fn render(ui: &mut Ui, config: &mut Config, on_change: &dyn Fn()) {
             changed = true;
         }
     });
+    // v1.0 audit 2 (P1) — the poller thread reads poll_interval_seconds only
+    // at launch, so the slider changes the staleness threshold but NOT the
+    // actual sampling cadence until restart. Inline hint mirrors the hotkey
+    // pattern so the user knows.
+    ui.label(egui::RichText::new("Applies on next launch").small().weak());
     if config.poll_interval_seconds <= MIN_POLL_INTERVAL {
         // T-3 visible warning when poll interval is at the floor.
         ui.label(
@@ -1122,5 +1128,35 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ===== v1.0 audit 2 — restart-required hints render inline =====
+
+    /// Cited: v1.0 audit Iteration 2 (P1). The refresh-rate slider mutates
+    /// config but the poller reads it only at launch; without an inline
+    /// hint the user assumes the slider is broken. The hint MUST render.
+    #[test]
+    fn refresh_rate_renders_restart_hint() {
+        let mut config = Config::default();
+        let mut harness = Harness::new_ui(|ui| {
+            render(ui, &mut config, &|| {});
+        });
+        harness.run();
+        let labels = all_labels(&harness).join(" | ");
+        assert!(
+            labels.contains("Applies on next launch"),
+            "refresh-rate slider must surface the restart-required hint (got: {labels})"
+        );
+    }
+
+    /// Cited: v1.0 audit Iteration 2 (P2). The billing-cycle-day slider's
+    /// no-resplit tooltip must tell the user a restart is required —
+    /// otherwise they watch the countdown + assume the change was lost.
+    #[test]
+    fn billing_cycle_day_tooltip_mentions_restart() {
+        assert!(
+            NO_RESPLIT_TOOLTIP.to_lowercase().contains("restart"),
+            "NO_RESPLIT_TOOLTIP must mention restart so the user knows the running sidebar won't pick up the change (got: {NO_RESPLIT_TOOLTIP})"
+        );
     }
 }

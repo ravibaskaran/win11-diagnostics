@@ -242,6 +242,24 @@ pub struct DockConfig {
     pub width_px: u16,
 }
 
+impl DockConfig {
+    /// Return true if any field that affects the window's on-screen position
+    /// differs between `self` and `other`. Used by the GUI to detect settings-
+    /// panel mutations of edge / monitor_id / offset_x / offset_y and re-dock
+    /// the window live (v1.0 audit 2 — P1: previously the four controls
+    /// silently flipped config with zero visible effect).
+    ///
+    /// `width_px` is deliberately excluded: it is applied live via a separate
+    /// `ViewportCommand::InnerSize` path and does not require re-docking.
+    #[must_use]
+    pub fn position_changed(&self, other: &Self) -> bool {
+        self.edge != other.edge
+            || self.monitor_id != other.monitor_id
+            || self.offset_x_px != other.offset_x_px
+            || self.offset_y_px != other.offset_y_px
+    }
+}
+
 /// LHM subprocess settings (T-45).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OhmConfig {
@@ -848,5 +866,60 @@ mod tests {
             config.bandwidth.cycle_start_day,
             CycleStartDaySerde::LastDayOfMonth
         );
+    }
+
+    // ===== v1.0 audit 2 — DockConfig::position_changed =====
+    //
+    // The bug: settings-panel mutations of edge / monitor_id / offset_x /
+    // offset_y flipped config but never called send_dock_position, so the
+    // window stayed put. The fix detects the change post-render + re-docks.
+    // This test pins the diff helper.
+
+    #[test]
+    fn position_changed_false_for_identical_dock() {
+        let a = DockConfig::default();
+        assert!(!a.position_changed(&DockConfig::default()));
+    }
+
+    #[test]
+    fn position_changed_true_when_edge_differs() {
+        let a = DockConfig::default();
+        let mut b = a.clone();
+        b.edge = "Top".to_string();
+        assert!(a.position_changed(&b));
+    }
+
+    #[test]
+    fn position_changed_true_when_monitor_id_differs() {
+        let a = DockConfig::default();
+        let mut b = a.clone();
+        b.monitor_id = "DISPLAY2".to_string();
+        assert!(a.position_changed(&b));
+    }
+
+    #[test]
+    fn position_changed_true_when_offset_x_differs() {
+        let a = DockConfig::default();
+        let mut b = a.clone();
+        b.offset_x_px = 42;
+        assert!(a.position_changed(&b));
+    }
+
+    #[test]
+    fn position_changed_true_when_offset_y_differs() {
+        let a = DockConfig::default();
+        let mut b = a.clone();
+        b.offset_y_px = -17;
+        assert!(a.position_changed(&b));
+    }
+
+    /// width_px changes do NOT count as a position change — width is applied
+    /// live via InnerSize and never requires re-docking.
+    #[test]
+    fn position_changed_false_when_only_width_differs() {
+        let a = DockConfig::default();
+        let mut b = a.clone();
+        b.width_px = 250;
+        assert!(!a.position_changed(&b));
     }
 }
