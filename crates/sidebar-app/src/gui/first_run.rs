@@ -96,11 +96,12 @@ pub fn should_show(config: &Config) -> bool {
 /// - Target monitor — text input, default "primary".
 /// - Billing-cycle start day — slider 1–28 (T-26).
 /// - Theme — checkbox group (Dark/Light/System), default Dark.
+#[allow(clippy::too_many_lines)] // wizard is inherently 5 sections × ~20 LOC
 pub fn render_wizard(ui: &mut Ui, config: &mut Config) -> WizardAction {
     let mut action = WizardAction::Pending;
 
     ui.vertical_centered(|w| {
-        w.heading("Welcome to sidebar");
+        w.heading("Welcome to Sidebar");
         w.label(
             egui::RichText::new("Let's set up your first-run preferences.")
                 .small()
@@ -120,20 +121,59 @@ pub fn render_wizard(ui: &mut Ui, config: &mut Config) -> WizardAction {
         });
 
         // ---- Target monitor (T-37, T-36) ----
+        // v1.0 UI/UX (audit MJ-F) — replaced the raw TextEdit with a ComboBox
+        // populated from monitors::enumerate(), matching the Settings panel.
+        // A non-technical user sees "DISPLAY1 (1920x1080, primary)" instead
+        // of a blank text field they don't know how to fill.
         w.label("Target monitor");
         w.horizontal(|row| {
-            let mut mon = config.dock.monitor_id.clone();
-            let te = row.add(
-                egui::TextEdit::singleline(&mut mon)
-                    .desired_width(140.0)
-                    .hint_text("primary"),
-            );
-            if te.changed() {
-                config.dock.monitor_id = mon;
-            }
-            // Default affordance — clicking sets "primary".
-            if row.button("Use primary").clicked() {
-                config.dock.monitor_id = "primary".to_string();
+            let current = &config.dock.monitor_id;
+            if let Ok(displays) = crate::gui::monitors::enumerate() {
+                let found = displays
+                    .iter()
+                    .position(|d| d.id.eq_ignore_ascii_case(current));
+                let initial_idx = found.unwrap_or(0);
+                let mut selected_idx = initial_idx;
+                let labels: Vec<String> = displays
+                    .iter()
+                    .map(|d| {
+                        if d.primary {
+                            format!("{} (primary, {}x{})", d.id, d.width, d.height)
+                        } else {
+                            format!("{} ({}x{})", d.id, d.width, d.height)
+                        }
+                    })
+                    .collect();
+                let mut cb = egui::ComboBox::from_label("");
+                cb = cb.selected_text(
+                    labels
+                        .get(selected_idx)
+                        .cloned()
+                        .unwrap_or_else(|| "primary".into()),
+                );
+                let mut user_clicked = false;
+                cb.show_ui(row, |ui| {
+                    for (i, label) in labels.iter().enumerate() {
+                        if ui.selectable_label(selected_idx == i, label).clicked() {
+                            selected_idx = i;
+                            user_clicked = true;
+                        }
+                    }
+                });
+                if let Some(d) = displays.get(selected_idx) {
+                    // v1.0 UI/UX (audit M-2): commit only when the user
+                    // explicitly clicked a dropdown entry AND it differs
+                    // from the current monitor_id. This preserves "primary"
+                    // when the user doesn't interact, while allowing the
+                    // first-entry click (the M-2 bug where selected_idx ==
+                    // initial_idx silently dropped the commit).
+                    if user_clicked && d.id != config.dock.monitor_id {
+                        config.dock.monitor_id.clone_from(&d.id);
+                    }
+                }
+            } else {
+                // Enumeration failed — fall back to the raw text field.
+                row.text_edit_singleline(&mut config.dock.monitor_id);
             }
         });
 
@@ -177,7 +217,11 @@ pub fn render_wizard(ui: &mut Ui, config: &mut Config) -> WizardAction {
 
         // ---- Action buttons ----
         w.horizontal(|btns| {
-            if btns.button("Skip").clicked() {
+            // v1.0 UI/UX (audit MAJ-4): "Skip" reads to a non-technical user
+            // as "skip this step" — but it actually discards all selections
+            // and applies defaults. Rename to "Use defaults" so the destructive
+            // semantics are explicit + the user isn't surprised.
+            if btns.button("Use defaults").clicked() {
                 // Restore defaults (T-37 skip semantics). We overwrite the
                 // user-facing fields but preserve nothing else — the wizard
                 // is the first thing the user sees, so "skip" = "I'll take the
@@ -277,8 +321,8 @@ mod tests {
             "wizard must offer a Continue button (got: {labels})"
         );
         assert!(
-            labels.contains("Skip"),
-            "wizard must offer a Skip button (got: {labels})"
+            labels.contains("Use defaults"),
+            "wizard must offer a Use defaults button (got: {labels})"
         );
     }
 
@@ -321,7 +365,7 @@ mod tests {
             render_wizard(ui, &mut guard);
         });
         harness.run();
-        harness.get_by_label("Skip").click();
+        harness.get_by_label("Use defaults").click();
         harness.run();
         let after = config.lock().unwrap();
         assert!(
@@ -398,12 +442,12 @@ mod tests {
             record_action(&a, act);
         });
         harness.run();
-        harness.get_by_label("Skip").click();
+        harness.get_by_label("Use defaults").click();
         harness.run();
         assert_eq!(
             *action.lock().unwrap(),
             WizardAction::Skip,
-            "Skip click must return WizardAction::Skip"
+            "Use defaults click must return WizardAction::Skip"
         );
     }
 

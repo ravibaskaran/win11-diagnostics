@@ -37,6 +37,16 @@ pub const MUTEX_NAME: &str = "Global\\sidebar-app-single-instance";
 /// exit is logged) but before any resource work — config load, eframe launch.
 /// A second launch exits(0) before wasting any work on the doomed instance.
 ///
+/// When `wait_for_instance` is true, the call retries the claim for up to
+/// ~5 seconds before giving up and exiting. This is used by the wizard's
+/// "Start monitoring" restart path: the freshly-spawned child must wait for
+/// the prior instance to release the mutex during its 1-3 s graceful
+/// shutdown. Without this retry, the child would observe
+/// `ERROR_ALREADY_EXISTS` on the very first `CreateMutexW` and exit(0)
+/// silently — leaving the user with no sidebar running. Normal double-click
+/// launches pass `wait_for_instance = false` and exit immediately if another
+/// instance is already running.
+///
 /// The mutex handle is leaked on purpose — it must outlive the function
 /// frame so the kernel keeps the mutex alive for the entire process
 /// duration. The kernel releases the mutex automatically when the process
@@ -51,60 +61,78 @@ pub const MUTEX_NAME: &str = "Global\\sidebar-app-single-instance";
 ///
 /// # Cited
 /// Story 13.3 TDD contract. G28 (single-instance guard).
-pub fn claim_or_exit() {
-    // Build the wide UTF-16 string for CreateMutexW. The null terminator is
-    // required by Win32; `encode_wide().chain(Some(0))` appends it.
-    let wide: Vec<u16> = MUTEX_NAME
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
-    // SAFETY: `CreateMutexW` with `lpMutexAttributes = None` (default
-    // security descriptor), `bInitialOwner = TRUE` (we want ownership so
-    // the first instance holds it), and `lpName` pointing at our
-    // null-terminated UTF-16 string. The string is stack-owned and lives
-    // for the duration of this call. `CreateMutexW` returns a valid handle
-    // even when the mutex already exists — the differentiator is
-    // `GetLastError() == ERROR_ALREADY_EXISTS`. The handle is leaked via
-    // `Box::leak` below so the kernel keeps the mutex alive for the
-    // process lifetime; there is no use-after-free because we never access
-    // the handle again (the kernel owns it from here).
-    let handle = unsafe { CreateMutexW(None, true, PCWSTR(wide.as_ptr())) };
-    match handle {
-        Ok(h) => {
-            // Check whether the mutex already existed (i.e. another instance
-            // is running). SAFETY: GetLastError is thread-local and reads
-            // the last-error code set by the immediately-preceding
-            // CreateMutexW call on this same thread. No pointer args.
-            let last_error = unsafe { GetLastError() };
-            if last_error == ERROR_ALREADY_EXISTS {
-                tracing::info!(
+pub fn claim_or_exit(wait_for_instance: bool) {
+    // Retry budget: ~5 s total, polling every 200 ms. Tuned to comfortably
+    // exceed the T-19 shutdown watchdog budget (3 s) so a slow graceful
+    // shutdown still releases the mutex in time for the child to take over.
+    const MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+    const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
+
+    let deadline = std::time::Instant::now() + MAX_WAIT;
+    loop {
+        // Build the wide UTF-16 string for CreateMutexW. The null terminator
+        // is required by Win32; `encode_wide().chain(Some(0))` appends it.
+        let wide: Vec<u16> = MUTEX_NAME
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        // SAFETY: `CreateMutexW` with `lpMutexAttributes = None` (default
+        // security descriptor), `bInitialOwner = TRUE` (we want ownership
+        // so the first instance holds it), and `lpName` pointing at our
+        // null-terminated UTF-16 string. The string is stack-owned and
+        // lives for the duration of this call. `CreateMutexW` returns a
+        // valid handle even when the mutex already exists — the
+        // differentiator is `GetLastError() == ERROR_ALREADY_EXISTS`. The
+        // handle is leaked via `Box::leak` below so the kernel keeps the
+        // mutex alive for the process lifetime; there is no
+        // use-after-free because we never access the handle again (the
+        // kernel owns it from here).
+        let handle = unsafe { CreateMutexW(None, true, PCWSTR(wide.as_ptr())) };
+        match handle {
+            Ok(h) => {
+                // Check whether the mutex already existed. SAFETY:
+                // GetLastError is thread-local and reads the last-error
+                // code set by the immediately-preceding CreateMutexW call
+                // on this same thread. No pointer args.
+                let last_error = unsafe { GetLastError() };
+                if last_error == ERROR_ALREADY_EXISTS {
+                    if wait_for_instance && std::time::Instant::now() < deadline {
+                        std::thread::sleep(POLL_INTERVAL);
+                        continue;
+                    }
+                    tracing::info!(
+                        target = "sidebar.platform.single_instance",
+                        "another sidebar instance is already running — exiting (Story 13.3, G28)"
+                    );
+                    std::process::exit(0);
+                }
+                // Leak the handle so the mutex outlives this function frame.
+                // The kernel releases the mutex when the process exits.
+                // SAFETY: `h` is a valid HANDLE from CreateMutexW; Box::leak
+                // moves ownership to the heap with no Drop. The handle is
+                // never closed by Rust code — the OS reaps it on process
+                // exit.
+                let _ = Box::leak(Box::new(h));
+                tracing::debug!(
                     target = "sidebar.platform.single_instance",
-                    "another sidebar instance is already running — exiting (Story 13.3, G28)"
+                    "single-instance mutex claimed (Story 13.3, G28)"
                 );
-                std::process::exit(0);
+                return;
             }
-            // Leak the handle so the mutex outlives this function frame.
-            // The kernel releases the mutex when the process exits.
-            // SAFETY: `h` is a valid HANDLE from CreateMutexW; Box::leak
-            // moves ownership to the heap with no Drop. The handle is
-            // never closed by Rust code — the OS reaps it on process exit.
-            let _ = Box::leak(Box::new(h));
-            tracing::debug!(
-                target = "sidebar.platform.single_instance",
-                "single-instance mutex claimed (Story 13.3, G28)"
-            );
-        }
-        Err(e) => {
-            // Extremely unlikely — kernel out of handles, or the named-mutex
-            // namespace is locked down. Fall through (do not block the app);
-            // the risk is a double-instance, which is annoying but not
-            // dangerous (config writes are best-effort, AppBar conflicts
-            // are visual). Documented tradeoff in the SAFETY comment above.
-            tracing::error!(
-                target = "sidebar.platform.single_instance",
-                error = %e,
-                "CreateMutexW failed — single-instance guard disabled (non-fatal, app continues)"
-            );
+            Err(e) => {
+                // Extremely unlikely — kernel out of handles, or the
+                // named-mutex namespace is locked down. Fall through (do
+                // not block the app); the risk is a double-instance, which
+                // is annoying but not dangerous (config writes are
+                // best-effort, AppBar conflicts are visual). Documented
+                // tradeoff in the SAFETY comment above.
+                tracing::error!(
+                    target = "sidebar.platform.single_instance",
+                    error = %e,
+                    "CreateMutexW failed — single-instance guard disabled (non-fatal, app continues)"
+                );
+                return;
+            }
         }
     }
 }

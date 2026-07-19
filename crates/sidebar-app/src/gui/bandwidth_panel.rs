@@ -28,7 +28,7 @@
 use eframe::egui::Ui;
 use sidebar_bandwidth::view::{BandwidthView, NICtotals};
 use sidebar_domain::config::DisplayConfig;
-use sidebar_domain::format::{self, Base};
+use sidebar_domain::format;
 
 /// Empty-state placeholder (PRD §5.5.8 — exact string).
 pub const EMPTY_TEXT: &str = "No network adapters tracked";
@@ -82,40 +82,93 @@ fn render_current(ui: &mut Ui, view: &BandwidthView, display: &DisplayConfig) {
 fn render_reset(ui: &mut Ui, view: &BandwidthView) {
     ui.horizontal(|row| {
         row.label(reset_countdown_label(view));
-        // Story 17.3 — CSV export button. Writes a simple CSV to a temp
-        // path + logs the location. Uses the data already in BandwidthView.
-        if row.small_button("Export CSV").clicked() {
+        // Story 17.3 — CSV export button. Writes to %TEMP% and shows
+        // the path or error to the user (not just tracing logs).
+        if row
+            .small_button(crate::i18n::t(
+                crate::i18n::Language::English,
+                crate::i18n::Label::ExportCsv,
+            ))
+            .clicked()
+        {
             let csv = export_bandwidth_csv(view);
-            let path = std::env::temp_dir().join("sidebar-bandwidth-export.csv");
-            if let Err(e) = std::fs::write(&path, csv) {
-                tracing::warn!(error = %e, "CSV export failed");
-            } else {
-                tracing::info!(path = %path.display(), "bandwidth CSV exported");
-            }
+            // v1.0 UI/UX (audit MJ-Z5) — write to the user's Documents folder
+            // so a non-technical user can actually find the file. %TEMP% is
+            // invisible (hidden AppData\Local\Temp). Fall back to temp if
+            // Documents is unavailable (G15 — non-fatal).
+            let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+            let filename = format!("sidebar-bandwidth-{stamp}.csv");
+            // Resolve Documents folder: USERPROFILE\Documents on Windows.
+            let docs = std::env::var_os("USERPROFILE")
+                .map(|h| std::path::Path::new(&h).join("Documents"))
+                .filter(|p| p.exists());
+            let path = match docs {
+                Some(d) => d.join(&filename),
+                None => std::env::temp_dir().join(&filename),
+            };
+            let message = match std::fs::write(&path, csv) {
+                Ok(()) => {
+                    tracing::info!(path = %path.display(), "bandwidth CSV exported");
+                    format!("Exported CSV to {}", path.display())
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "CSV export failed");
+                    format!("CSV export failed: {e}")
+                }
+            };
+            // Cert v1.0 — use temp (frame-scoped) storage, NOT persisted.
+            // insert_persisted serializes to eframe Storage and reloads the
+            // status on every future launch, leaving a stale "Exported CSV
+            // to ..." or error banner visible forever. Temp data ages out
+            // after a few frames, matching the intended transient feedback.
+            row.ctx()
+                .data_mut(|data| data.insert_temp(export_status_id(), message));
         }
     });
+    let status: Option<String> = ui
+        .ctx()
+        .data_mut(|data| data.get_temp::<String>(export_status_id()));
+    if let Some(message) = status {
+        ui.label(message);
+    }
 }
 
-/// Story 17.3 — generate a CSV string from the BandwidthView. Simple format:
-/// `luid,adapter_name,rx_bytes,tx_bytes` for current + history rows.
+/// Story 17.3 — generate a CSV string from the BandwidthView. RFC 4180
+/// compliant: CRLF line terminators, quoted fields with doubled quotes,
+/// embedded CR/LF replaced with space to avoid breaking row boundaries.
 #[allow(clippy::format_push_string)]
 fn export_bandwidth_csv(view: &BandwidthView) -> String {
-    let mut out = String::from("luid,adapter_name,rx_bytes,tx_bytes\n");
+    let mut out = String::from("luid,adapter_name,rx_bytes,tx_bytes\r\n");
     for nic in &view.current {
         let name = nic.friendly_name.as_deref().unwrap_or("unknown");
         out.push_str(&format!(
-            "{},{},{},{}\n",
-            nic.luid, name, nic.rx_bytes, nic.tx_bytes
+            "{},{},{},{}\r\n",
+            nic.luid,
+            csv_field(name),
+            nic.rx_bytes,
+            nic.tx_bytes
         ));
     }
     for nic in &view.history {
         let name = nic.friendly_name.as_deref().unwrap_or("unknown");
         out.push_str(&format!(
-            "{},{},{},{}\n",
-            nic.luid, name, nic.rx_bytes, nic.tx_bytes
+            "{},{},{},{}\r\n",
+            nic.luid,
+            csv_field(name),
+            nic.rx_bytes,
+            nic.tx_bytes
         ));
     }
     out
+}
+
+fn csv_field(value: &str) -> String {
+    let cleaned = value.replace(['\r', '\n'], " ");
+    format!("\"{}\"", cleaned.replace('"', "\"\""))
+}
+
+fn export_status_id() -> egui::Id {
+    egui::Id::new("bandwidth_export_status")
 }
 
 /// Render the prior-cycle history strip at a smaller font. Each NIC's row
@@ -134,17 +187,27 @@ fn render_history(ui: &mut Ui, view: &BandwidthView, display: &DisplayConfig) {
 }
 
 /// Build the human-readable label for a current-cycle NIC row:
-/// "Wi-Fi  RX 50 GB  TX 20 GB  Total 70 GB".
+/// "Wi-Fi (192.168.1.5)  RX 50 GB  TX 20 GB  Total 70 GB".
+///
+/// The IPv4 (when present + on Windows) is appended to the adapter name so
+/// the user can see which IP each tracked NIC has — matching the reference
+/// SidebarDiagnostics app's NetworkIP metric (v1.0 parity).
 #[must_use]
 pub(crate) fn nic_row(nic: &NICtotals, display: &DisplayConfig) -> String {
     let name = nic
         .friendly_name
         .clone()
         .unwrap_or_else(|| format!("NIC 0x{:x}", nic.luid));
+    // v1.0 parity — append the NIC's IPv4 address (best-effort: None on
+    // non-Windows, disconnected adapters, or IPv6-only).
+    let name_with_ip = match sidebar_platform::net_info::ipv4_for_luid(nic.luid) {
+        Some(ip) => format!("{name} ({ip})"),
+        None => name,
+    };
     let rx = format_bytes_with_config(nic.rx_bytes, display);
     let tx = format_bytes_with_config(nic.tx_bytes, display);
     let total = format_bytes_with_config(nic.rx_bytes + nic.tx_bytes, display);
-    format!("{name}  RX {rx}  TX {tx}  Total {total}")
+    format!("{name_with_ip}  RX {rx}  TX {tx}  Total {total}")
 }
 
 /// Build the reset-countdown label: "12 days until reset (2026-07-31)" or
@@ -187,17 +250,10 @@ pub(crate) fn format_bytes_with_config(bytes: u64, display: &DisplayConfig) -> S
     if display.raw_values {
         format!("{bytes} B")
     } else {
-        format::format_bytes(bytes, base_from_config(display.decimal_base))
-    }
-}
-
-/// Map `decimal_base` flag → `Base` enum (mirrors Story 8.3 helper).
-#[must_use]
-pub(crate) fn base_from_config(decimal_base: bool) -> Base {
-    if decimal_base {
-        Base::Decimal
-    } else {
-        Base::Binary
+        format::format_bytes(
+            bytes,
+            crate::gui::metric_row::base_from_config(display.decimal_base),
+        )
     }
 }
 
@@ -221,8 +277,7 @@ mod tests {
             temp_unit: sidebar_domain::format::TempUnit::Celsius,
             raw_values: false,
             decimal_base: true,
-            hide_from_capture: false,
-            force_opaque: false,
+            ..Default::default()
         }
     }
 
@@ -430,5 +485,22 @@ mod tests {
         let n = nic(1, "Wi-Fi", 40, 10);
         let row = history_row(&n, &default_display(), false);
         assert!(!row.contains(DISCONNECTED_TAG));
+    }
+
+    #[test]
+    fn export_bandwidth_csv_quotes_adapter_names() {
+        let view = BandwidthView {
+            current: vec![nic(7, "Wi-Fi, \"Lab\"\nVPN", 1, 2)],
+            history: vec![],
+            days_until_reset: 12,
+            next_reset_date: NaiveDate::from_ymd_opt(2026, 7, 31).unwrap(),
+        };
+
+        // RFC 4180: CRLF line terminators, embedded newlines replaced with
+        // space to avoid breaking row boundaries in strict parsers.
+        assert_eq!(
+            export_bandwidth_csv(&view),
+            "luid,adapter_name,rx_bytes,tx_bytes\r\n7,\"Wi-Fi, \"\"Lab\"\" VPN\",1000000000,2000000000\r\n"
+        );
     }
 }

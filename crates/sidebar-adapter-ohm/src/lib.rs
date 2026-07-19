@@ -57,7 +57,6 @@ use tracing::{debug, warn};
 
 pub mod http;
 pub mod lhm_model;
-pub mod pipe;
 
 use crate::http::{HttpClient, OhmError, RealHttpClient, DEFAULT_OHM_PORT};
 use crate::lhm_model::LhmNode;
@@ -297,7 +296,15 @@ fn map_sensor(node: &LhmNode) -> Option<Reading> {
         format!("{}/{}", hw_kind.instance_tag(), hw_index),
     );
 
-    Some(Reading::new(sensor_id, metric, raw, unit))
+    // LHM reports clocks in MHz; sysinfo/NVML report Hz. Convert MHz→Hz so
+    // the unit stays consistent across providers (CpuFrequency is already Hz).
+    let value = if sensor_kind == SensorKind::Clock {
+        raw * 1_000_000.0
+    } else {
+        raw
+    };
+
+    Some(Reading::new(sensor_id, metric, value, unit))
 }
 
 /// Recognized LHM hardware classes. Each maps to a `SensorId.category` and
@@ -316,11 +323,14 @@ enum HardwareKind {
     /// to no current `MetricKind` (we don't have a "BoardTemperature"),
     /// so those sensors are skipped downstream.
     Mainboard,
+    /// `ram` — RAM clock + voltage (v1.0 parity with reference). Mapped
+    /// to `"ram"` category for `RamClock` / `RamVoltage`.
+    Ram,
 }
 
 impl HardwareKind {
     /// Map an LHM hardware class string to a [`HardwareKind`]. Returns
-    /// `None` for unrecognized classes (e.g. `ram`, `nic`, `psu`) — those
+    /// `None` for unrecognized classes (e.g. `nic`, `psu`) — those
     /// sensors are silently skipped.
     #[must_use]
     fn from_lhm_class(s: &str) -> Option<Self> {
@@ -329,6 +339,7 @@ impl HardwareKind {
             "gpu-amd" | "gpu-nvidia" | "gpu-intel" | "gpu" => Some(Self::Gpu),
             "hdd" | "ssd" | "sat" => Some(Self::Disk),
             "mainboard" => Some(Self::Mainboard),
+            "ram" => Some(Self::Ram),
             _ => None,
         }
     }
@@ -341,6 +352,7 @@ impl HardwareKind {
             Self::Gpu => "gpu",
             Self::Disk => "disk",
             Self::Mainboard => "board",
+            Self::Ram => "ram",
         }
     }
 
@@ -352,6 +364,7 @@ impl HardwareKind {
             Self::Gpu => "gpu",
             Self::Disk => "disk",
             Self::Mainboard => "board",
+            Self::Ram => "ram",
         }
     }
 }
@@ -364,6 +377,8 @@ enum SensorKind {
     Power,
     Fan,
     Voltage,
+    /// Clock frequency (MHz). v1.0 parity — CPU bus clock + RAM clock.
+    Clock,
 }
 
 impl SensorKind {
@@ -374,11 +389,10 @@ impl SensorKind {
             "power" => Some(Self::Power),
             "fan" => Some(Self::Fan),
             "voltage" => Some(Self::Voltage),
-            // `clock`, `load`, `throughput`, `data`, `control`, `level`,
-            // `factor`, `smalldata`, `smalldata` — not modeled here.
-            // CpuFrequency/GpuFrequency/CpuUtilization/GpuUtilization have
-            // cheaper dedicated adapters (sysinfo, NVML) so OHM doesn't
-            // need to emit them.
+            "clock" => Some(Self::Clock),
+            // `load`, `throughput`, `data`, `control`, `level`, `factor`,
+            // `smalldata` — not modeled here. CpuUtilization/GpuUtilization
+            // have cheaper dedicated adapters (sysinfo, NVML).
             _ => None,
         }
     }
@@ -403,29 +417,43 @@ fn combine(hw: HardwareKind, s: SensorKind) -> Option<(MetricKind, Unit)> {
             HardwareKind::Cpu => (MetricKind::CpuTemperature, Unit::Celsius),
             HardwareKind::Gpu => (MetricKind::GpuTemperature, Unit::Celsius),
             HardwareKind::Disk => (MetricKind::DiskTemperature, Unit::Celsius),
-            // Mainboard temp has no MetricKind home today.
-            HardwareKind::Mainboard => return None,
+            // Mainboard + RAM temp has no MetricKind home today.
+            HardwareKind::Mainboard | HardwareKind::Ram => return None,
         },
         SensorKind::Power => match hw {
             HardwareKind::Cpu => (MetricKind::CpuPower, Unit::Watts),
             HardwareKind::Gpu => (MetricKind::GpuPower, Unit::Watts),
-            // Disk + mainboard power out of scope.
-            HardwareKind::Disk | HardwareKind::Mainboard => return None,
+            // Disk + mainboard + RAM power out of scope.
+            HardwareKind::Disk | HardwareKind::Mainboard | HardwareKind::Ram => return None,
         },
         SensorKind::Fan => match hw {
             // CPU + chassis fans are generic FanSpeed; GPU fans get the
             // dedicated GpuFanSpeed variant.
             HardwareKind::Cpu | HardwareKind::Mainboard => (MetricKind::FanSpeed, Unit::Rpm),
             HardwareKind::Gpu => (MetricKind::GpuFanSpeed, Unit::Rpm),
-            // Disks don't have fans.
-            HardwareKind::Disk => return None,
+            // Disks + RAM don't have fans.
+            HardwareKind::Disk | HardwareKind::Ram => return None,
         },
         SensorKind::Voltage => match hw {
             HardwareKind::Cpu | HardwareKind::Gpu | HardwareKind::Mainboard => {
                 (MetricKind::Voltage, Unit::Volts)
             }
+            // v1.0 parity — RAM voltage surfaces as its own MetricKind so the
+            // RAM panel can show it distinctly from motherboard rails.
+            HardwareKind::Ram => (MetricKind::RamVoltage, Unit::Volts),
             // Disk voltage out of scope.
             HardwareKind::Disk => return None,
+        },
+        SensorKind::Clock => match hw {
+            // v1.0 parity — CPU bus/base clock (BCLK). Per-core clocks are
+            // already covered by sysinfo's CpuFrequency; the LHM "clock"
+            // category for CPU is the bus clock. Emitted in Hz (converted
+            // from LHM's MHz upstream) for unit consistency.
+            HardwareKind::Cpu => (MetricKind::CpuBusClock, Unit::Hertz),
+            // v1.0 parity — RAM clock (memory frequency).
+            HardwareKind::Ram => (MetricKind::RamClock, Unit::Hertz),
+            // GPU clocks come from NVML (GpuFrequency); disk has no clock.
+            HardwareKind::Gpu | HardwareKind::Disk | HardwareKind::Mainboard => return None,
         },
     };
     Some(pair)

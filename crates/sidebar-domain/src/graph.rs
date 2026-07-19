@@ -158,6 +158,20 @@ impl MetricHistory {
         self.windows.get_mut(key)
     }
 
+    /// v1.0 parity — flatten the first window whose MetricKey.kind matches
+    /// the given kind name into a chronological Vec<f64>, for the line-graph
+    /// popup. Empty if no window matches yet. The reference SidebarDiagnostics
+    /// popup plots a single metric's session history; we do the same.
+    #[must_use]
+    pub fn snapshot_for_kind(&self, kind_name: &str) -> Vec<f64> {
+        for (key, w) in &self.windows {
+            if key.kind == kind_name {
+                return w.to_vec();
+            }
+        }
+        Vec::new()
+    }
+
     /// The configured window size (post-clamp).
     #[must_use]
     pub fn window_size(&self) -> usize {
@@ -296,5 +310,40 @@ mod tests {
         assert_eq!(h_small.window_size(), 10, "min window is 10 (T-22)");
         let h_big = MetricHistory::new(9999);
         assert_eq!(h_big.window_size(), 600, "max window is 600 (T-22)");
+    }
+
+    /// v1.0 parity — snapshot_for_kind returns the first matching window's
+    /// values for the graph popup. Empty when no window matches yet.
+    #[test]
+    fn snapshot_for_kind_returns_matching_window_values() {
+        let mut h = MetricHistory::new(60);
+        let cpu = MetricKey {
+            category: "cpu".into(),
+            instance: "cpu/0".into(),
+            kind: "CpuTemperature".into(),
+        };
+        let gpu = MetricKey {
+            category: "gpu".into(),
+            instance: "gpu/0".into(),
+            kind: "GpuTemperature".into(),
+        };
+        h.push(cpu.clone(), 50.0);
+        h.push(cpu.clone(), 51.0);
+        h.push(cpu, 52.0);
+        h.push(gpu, 60.0);
+        let snap = h.snapshot_for_kind("CpuTemperature");
+        assert_eq!(snap, vec![50.0, 51.0, 52.0]);
+        // Non-matching kind → empty.
+        assert!(h.snapshot_for_kind("RamClock").is_empty());
+        // GPU window is found when asked.
+        assert_eq!(h.snapshot_for_kind("GpuTemperature"), vec![60.0]);
+    }
+
+    /// v1.0 parity — snapshot_for_kind on an empty history is empty (the
+    /// popup shows "Waiting for samples…" rather than crashing).
+    #[test]
+    fn snapshot_for_kind_on_empty_history_is_empty() {
+        let h = MetricHistory::new(60);
+        assert!(h.snapshot_for_kind("CpuTemperature").is_empty());
     }
 }

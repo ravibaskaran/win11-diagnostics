@@ -9,32 +9,10 @@
 
 pub mod event_channel;
 pub mod gui;
+pub mod i18n;
 pub mod nfr;
 pub mod parse_threshold;
 pub mod poller;
-pub mod progress_parser;
 pub mod provider_registry;
 pub mod shutdown;
 pub mod tier_probe;
-pub mod updater;
-
-/// Story 0.1 smoke marker (kept for the workspace-shape test contract).
-#[must_use]
-pub fn crate_present() -> bool {
-    true
-}
-
-#[cfg(test)]
-mod tests {
-    use super::crate_present;
-
-    #[test]
-    fn crate_present_returns_true() {
-        assert!(crate_present());
-    }
-
-    #[test]
-    fn crate_present_is_idempotent() {
-        assert_eq!(crate_present(), crate_present());
-    }
-}

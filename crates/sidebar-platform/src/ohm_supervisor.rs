@@ -477,6 +477,19 @@ impl<C: HttpClient> OhmSupervisor<C> {
             // 0x102 = WAIT_TIMEOUT (still running); 0 = WAIT_OBJECT_0 (signaled = exited).
             // WaitForSingleObject returns WAIT_EVENT (a u32 newtype); compare
             // against WAIT_EVENT(0x102) directly.
+            //
+            // Cert v1.0 (backend audit C2) — WAIT_FAILED (0xFFFFFFFF) means the
+            // wait call itself errored (e.g. handle invalidated mid-teardown).
+            // Treat it conservatively as "not alive" so the probe fires
+            // Full→Basic degradation + the user gets the banner, rather than
+            // silently misclassifying. Log at warn so the failure is traceable.
+            if result == windows::Win32::Foundation::WAIT_FAILED {
+                tracing::warn!(
+                    target = "sidebar.platform.ohm_supervisor",
+                    "WaitForSingleObject failed in is_child_alive — treating child as not-alive"
+                );
+                return false;
+            }
             result == windows::Win32::Foundation::WAIT_EVENT(0x0000_0102)
         }
         #[cfg(not(windows))]
@@ -1113,7 +1126,6 @@ mod tests {
     use super::*;
     use mockall::mock;
     use std::fs;
-    use std::io::Write;
     use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
 
@@ -1891,14 +1903,5 @@ mod tests {
     fn job_object_reaps_on_drop() {
         // Placeholder — real verification is via the integration smoke +
         // post-test tasklist inspection confirming no orphan LHM.
-    }
-
-    // ----- write helper used nowhere but keeps clippy's dead_code quiet
-    // about the `Write` import if a future refactor drops fs::write. -----
-    #[allow(dead_code)]
-    fn _write_helper(p: &Path, b: &str) -> std::io::Result<()> {
-        let mut f = fs::File::create(p)?;
-        f.write_all(b.as_bytes())?;
-        Ok(())
     }
 }

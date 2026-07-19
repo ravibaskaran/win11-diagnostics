@@ -277,10 +277,13 @@ pub fn archive_cycle(conn: &Connection, cycle_end: &str, archived_at: &str) -> R
     // so a SQLITE_BUSY on the INSERT...SELECT or the DELETE surfaces here
     // and is retried. We use `unchecked_transaction` (takes &self) so the
     // repo's public signature stays `&Connection` like schema::init.
-    let tx = conn
-        .unchecked_transaction()
-        .map_err(|e| Error::Sqlite(e.to_string()))?;
-
+    // Cert v1.0 (backend audit C1) — the entire transaction (begin + body +
+    // commit) lives inside the busy-retry loop. The prior code committed
+    // OUTSIDE the loop, so a SQLITE_BUSY on COMMIT (which surfaces during the
+    // WAL checkpoint handshake when concurrent readers are active) was not
+    // retried — causing silent cycle-rollover data corruption once per month.
+    // rusqlite's failed-commit transaction is auto-rolled-back, so each
+    // attempt re-begins a fresh transaction from a clean state.
     let body = |t: &rusqlite::Transaction<'_>| -> rusqlite::Result<()> {
         // INSERT ... SELECT moves every current_cycle row into history,
         // stamping cycle_end + archived_at. No WHERE clause → all adapters
@@ -302,18 +305,38 @@ pub fn archive_cycle(conn: &Connection, cycle_end: &str, archived_at: &str) -> R
         Ok(())
     };
 
-    // Manual busy-retry around the body. We can't use with_busy_retry
-    // verbatim because the closure signature is &Transaction, not
-    // &Connection, but the retry policy is identical: 5 attempts, the
-    // documented backoff, then surface as Error::Sqlite.
     let mut last_err: Option<rusqlite::Error> = None;
     for attempt in 0..BUSY_RETRY_ATTEMPTS {
+        // Fresh transaction per attempt (a failed commit rolls the prior one
+        // back, so we must re-begin).
+        let tx = match conn.unchecked_transaction() {
+            Ok(tx) => tx,
+            Err(e) => return Err(Error::Sqlite(e.to_string())),
+        };
         match body(&tx) {
-            Ok(()) => {
-                // Commit outside the retry loop — a BUSY on commit is rare
-                // (the write lock is held) but possible; surface as Err.
-                return tx.commit().map_err(|e| Error::Sqlite(e.to_string()));
-            }
+            Ok(()) => match tx.commit() {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    let is_busy = matches!(
+                        e,
+                        rusqlite::Error::SqliteFailure(
+                            rusqlite::ffi::Error {
+                                code: rusqlite::ffi::ErrorCode::DatabaseBusy
+                                    | rusqlite::ffi::ErrorCode::DatabaseLocked,
+                                ..
+                            },
+                            _,
+                        )
+                    );
+                    if is_busy && attempt + 1 < BUSY_RETRY_ATTEMPTS {
+                        let idx = usize::from(attempt).min(BACKOFF_MS.len() - 1);
+                        thread::sleep(Duration::from_millis(BACKOFF_MS[idx]));
+                        last_err = Some(e);
+                        continue;
+                    }
+                    return Err(Error::Sqlite(e.to_string()));
+                }
+            },
             Err(e) => {
                 let is_busy = matches!(
                     e,
@@ -327,10 +350,10 @@ pub fn archive_cycle(conn: &Connection, cycle_end: &str, archived_at: &str) -> R
                     )
                 );
                 if is_busy && attempt + 1 < BUSY_RETRY_ATTEMPTS {
-                    // Sleep per the backoff schedule (capped at array len).
                     let idx = usize::from(attempt).min(BACKOFF_MS.len() - 1);
                     thread::sleep(Duration::from_millis(BACKOFF_MS[idx]));
                     last_err = Some(e);
+                    // tx drops here → ROLLBACK; loop re-begins.
                     continue;
                 }
                 // Non-busy error OR busy-exhausted → surface + return. The

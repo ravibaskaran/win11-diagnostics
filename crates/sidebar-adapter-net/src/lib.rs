@@ -145,7 +145,8 @@ fn readings_from_snapshot(s: &backend::NetSnapshot) -> Vec<Reading> {
     out
 }
 
-// Re-export key types for downstream consumers.
+// Re-export key snapshot types so the crate's tests (and any future consumer)
+// can name them without reaching into `backend::` directly.
 pub use backend::{NetSnapshot, NicSnapshot, RealNetBackend};
 
 #[cfg(test)]

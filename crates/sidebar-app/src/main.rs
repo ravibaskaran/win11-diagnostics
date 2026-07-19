@@ -48,7 +48,7 @@ use sidebar_app::event_channel::EventChannel;
 use sidebar_app::gui::first_run;
 use sidebar_app::gui::{AppState, SidebarApp, SidebarView};
 use sidebar_app::poller::Poller;
-use sidebar_app::provider_registry::build_registry;
+use sidebar_app::provider_registry::build_registry_with_port;
 use sidebar_app::shutdown::{
     run_shutdown_with_signal, spawn_signal_handler_with_signal, ShutdownReport, ShutdownSignal,
     ShutdownTargets,
@@ -97,7 +97,9 @@ fn main() -> eframe::Result {
     // be after init_tracing (so the exit is logged) but before the bench
     // check + config load + eframe launch (so no resources are wasted on
     // the doomed second instance). Cited: G28.
-    sidebar_platform::single_instance::claim_or_exit();
+    sidebar_platform::single_instance::claim_or_exit(
+        std::env::args().any(|arg| arg == "--wait-for-instance"),
+    );
     if std::env::args().any(|arg| arg == "--bench-cold-start") {
         run_cold_start_bench();
         return Ok(());
@@ -309,6 +311,7 @@ fn main() -> eframe::Result {
         &config_dir,
         &config.bandwidth.cycle_start_day,
         &accountant_flush_flag,
+        config.ohm.http_port,
     );
     // Story 12.8 Gap 1 + Gap 3 — attach the supervisor thread to the
     // background-task handles so run_graceful_shutdown joins it.
@@ -405,7 +408,7 @@ fn main() -> eframe::Result {
     };
 
     tracing::info!("sidebar binary launching — entering eframe GUI loop");
-    let eframe_result = app.run("sidebar");
+    let eframe_result = app.run("Sidebar");
 
     run_graceful_shutdown(
         &runtime,
@@ -516,6 +519,7 @@ fn spawn_background_tasks(
     config_dir: &Path,
     cycle_start_day: &sidebar_domain::config::CycleStartDaySerde,
     accountant_flush_flag: &Arc<AtomicBool>,
+    ohm_port: u16,
 ) -> BackgroundTaskHandles {
     if wizard_active {
         // No poller, no accountant — wizard gate (G24). Mark flush done so the
@@ -536,6 +540,7 @@ fn spawn_background_tasks(
         poll_interval_seconds,
         readings_tx,
         event_rx_for_poller,
+        ohm_port,
     );
     let (accountant, bandwidth_view_rx) = spawn_accountant(
         readings_rx_for_accountant,
@@ -560,12 +565,13 @@ fn spawn_poller(
     poll_interval_seconds: u32,
     readings_tx: broadcast::Sender<Vec<Reading>>,
     event_rx: broadcast::Receiver<sidebar_domain::event::Event>,
+    ohm_port: u16,
 ) -> tokio::task::JoinHandle<()> {
     let active_tier = match tier {
         ProviderTier::Full => ActiveTier::Full,
         ProviderTier::Basic | ProviderTier::Both => ActiveTier::Basic,
     };
-    let providers = build_registry(active_tier);
+    let providers = build_registry_with_port(active_tier, ohm_port);
     tracing::info!(
         provider_count = providers.len(),
         active_tier = ?active_tier,
@@ -575,12 +581,13 @@ fn spawn_poller(
     let poller = Poller::new(providers, interval, readings_tx);
     let cancel_for_poller = cancel.clone();
     runtime.spawn(async move {
-        let registry_builder = |tier: ProviderTier| {
+        let port = ohm_port;
+        let registry_builder = move |tier: ProviderTier| {
             let active_tier = match tier {
                 ProviderTier::Full => ActiveTier::Full,
                 ProviderTier::Basic | ProviderTier::Both => ActiveTier::Basic,
             };
-            Ok(build_registry(active_tier))
+            Ok(build_registry_with_port(active_tier, port))
         };
         match poller
             .run_with_events(cancel_for_poller, event_rx, registry_builder)
@@ -1043,13 +1050,21 @@ fn load_config_with_recovery(
             tracing::warn!(error = %e, path = %path.display(), "config malformed — backing up");
             let backup = backup_corrupt_file_returning_path(path);
             if let Ok(mut guard) = recovery_msg.lock() {
-                *guard = Some(format!(
-                    "Your settings file was unreadable and we reset to defaults. {}",
-                    match backup {
-                        Some(p) => format!("Old file backed up at: {}", p.display()),
-                        None => "Backup failed.".to_string(),
-                    }
-                ));
+                // Cert v1.0 — friendly, non-technical wording. The absolute
+                // backup path is kept out of the user-facing banner (it
+                // leaks the username + a confusing Windows path); it remains
+                // in the tracing log for support/debugging. The user just
+                // needs to know their settings were reset + a backup exists.
+                *guard = Some(match backup {
+                    Some(_) => "Your settings were reset to defaults because \
+                        the saved file was unreadable. A backup of your \
+                        previous settings was saved next to it."
+                        .to_string(),
+                    None => "Your settings were reset to defaults because \
+                        the saved file was unreadable, and the backup could \
+                        not be written."
+                        .to_string(),
+                });
             }
             Config::default()
         }
@@ -1270,7 +1285,7 @@ mod tests {
         let path = dir.path().join("config.toml");
         let toml_str = Config::default().to_toml_string().expect("serialize");
 
-        sidebar_app::gui::atomic_write_config(&path, &toml_str);
+        let _ = sidebar_app::gui::atomic_write_config(&path, &toml_str);
 
         assert!(path.exists(), "target config MUST exist after persist");
         assert!(
@@ -1294,8 +1309,8 @@ mod tests {
         .to_toml_string()
         .expect("serialize");
 
-        sidebar_app::gui::atomic_write_config(&path, &first);
-        sidebar_app::gui::atomic_write_config(&path, &second);
+        let _ = sidebar_app::gui::atomic_write_config(&path, &first);
+        let _ = sidebar_app::gui::atomic_write_config(&path, &second);
 
         assert!(path.exists());
         assert!(

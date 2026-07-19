@@ -29,6 +29,9 @@ windows = { workspace = true, features = [
     "Win32_Storage_FileSystem",        # CreateFileW + named pipe file handles (Story 16.1)
     "Win32_System_Pipes",              # CreateNamedPipeW (named pipe server, Story 16.1)
     "Win32_System_IO",                 # OVERLAPPED type required by WriteFile (Story 16.1)
+    "Win32_NetworkManagement_IpHelper", # GetAdaptersAddresses for per-NIC IPv4 (v1.0 parity)
+    "Win32_NetworkManagement_Ndis",    # NET_LUID_LH + IF_OPER_STATUS + IfOperStatusUp (v1.0 parity)
+    "Win32_Networking_WinSock",        # SOCKADDR_IN + AF_INET + IN_ADDR for IPv4 parsing (v1.0 parity)
 ] }                                    # MIT OR Apache-2.0 — Win32 FFI (DWM peek/cloak, AppBar, SetWindowPos, DPI v2, OhmSupervisor, Windows Service)
 tracing = { workspace = true }         # MIT — debug!/warn! for platform diagnostics
 

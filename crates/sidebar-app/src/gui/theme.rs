@@ -135,7 +135,7 @@ pub fn parse_accent(s: &str) -> Color32 {
 /// Convert a 6-char hex string (`RRGGBB`) to an opaque [`Color32`]. Returns
 /// `None` if any digit isn't a valid hex byte (single validation path for
 /// both the 3-digit-doubled and 6-digit forms).
-fn hex_to_color(hex: &str) -> Option<Color32> {
+pub(crate) fn hex_to_color(hex: &str) -> Option<Color32> {
     if hex.len() != 6 {
         return None;
     }

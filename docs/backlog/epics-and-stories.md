@@ -2070,9 +2070,150 @@ A story is `merged` iff ALL of:
 
 ---
 
-**END OF EPICS & STORIES (AUDIT PASS 4 + current-state parity extension + Epic 13-17 productization).** 18
-Epics, 96 Stories (60 current delivery rows including INT + 8 Epic 12
+## EPIC 18 — v1.0 Feature Parity with SidebarDiagnostics (Productization Pass, 2026-07-17)
+
+- **Sponsor:** v1.0 release certification.
+- **Goal:** Close the feature-parity gaps identified in
+  `docs/v1-feature-parity-gap-analysis.md` so sidebar matches the reference
+  [SidebarDiagnostics](https://github.com/ArcadeRenegade/SidebarDiagnostics)
+  product for non-technical users.
+- **Technical Context:** The reference C# app sets the user-facing bar for a
+  Windows hardware sidebar. sidebar already exceeds it in several areas
+  (battery, top-N processes, monthly bandwidth, capture-cloak, two-tier
+  Basic/Full). This epic closes the gaps where the reference leads.
+- **Dependency convention:** Epic 18 is post-Epic 17. All stories are
+  independent (disjoint config fields / GUI sections / adapter extensions).
+
+### Story 18.1 — Appearance customization (width, font size, UI scale, alert blink)
+- **Status:** merged (2026-07-17).
+- **What:** `DockConfig.width_px` (100–300), `DisplayConfig.font_size` (10–22
+  via egui zoom), `DisplayConfig.ui_scale_percent` (50–300 composing with
+  font zoom), `DisplayConfig.alert_blink` (~1Hz Critical color toggle for
+  accessibility). Settings panel "Appearance" section.
+- **DoD:** sliders persist to config.toml; zoom + width apply live; blink
+  fires on Critical temps. Regression: `render_sidebar_critical_temp_*` test
+  passes with blink path.
+
+### Story 18.2 — Custom background + font colors
+- **Status:** merged (2026-07-17).
+- **What:** `DisplayConfig.bg_color` (#RRGGBB), `DisplayConfig.bg_opacity_percent`
+  (10–100), `DisplayConfig.font_color` (#RRGGBB). Empty = theme default.
+  Applied via `ctx.global_style_mut`. Settings panel color text edits with
+  `#RRGGBB` hints.
+- **DoD:** colors apply live; malformed hex gracefully ignored (parse_hex_color
+  returns None → theme default retained).
+
+### Story 18.3 — Position offsets (X/Y) + Run at Windows startup
+- **Status:** merged (2026-07-17).
+- **What:** `DockConfig.offset_x_px` + `offset_y_px` (-2000..2000) applied in
+  `send_dock_position`. `DisplayConfig.run_at_startup` toggles HKCU Run key
+  via new `sidebar-platform::startup` module (no admin required). Settings
+  "Position" + "Startup" sections.
+- **DoD:** offsets shift the docked window; startup checkbox writes/deletes
+  the Run key idempotently; disable-when-absent is a no-op success.
+
+### Story 18.4 — Window behavior (initially hidden, pause-when-hidden)
+- **Status:** merged (2026-07-17).
+- **What:** `DisplayConfig.initially_hidden` (window starts invisible, shown
+  via tray), `DisplayConfig.pause_when_hidden` (skip full render while hidden;
+  drain broadcasts only). `SidebarApp::hidden` field + `drain_broadcast_only`
+  helper. Settings "Window" section.
+- **DoD:** hidden window renders nothing but keeps view current; un-hide
+  restores instantly with fresh data.
+
+### Story 18.5 — Drive-used + bandwidth alert thresholds
+- **Status:** merged (2026-07-17).
+- **What:** `ThresholdConfig.drive_used_warn` (%), `bandwidth_in_alert_mbps`,
+  `bandwidth_out_alert_mbps`. Bandwidth alerts wired into
+  `alert_indicator::classify` for `NetRxBytes`/`NetTxBytes` (Mbps→bytes/sec
+  conversion). Settings "Temperature alerts" section extended with drive +
+  network sliders.
+- **DoD:** exceeding a threshold flips the metric to Warning (blink if
+  enabled); 0 = disabled (no alert).
+
+### Story 18.6 — LHM sensor coverage (CPU bus clock, RAM clock + voltage) + Per-NIC IPv4
+- **Status:** merged (2026-07-17).
+- **What:** New `MetricKind::CpuBusClock`, `RamClock`, `RamVoltage`.
+  `HardwareKind::Ram` + `SensorKind::Clock` in the OHM adapter. LHM MHz→Hz
+  conversion at emission for unit consistency with sysinfo. `metric_row`
+  format dispatch extended; `kind_label` updated. Per-NIC IPv4 address via
+  new `sidebar-platform::net_info::ipv4_for_luid` (GetAdaptersAddresses FFI)
+  surfaced in `bandwidth_panel::nic_row` next to each adapter's friendly name.
+- **DoD:** Full-mode sidebar shows CPU BCLK + RAM clock + RAM voltage from
+  LHM `/data.json`; values format as GHz/Hz + V. Bandwidth panel shows each
+  NIC's IPv4 (e.g. "Wi-Fi (192.168.1.5)  RX ..."); the FFI struct walk is
+  verified safe at runtime by `ipv4_for_luid_does_not_panic_on_real_machine`.
+
+### Story 18.7 — Ponytail pass 2 (complexity reduction)
+- **Status:** merged (2026-07-17).
+- **What:** Deleted dead code: `crate_present()` smoke markers ×6 crates,
+  `sidebar-domain::aggregate` + `smooth` modules (zero production callers),
+  unused `pub use backend::...` re-export in `sidebar-adapter-battery`.
+  Preserved the 4 adapter re-exports that ARE used by tests.
+- **DoD:** workspace compiles; 617 tests pass (down from 645 — removed
+  crate_present + aggregate/smooth tests); clippy clean.
+
+### Story 18.9 — Extended global hotkeys (v1.0 parity with reference's 8)
+- **Status:** merged (2026-07-17).
+- **What:** 9 global hotkeys (click-through + 8 reference hotkeys: toggle
+  visibility, show, hide, cycle dock edge, cycle screen, reload settings,
+  toggle reserve space, close app). `HotkeyConfig` extended with 8 fields;
+  `HotkeyKind` enum + `HOTKEY_ID_BASE` give each a stable Win32 id; the
+  dedicated hotkey thread registers all configured combos + dispatches the
+  firing `HotkeyKind` back to the GUI via the channel. Settings panel
+  "Hotkeys" section with 9 text inputs (`Ctrl+Shift+S` format, blank = off).
+  Defaults: only click-through ships bound (matching reference's "all
+  default unbound"); the user opts into the rest via Settings.
+- **DoD:** hotkeys register on the dedicated thread (per-spec success/failure
+  logged); the GUI poll drains + dispatches each kind to its action
+  (toggle/show/hide flip `initially_hidden`; cycle_edge rotates L→R→T→B;
+  cycle_screen rotates enumerated monitors; reload re-reads config.toml;
+  close sends `Event::Shutdown`); regression test
+  `hotkey_kind_ids_are_distinct_and_config_strings_cover_all_variants`
+  locks the id + config-string wiring.
+
+### Story 18.10 — Per-metric line-graph popup (v1.0 parity with reference 3.3.0)
+- **Status:** merged (2026-07-17).
+- **What:** Click the 📈 button next to any metric row → an `egui::Window`
+  opens plotting that metric's rolling-window history (MetricHistory) as a
+  larger line chart, with current/min/max + sample-count labels. Resizable;
+  X button or clicking 📈 again closes. Backed by new
+  `MetricHistory::snapshot_for_kind(kind_name)` + `SidebarView.graph_popup_kind`.
+- **DoD:** popup opens on row click, renders the matching metric's history
+  (or "Waiting for samples…" when empty), closes cleanly; regression tests
+  `snapshot_for_kind_returns_matching_window_values` +
+  `snapshot_for_kind_on_empty_history_is_empty` lock the domain logic.
+
+### Story 18.11 — Localization (v1.0 parity i18n infrastructure)
+- **Status:** merged (2026-07-17).
+- **What:** `sidebar-app::i18n` module — `Label` enum (39 keys), `Language`
+  enum (English + Spanish shipped as proof-of-concept), `t(lang, label)`
+  lookup with English fallback, `Language::from_code`/`code`/`display_name`/
+  `all`. `Config.display.language` field (`"en"` default). Settings panel
+  "Language" ComboBox picker; all section headings wired through `t()`.
+  Adding a language post-v1 = one `Language` variant + one exhaustive match
+  arm per `Label` (compiler enforces coverage).
+- **DoD:** 5 regression tests pass — English table coverage, Spanish table
+  full coverage (no English fallback), `from_code` round-trip + aliases,
+  endonym display names, sample translation diff. The reference ships 48
+  languages; sidebar ships 2 + the extensible system so the rest are
+  pure-data contributions.
+
+### Story 18.8 — Deferred parity items (documented for v1.1)
+- **Status:** deferred (2026-07-17).
+- **What:** AllCoreClocks toggle, multi-GPU enable/rename, AppBar explicit
+  toggle, text align, auto background color (Windows accent), auto-update
+  check, external/public IP. (Localization moved to Story 18.11.)
+- **DoD:** each documented in `docs/v1-feature-parity-gap-analysis.md` with
+  a DEFER-v1.1 justification. No broken code shipped.
+
+---
+
+**END OF EPICS & STORIES (AUDIT PASS 4 + current-state parity extension + Epic 13-18 productization).** 19
+Epics, 104 Stories (60 current delivery rows including INT + 8 Epic 12
 parity/closure + 5 Epic 13 hardening + 5 Epic 14 silent-failure + 3 Epic 15
+LHM-host + 6 Epic 16 service/installer + 7 Epic 17 UX-polish + 8 Epic 18
+v1.0-parity). Companion:
 LHM-host + 6 Epic 16 service/installer + 7 Epic 17 UX-polish). Companion:
 `README.md`, `guardrails.md` (G1–G29), `nfr-thresholds.md` (T-1–T-48),
 `tdd-fixtures.md` (F1–F15), `regression-harness.md`, `PROGRESS.md`,

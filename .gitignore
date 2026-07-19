@@ -2,6 +2,9 @@
 /target/
 **/*.rs.bk
 
+# Installer outputs (Inno Setup compiler output at repo root)
+sidebar-setup.exe
+
 # IDE
 .vscode/
 .idea/
@@ -25,6 +28,7 @@ criterion/
 /tools/sqlite/*.exe
 /resources/*.exe
 /resources/*.dll
+/resources/**/*.exe
 /resources/*.pdb
 /resources/*.xml
 /resources/*.config

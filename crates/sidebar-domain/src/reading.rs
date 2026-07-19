@@ -45,8 +45,10 @@ pub enum MetricKind {
     CpuFrequency,
     /// CPU package temperature (Full mode via LHM).
     CpuTemperature,
-    /// CPU package power draw (Full mode via LHM).
+    /// CPU package power draw (Full mode).
     CpuPower,
+    /// CPU bus/base clock (BCLK) — Full mode via LHM (v1.0 parity).
+    CpuBusClock,
     /// Fan speed (RPM) — CPU fan or chassis fans (Full mode).
     FanSpeed,
     /// Voltage rail (VCORE, +3.3V, +5V, +12V, etc. — Full mode).
@@ -71,6 +73,10 @@ pub enum MetricKind {
     MemoryUsed,
     /// RAM total (bytes).
     MemoryTotal,
+    /// RAM clock frequency (MHz) — Full mode via LHM (v1.0 parity).
+    RamClock,
+    /// RAM voltage — Full mode via LHM motherboard sensor (v1.0 parity).
+    RamVoltage,
 
     // --- Storage ---
     /// Per-drive used capacity (bytes).
@@ -490,6 +496,7 @@ mod tests {
                 MetricKind::CpuFrequency => "cpu.frequency",
                 MetricKind::CpuTemperature => "cpu.temperature",
                 MetricKind::CpuPower => "cpu.power",
+                MetricKind::CpuBusClock => "cpu.bus_clock",
                 MetricKind::FanSpeed => "fan.speed",
                 MetricKind::Voltage => "voltage",
                 MetricKind::GpuUtilization => "gpu.utilization",
@@ -500,6 +507,8 @@ mod tests {
                 MetricKind::GpuFrequency => "gpu.frequency",
                 MetricKind::MemoryUsed => "memory.used",
                 MetricKind::MemoryTotal => "memory.total",
+                MetricKind::RamClock => "memory.clock",
+                MetricKind::RamVoltage => "memory.voltage",
                 MetricKind::DiskUsed => "disk.used",
                 MetricKind::DiskTotal => "disk.total",
                 MetricKind::DiskReadBytesPerSec => "disk.read_bytes_per_sec",

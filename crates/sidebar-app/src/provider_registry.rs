@@ -12,7 +12,7 @@
 //! machine-dependent — sysinfo's `read_all` on a CI runner vs. the dev laptop
 //! yields different reading sets):
 //!
-//! - [`build_registry`] — production entrypoint. Constructs every adapter,
+//! - [`build_registry_with_port`] — production entrypoint. Constructs every adapter,
 //!   then delegates to [`filter_providers`] for tier filtering.
 //! - [`filter_providers`] — pure helper that walks a `Vec<Arc<dyn
 //!   SensorProvider>>`, collects each adapter's `&SensorDescriptor`, applies
@@ -23,9 +23,9 @@
 //!
 //! ## Hot tier switch (rebuild)
 //!
-//! `build_registry` is idempotent: calling it twice with the same `active_tier`
+//! `build_registry_with_port` is idempotent: calling it twice with the same `active_tier`
 //! produces an equivalent registry (same adapter set in the same order). A hot
-//! tier switch Basic → Full mid-session simply calls `build_registry(Full)` —
+//! tier switch Basic → Full mid-session simply calls `build_registry_with_port(Full, port)` —
 //! the Full-only `OhmAdapter` is now admitted and appended to the vec. Story
 //! 7.3 wires this into the `Event::TierChanged` flow; this module only owns
 //! the build.
@@ -70,7 +70,10 @@ use sidebar_sensor::provider::SensorProvider;
 ///   `tracing::warn!`. No adapter in v1 ships with those cost classes today,
 ///   but the filter is the second line of defense (Story 2.3 is the first).
 #[must_use]
-pub fn build_registry(active_tier: ActiveTier) -> Vec<Arc<dyn SensorProvider>> {
+pub fn build_registry_with_port(
+    active_tier: ActiveTier,
+    ohm_port: u16,
+) -> Vec<Arc<dyn SensorProvider>> {
     // Order matters: it's the poller's iteration order. Group Basic adapters
     // first (they always run in both tiers), then Both (always runs), then
     // Full-only (ohm). The classifier decides which survive; this ordering
@@ -81,7 +84,7 @@ pub fn build_registry(active_tier: ActiveTier) -> Vec<Arc<dyn SensorProvider>> {
         Arc::new(PdhAdapter::new()),
         Arc::new(NvmlAdapter::new()),
         Arc::new(NetAdapter::new()),
-        Arc::new(OhmAdapter::new()),
+        Arc::new(OhmAdapter::with_port(ohm_port)),
     ];
     filter_providers(providers, active_tier)
 }
@@ -94,7 +97,7 @@ pub fn build_registry(active_tier: ActiveTier) -> Vec<Arc<dyn SensorProvider>> {
 ///
 /// This is the function the TDD contract exercises: tests construct stub
 /// providers with controlled descriptors and assert the filtering outcome.
-/// Keeping it separate from [`build_registry`] means the tier logic is
+/// Keeping it separate from [`build_registry_with_port`] means the tier logic is
 /// testable without constructing real adapters (which would make tests
 /// machine-dependent).
 fn filter_providers(
@@ -374,7 +377,7 @@ mod tests {
     /// `Arc<dyn SensorProvider>` is statically `Send + Sync`).
     #[test]
     fn production_build_registry_constructs_without_panic_basic() {
-        let registry = build_registry(ActiveTier::Basic);
+        let registry = build_registry_with_port(ActiveTier::Basic, 17127);
         // Basic tier excludes ohm (Full). At minimum, sysinfo + battery + pdh
         // + net + nvml are all Basic-or-Both → at least 4 survive (nvml is
         // Basic; even if all returned empty, the descriptor still passes).
@@ -393,7 +396,7 @@ mod tests {
     /// Same smoke for Full mode — ohm IS admitted.
     #[test]
     fn production_build_registry_constructs_without_panic_full() {
-        let registry = build_registry(ActiveTier::Full);
+        let registry = build_registry_with_port(ActiveTier::Full, 17127);
         // Full mode admits every shipped adapter.
         let names: Vec<&str> = registry.iter().map(|p| p.descriptor().name).collect();
         assert!(names.contains(&"ohm"), "ohm MUST be admitted in Full mode");

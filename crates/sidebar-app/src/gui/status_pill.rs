@@ -17,11 +17,11 @@ use sidebar_sensor::descriptor::ProviderTier;
 
 /// Tooltip shown when the pill is in Basic mode (PRD §5.3, verbatim).
 pub const TOOLTIP_BASIC: &str = "Basic mode. CPU temperature, fan speeds, \
-     voltages, and non-NVIDIA GPU sensors require OpenHardwareMonitor with \
+     voltages, and non-NVIDIA GPU sensors require LibreHardwareMonitor with \
      administrator privileges. Click to learn how to enable Full mode.";
 
 /// Tooltip shown when the pill is in Full mode (PRD §5.3, verbatim).
-pub const TOOLTIP_FULL: &str = "Full mode. OpenHardwareMonitor is running. \
+pub const TOOLTIP_FULL: &str = "Full mode. LibreHardwareMonitor is running. \
      All sensors active.";
 
 /// Muted gray fill for the BASIC pill (PRD §5.3 — "muted gray"). A neutral
@@ -50,20 +50,46 @@ pub fn render(ui: &mut Ui, tier: ProviderTier, on_click_launch: &dyn Fn()) {
     let fill = pill_fill(tier);
     let tooltip = pill_tooltip(tier);
 
-    let button = egui::Button::new(label).fill(fill).corner_radius(8);
+    // v1.0 UI/UX (audit MJ-Z4) — debounce: store the last-click instant
+    // in egui memory so repeated clicks within 5s don't fire multiple
+    // launch_elevated calls (which queue multiple UAC prompts).
+    let debounce_id = egui::Id::new("status_pill_last_click");
+    let now = ui.ctx().input(|i| i.time);
+    let last_click: f64 = ui.ctx().data(|d| d.get_temp(debounce_id)).unwrap_or(-999.0);
+    let cooldown = 1.5; // seconds — blocks UAC double-queue but doesn't stall post-success
+
+    let button_label = if now - last_click < cooldown && click_triggers_launch(tier) {
+        "LAUNCHING…"
+    } else {
+        label
+    };
+    let button_fill = if now - last_click < cooldown && click_triggers_launch(tier) {
+        egui::Color32::from_rgb(180, 140, 0) // muted amber while launching
+    } else {
+        fill
+    };
+
+    let button = egui::Button::new(button_label)
+        .fill(button_fill)
+        .corner_radius(8);
     let response = ui.add(button);
     let response = response.on_hover_text(tooltip);
 
     // HITL (PRD §5.4): only an explicit user click triggers launch_elevated.
     // Full tier click is a no-op (supervisor already running). Both is a
     // provider declaration, not a runtime mode — treat as Basic-clickable.
-    if response.clicked() && click_triggers_launch(tier) {
+    // v1.0: debounce so clicks within the cooldown window are ignored.
+    if response.clicked() && click_triggers_launch(tier) && now - last_click >= cooldown {
+        ui.ctx().data_mut(|d| d.insert_temp(debounce_id, now));
         tracing::info!(
             target = "sidebar.app.status_pill",
             tier = ?tier,
             "user clicked status pill — invoking launch_elevated (HITL explicit action)"
         );
         on_click_launch();
+        // Request repaint so the pill returns to normal after cooldown.
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(1500));
     }
 }
 
@@ -213,7 +239,7 @@ mod tests {
         // exposes the tooltip after a hover (tooltips appear as label nodes
         // via egui's on_hover_text → accesskit description).
         let expected = "Basic mode. CPU temperature, fan speeds, voltages, \
-             and non-NVIDIA GPU sensors require OpenHardwareMonitor with \
+             and non-NVIDIA GPU sensors require LibreHardwareMonitor with \
              administrator privileges. Click to learn how to enable Full mode.";
         assert_eq!(TOOLTIP_BASIC, expected);
 
@@ -235,7 +261,7 @@ mod tests {
 
     #[test]
     fn full_tooltip_matches_prd_verbatim() {
-        let expected = "Full mode. OpenHardwareMonitor is running. \
+        let expected = "Full mode. LibreHardwareMonitor is running. \
              All sensors active.";
         assert_eq!(TOOLTIP_FULL, expected);
 

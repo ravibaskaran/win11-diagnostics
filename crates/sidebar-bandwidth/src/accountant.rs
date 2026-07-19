@@ -433,12 +433,17 @@ impl BandwidthAccountant {
             self.flush();
             let archived_at = iso_ts(self.clock.now());
             let cycle_end_str = cycle_end_date.to_string();
+            // ponytail: gate the reset on archive success — if archive fails,
+            // the old cycle's rows survive in current_cycle but the next
+            // UPSERT would overwrite them with zero. Deferring the advance
+            // retries on the next tick.
             if let Err(e) = sidebar_persistence::bandwidth_repo::archive_cycle(
                 &self.conn,
                 &cycle_end_str,
                 &archived_at,
             ) {
-                tracing::error!(error = %e, "rollover: archive_cycle failed (G15 — continuing)");
+                tracing::error!(error = %e, "rollover: archive_cycle failed — deferring cycle advance");
+                return;
             }
             if let Err(e) = sidebar_persistence::bandwidth_repo::prune_history(
                 &self.conn,
@@ -446,11 +451,8 @@ impl BandwidthAccountant {
             ) {
                 tracing::error!(error = %e, "rollover: prune_history failed (G15 — continuing)");
             }
-            // New cycle starts the day after cycle_end.
             self.cycle_start = next_cycle_start(cycle_end_date);
             self.active_cycle_start_day = self.config.cycle_start_day;
-            // Reset the in-memory accumulator so per-LUID prev-counter
-            // baselines re-establish (first tick of the new cycle = delta 0).
             self.accumulator = MonthlyAccumulator::new();
             tracing::info!(
                 new_cycle_start = %self.cycle_start,

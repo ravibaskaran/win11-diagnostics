@@ -34,7 +34,7 @@
 //! - guardrails.md HITL (no-retroactive-resplit G11)
 
 use eframe::egui::Ui;
-use sidebar_domain::config::{Config, CycleStartDaySerde, DisplayConfig, DockConfig, ThemeConfig};
+use sidebar_domain::config::{Config, CycleStartDaySerde, DockConfig, ThemeConfig};
 use sidebar_domain::format::TempUnit;
 
 /// The minimum cycle-start day (T-26 — Day must be in `[1, 28]`).
@@ -93,6 +93,12 @@ pub const THEME_TOOLTIP: &str = "Dark or Light appearance. 'System' follows your
 pub const METRICS_TOOLTIP: &str = "Choose which readings appear and in what \
     order. Drag to reorder; uncheck to hide.";
 
+/// v1.0 ponytail — resolve a localized label + append a colon. Shrinks the
+/// 8 repeated `format!("{}:", crate::i18n::t(lang, ...))` patterns to 1 call.
+fn tcolon(lang: crate::i18n::Language, label: crate::i18n::Label) -> String {
+    format!("{}:", crate::i18n::t(lang, label))
+}
+
 /// Render the settings panel into `ui`, editing `config` in place. The host
 /// passes `on_change: &dyn Fn()` which is invoked whenever the user changes
 /// any field — the host is responsible for persisting `config.toml` (debounced
@@ -110,10 +116,16 @@ pub const METRICS_TOOLTIP: &str = "Choose which readings appear and in what \
 )]
 pub fn render(ui: &mut Ui, config: &mut Config, on_change: &dyn Fn()) {
     let mut changed = false;
+    // v1.0 parity — resolve the user's UI language once for all labels in
+    // this panel. Unknown codes fall back to English.
+    let lang = crate::i18n::Language::from_code(&config.display.language);
 
     // ---- Billing cycle start day (T-26: Day in [1,28] OR LastDayOfMonth) ----
-    ui.label("Billing cycle start day")
-        .on_hover_text(BILLING_CYCLE_TOOLTIP);
+    ui.label(crate::i18n::t(
+        lang,
+        crate::i18n::Label::BillingCycleStartDay,
+    ))
+    .on_hover_text(BILLING_CYCLE_TOOLTIP);
     ui.horizontal(|row| {
         // The slider operates on a local day_value; if "Last day" is checked
         // we leave the slider at MAX_CYCLE_DAY and disable it.
@@ -125,8 +137,10 @@ pub fn render(ui: &mut Ui, config: &mut Config, on_change: &dyn Fn()) {
             CycleStartDaySerde::Day(d) => *d,
             CycleStartDaySerde::LastDayOfMonth => MAX_CYCLE_DAY,
         };
-        let mut slider =
-            row.add(egui::Slider::new(&mut day_value, MIN_CYCLE_DAY..=MAX_CYCLE_DAY).text("day"));
+        let mut slider = row.add_enabled(
+            !is_last_day,
+            egui::Slider::new(&mut day_value, MIN_CYCLE_DAY..=MAX_CYCLE_DAY).text("day"),
+        );
         if is_last_day {
             slider = slider.on_disabled_hover_text("Last day of month is active");
         }
@@ -158,7 +172,7 @@ pub fn render(ui: &mut Ui, config: &mut Config, on_change: &dyn Fn()) {
     ui.label(egui::RichText::new(NO_RESPLIT_TOOLTIP).small().weak());
 
     // ---- Temperature unit (T-29: C/F — only C/F ship in v1) ----
-    ui.label("Temperature unit")
+    ui.label(crate::i18n::t(lang, crate::i18n::Label::TemperatureUnit))
         .on_hover_text(TEMP_UNIT_TOOLTIP);
     ui.horizontal(|row| {
         let mut unit = config.display.temp_unit;
@@ -191,7 +205,8 @@ pub fn render(ui: &mut Ui, config: &mut Config, on_change: &dyn Fn()) {
     });
 
     // ---- Size units (Story 13.4: renamed from 'Byte base') (T-28) ----
-    ui.label("Size units").on_hover_text(SIZE_UNITS_TOOLTIP);
+    ui.label(crate::i18n::t(lang, crate::i18n::Label::SizeUnits))
+        .on_hover_text(SIZE_UNITS_TOOLTIP);
     ui.horizontal(|row| {
         let mut decimal = config.display.decimal_base;
         let r1 = row.radio_value(&mut decimal, true, "Decimal (GB)");
@@ -203,7 +218,7 @@ pub fn render(ui: &mut Ui, config: &mut Config, on_change: &dyn Fn()) {
     });
 
     // ---- Refresh rate (Story 13.4: renamed from 'Poll interval') (T-3: clamp to [1, 60]) ----
-    ui.label("Refresh rate (seconds)")
+    ui.label(crate::i18n::t(lang, crate::i18n::Label::RefreshRate))
         .on_hover_text(REFRESH_RATE_TOOLTIP);
     ui.horizontal(|row| {
         let mut v = config.poll_interval_seconds;
@@ -226,14 +241,17 @@ pub fn render(ui: &mut Ui, config: &mut Config, on_change: &dyn Fn()) {
     }
 
     // ---- Docked edge (T-36) ----
-    dock_edge_section(ui, &mut config.dock, &mut changed);
+    dock_edge_section(ui, &mut config.dock, &mut changed, lang);
 
     // ---- Theme (T-35) ----
-    theme_section(ui, &mut config.theme, &mut changed);
+    theme_section(ui, &mut config.theme, &mut changed, lang);
 
     // ---- Story 17.2: Temperature alert thresholds ----
     ui.separator();
-    ui.label("Temperature alerts")
+    ui.label(crate::i18n::t(
+        lang,
+        crate::i18n::Label::TemperatureAlerts,
+    ))
         .on_hover_text("Set the temperatures at which the sidebar shows a warning (orange) or critical (red) indicator for CPU and GPU sensors.");
     ui.horizontal(|row| {
         row.label("CPU warn:");
@@ -242,7 +260,8 @@ pub fn render(ui: &mut Ui, config: &mut Config, on_change: &dyn Fn()) {
             .add(egui::Slider::new(&mut v, 40.0..=100.0).suffix(" °C"))
             .changed()
         {
-            config.thresholds.cpu_temp_warn = f64::from(v);
+            let clamped = f64::from(v).min(config.thresholds.cpu_temp_critical - 5.0);
+            config.thresholds.cpu_temp_warn = clamped;
             changed = true;
         }
         row.label("critical:");
@@ -263,7 +282,8 @@ pub fn render(ui: &mut Ui, config: &mut Config, on_change: &dyn Fn()) {
             .add(egui::Slider::new(&mut v, 40.0..=100.0).suffix(" °C"))
             .changed()
         {
-            config.thresholds.gpu_temp_warn = f64::from(v);
+            config.thresholds.gpu_temp_warn =
+                f64::from(v).min(config.thresholds.gpu_temp_critical - 5.0);
             changed = true;
         }
         row.label("critical:");
@@ -277,20 +297,386 @@ pub fn render(ui: &mut Ui, config: &mut Config, on_change: &dyn Fn()) {
             changed = true;
         }
     });
+    // v1.0 parity — per-NIC bandwidth alerts (in/out Mbps).
+    // NOTE: drive-used-space alert is deferred to v1.1 — the alert
+    // classification path needs the DiskUsed/DiskTotal fraction which isn't
+    // surfaced as a single Reading today; shipping a dead slider would
+    // erode user trust (the control-exists-but-does-nothing anti-pattern).
+    ui.horizontal(|row| {
+        row.label("Network in alert:");
+        let mut bi = config.thresholds.bandwidth_in_alert_mbps;
+        if row
+            .add(
+                egui::Slider::new(&mut bi, 0..=10_000)
+                    .suffix(" Mbps")
+                    .fixed_decimals(0),
+            )
+            .changed()
+        {
+            config.thresholds.bandwidth_in_alert_mbps = bi;
+            changed = true;
+        }
+        row.label("(0 = off)");
+    });
+    ui.horizontal(|row| {
+        row.label("Network out alert:");
+        let mut bo = config.thresholds.bandwidth_out_alert_mbps;
+        if row
+            .add(
+                egui::Slider::new(&mut bo, 0..=10_000)
+                    .suffix(" Mbps")
+                    .fixed_decimals(0),
+            )
+            .changed()
+        {
+            config.thresholds.bandwidth_out_alert_mbps = bo;
+            changed = true;
+        }
+        row.label("(0 = off)");
+    });
+
+    // ---- v1.0 parity: Language selector (i18n) ----
+    ui.separator();
+    ui.label(crate::i18n::t(lang, crate::i18n::Label::Language))
+        .on_hover_text("Choose the sidebar's display language. More languages can be added in future versions.");
+    ui.horizontal(|row| {
+        let current = crate::i18n::Language::from_code(&config.display.language);
+        let mut selected = current;
+        let names: Vec<&'static str> = crate::i18n::Language::all()
+            .iter()
+            .map(|l| l.display_name())
+            .collect();
+        let mut cb = egui::ComboBox::from_label("");
+        let current_idx = crate::i18n::Language::all()
+            .iter()
+            .position(|l| *l == current)
+            .unwrap_or(0);
+        let mut chosen = current_idx;
+        cb = cb.selected_text(names.get(current_idx).copied().unwrap_or("English"));
+        cb.show_ui(row, |ui| {
+            for (i, name) in names.iter().enumerate() {
+                if ui.selectable_label(chosen == i, *name).clicked() {
+                    chosen = i;
+                }
+            }
+        });
+        if let Some(&picked) = crate::i18n::Language::all().get(chosen) {
+            if picked != selected {
+                config.display.language = picked.code().to_string();
+                selected = picked;
+                changed = true;
+            }
+        }
+        let _ = selected;
+    });
+
+    // ---- v1.0 parity: Sidebar width + font size + display toggles ----
+    ui.separator();
+    ui.label(crate::i18n::t(lang, crate::i18n::Label::Appearance))
+        .on_hover_text("Adjust the sidebar's width, text size, and how alerts look.");
+    ui.horizontal(|row| {
+        row.label(tcolon(lang, crate::i18n::Label::SidebarWidth));
+        let mut w = config.dock.width_px;
+        let slider = row.add(egui::Slider::new(&mut w, 100..=300).suffix(" px"));
+        if slider.changed() {
+            config.dock.width_px = w.clamp(100, 300);
+            changed = true;
+        }
+    });
+    ui.horizontal(|row| {
+        row.label(tcolon(lang, crate::i18n::Label::FontSize));
+        let mut f = config.display.font_size;
+        let slider = row.add(egui::Slider::new(&mut f, 10..=22).suffix(" px"));
+        if slider.changed() {
+            config.display.font_size = f.clamp(10, 22);
+            changed = true;
+        }
+    });
+    ui.horizontal(|row| {
+        row.label(tcolon(lang, crate::i18n::Label::UiScale));
+        let mut s = config.display.ui_scale_percent;
+        let slider = row.add(
+            egui::Slider::new(&mut s, 50..=300)
+                .suffix("%")
+                .fixed_decimals(0),
+        );
+        if slider.changed() {
+            config.display.ui_scale_percent = s.clamp(50, 300);
+            changed = true;
+        }
+    });
+    ui.horizontal(|row| {
+        let mut blink = config.display.alert_blink;
+        if row
+            .checkbox(
+                &mut blink,
+                crate::i18n::t(lang, crate::i18n::Label::BlinkAlerts),
+            )
+            .on_hover_text("Flash alerting metrics so they're noticeable even at a glance or for color-blind users.")
+            .changed()
+        {
+            config.display.alert_blink = blink;
+            changed = true;
+        }
+    });
+    ui.horizontal(|row| {
+        let mut graphs = config.display.show_graph_buttons;
+        if row
+            .checkbox(&mut graphs, "Show per-row graph buttons")
+            .on_hover_text(
+                "Display a small chart button next to each metric. Off by default — \
+                 the buttons add height to every row. Click a button to open that \
+                 metric's history graph popup.",
+            )
+            .changed()
+        {
+            config.display.show_graph_buttons = graphs;
+            changed = true;
+        }
+    });
+
+    // ---- v1.0 parity: Custom colors (background + font) ----
+    ui.horizontal(|row| {
+        row.label(tcolon(lang, crate::i18n::Label::BackgroundColor));
+        let mut bg = config.display.bg_color.clone();
+        let te = row.add(
+            egui::TextEdit::singleline(&mut bg)
+                .desired_width(80.0)
+                .hint_text("#000000"),
+        );
+        if te.changed() {
+            config.display.bg_color = bg;
+            changed = true;
+        }
+        row.label(tcolon(lang, crate::i18n::Label::BgOpacity));
+        let mut op = config.display.bg_opacity_percent;
+        if row
+            .add(
+                egui::Slider::new(&mut op, 10..=100)
+                    .suffix("%")
+                    .fixed_decimals(0),
+            )
+            .changed()
+        {
+            config.display.bg_opacity_percent = op.clamp(10, 100);
+            changed = true;
+        }
+    });
+    ui.horizontal(|row| {
+        row.label(tcolon(lang, crate::i18n::Label::FontColor));
+        let mut fc = config.display.font_color.clone();
+        let te = row.add(
+            egui::TextEdit::singleline(&mut fc)
+                .desired_width(80.0)
+                .hint_text("#FFFFFF"),
+        );
+        if te.changed() {
+            config.display.font_color = fc;
+            changed = true;
+        }
+        row.label("(blank = theme default; use #RRGGBB)");
+    });
+
+    // ---- v1.0 parity: Position offsets (X/Y) ----
+    ui.separator();
+    ui.label(crate::i18n::t(lang, crate::i18n::Label::Position))
+        .on_hover_text("Fine-tune where the sidebar sits. Positive values move it inward.");
+    ui.horizontal(|row| {
+        row.label(tcolon(lang, crate::i18n::Label::HorizontalOffset));
+        let mut x = config.dock.offset_x_px;
+        if row
+            .add(egui::Slider::new(&mut x, -2000..=2000).suffix(" px"))
+            .changed()
+        {
+            config.dock.offset_x_px = x;
+            changed = true;
+        }
+    });
+    ui.horizontal(|row| {
+        row.label(tcolon(lang, crate::i18n::Label::VerticalOffset));
+        let mut y = config.dock.offset_y_px;
+        if row
+            .add(egui::Slider::new(&mut y, -2000..=2000).suffix(" px"))
+            .changed()
+        {
+            config.dock.offset_y_px = y;
+            changed = true;
+        }
+    });
+
+    // v1.0 UI/UX (audit BLK-A) — the Window section (Start hidden +
+    // Pause-when-hidden) is REMOVED from v1.0 because there's no tray icon.
+    // Without a tray, enabling "Start hidden" traps the user with no way to
+    // un-hide the sidebar (the default hotkeys for toggle/show/hide are all
+    // empty). These toggles return when the tray icon ships (v1.1).
+    // The config fields (initially_hidden, pause_when_hidden) stay for the
+    // hidden-mode internal plumbing; only the user-facing controls are gone.
+
+    // ---- v1.0 parity: Run at Windows startup ----
+    ui.separator();
+    ui.label(crate::i18n::t(lang, crate::i18n::Label::Startup))
+        .on_hover_text(
+            "Control whether sidebar launches automatically when you sign in to Windows.",
+        );
+    ui.horizontal(|row| {
+        let mut run = config.display.run_at_startup;
+        if row
+            .checkbox(
+                &mut run,
+                crate::i18n::t(lang, crate::i18n::Label::StartSidebarWhenWindowsStarts),
+            )
+            .on_hover_text(
+                "Adds sidebar to your Windows startup. No administrator privileges needed.",
+            )
+            .changed()
+        {
+            // Apply immediately: write/delete the HKCU Run key. If the write
+            // fails (rare), revert the checkbox so it reflects reality and
+            // surface nothing scary to the user (G15 — non-fatal).
+            match sidebar_platform::startup::set_enabled(run) {
+                Ok(()) => {
+                    config.display.run_at_startup = run;
+                    changed = true;
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "startup: failed to update Run key");
+                    // Leave config.display.run_at_startup as-is (reverted).
+                }
+            }
+        }
+    });
 
     // ---- Story 8.9: metric enable/disable + reorder ----
     ui.separator();
-    ui.label("Metrics").on_hover_text(METRICS_TOOLTIP);
+    ui.label(crate::i18n::t(lang, crate::i18n::Label::Metrics))
+        .on_hover_text(METRICS_TOOLTIP);
     crate::gui::metric_list::render(ui, &mut config.metrics, "settings", on_change);
+
+    // ---- v1.0 parity: Global hotkeys (8, matching the reference app) ----
+    ui.separator();
+    ui.label(crate::i18n::t(lang, crate::i18n::Label::Hotkeys))
+        .on_hover_text("Global keyboard shortcuts. Use the format Ctrl+Shift+S. Leave blank to disable. Changes apply on next launch.");
+    hotkey_row(
+        ui,
+        "Toggle click-through",
+        &mut config.hotkeys.click_through,
+        &mut changed,
+    );
+    hotkey_row(
+        ui,
+        "Toggle sidebar",
+        &mut config.hotkeys.toggle_visibility,
+        &mut changed,
+    );
+    hotkey_row(ui, "Show sidebar", &mut config.hotkeys.show, &mut changed);
+    hotkey_row(ui, "Hide sidebar", &mut config.hotkeys.hide, &mut changed);
+    hotkey_row(
+        ui,
+        "Cycle dock edge",
+        &mut config.hotkeys.cycle_edge,
+        &mut changed,
+    );
+    hotkey_row(
+        ui,
+        "Cycle screen",
+        &mut config.hotkeys.cycle_screen,
+        &mut changed,
+    );
+    hotkey_row(
+        ui,
+        "Reload settings",
+        &mut config.hotkeys.reload,
+        &mut changed,
+    );
+    // v1.0 UI/UX (audit MJ-D) — "Toggle reserve space" removed: the handler
+    // is a logged no-op (AppBar is always-on in v1). Shipping a dead control
+    // is the "control-exists-but-does-nothing" anti-pattern. Returns when
+    // AppBar toggling is implemented (v1.1).
+    hotkey_row(ui, "Close sidebar", &mut config.hotkeys.close, &mut changed);
+
+    // v1.0 UI/UX (audit MAJ-3): hotkey + startup changes require a restart
+    // to take effect (RegisterHotKey runs once at launch). Without a visible
+    // Restart button, non-technical users change a hotkey, try it, find it
+    // doesn't work, and conclude the feature is broken. This button spawns
+    // a fresh process (same exe) + closes this window — the new instance
+    // picks up the updated config.
+    ui.horizontal(|row| {
+        if row.button("Restart sidebar to apply").clicked() {
+            match crate::gui::restart_sidebar() {
+                Ok(()) => {
+                    row.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                Err(e) => {
+                    // v1.0 UI/UX (audit MJ-A) — surface the error so the
+                    // user knows restart failed (rather than silently doing
+                    // nothing). Stored in temp storage so it persists a few
+                    // frames.
+                    let msg = format!(
+                        "Could not restart: {e}. Please close and reopen sidebar manually."
+                    );
+                    tracing::warn!(error = %e, "failed to restart sidebar from settings");
+                    row.ctx().data_mut(|data| {
+                        data.insert_temp(egui::Id::new("settings_restart_error"), msg);
+                    });
+                }
+            }
+        }
+    });
+    // Show the restart error if any (temp data, ages out after a few frames).
+    let restart_error: Option<String> = ui
+        .ctx()
+        .data_mut(|data| data.get_temp::<String>(egui::Id::new("settings_restart_error")));
+    if let Some(err) = restart_error {
+        ui.label(
+            egui::RichText::new(&err)
+                .small()
+                .color(egui::Color32::from_rgb(220, 80, 80)),
+        );
+    }
 
     if changed {
         on_change();
     }
 }
 
+/// Render one hotkey binding row: label + text input (format hint
+/// `Ctrl+Shift+S`) + inline validation. v1.0 UI/UX (audit MJ-E): shows a
+/// red "unrecognized format" label when the input is non-empty but doesn't
+/// parse via HotkeyCombo::parse, so the user knows before restart that
+/// their hotkey won't register.
+fn hotkey_row(ui: &mut Ui, label: &str, value: &mut String, changed: &mut bool) {
+    ui.horizontal(|row| {
+        row.label(format!("{label}:"));
+        let resp = row.add(
+            egui::TextEdit::singleline(value)
+                .desired_width(140.0)
+                .hint_text("Ctrl+Shift+S (blank = off)"),
+        );
+        if resp.changed() {
+            *changed = true;
+        }
+        // v1.0 UI/UX (audit MJ-E) — validate on every frame: if non-empty
+        // but unparseable, show a red ⚠ so the user knows their binding is
+        // invalid BEFORE restarting.
+        if !value.is_empty() && crate::gui::hotkey::HotkeyCombo::parse(value).is_err() {
+            row.label(
+                egui::RichText::new("⚠ unrecognized format")
+                    .small()
+                    .color(egui::Color32::from_rgb(220, 80, 80)),
+            );
+        }
+    });
+}
+
 /// Render the docked-edge radio section.
-fn dock_edge_section(ui: &mut Ui, dock: &mut DockConfig, changed: &mut bool) {
-    ui.label("Docked edge").on_hover_text(DOCKED_EDGE_TOOLTIP);
+fn dock_edge_section(
+    ui: &mut Ui,
+    dock: &mut DockConfig,
+    changed: &mut bool,
+    lang: crate::i18n::Language,
+) {
+    ui.label(crate::i18n::t(lang, crate::i18n::Label::DockedEdge))
+        .on_hover_text(DOCKED_EDGE_TOOLTIP);
     ui.horizontal(|row| {
         for &e in &["Left", "Right", "Top", "Bottom"] {
             let mut selected = dock.edge == e;
@@ -303,13 +689,32 @@ fn dock_edge_section(ui: &mut Ui, dock: &mut DockConfig, changed: &mut bool) {
     // Story 17.7 — monitor-picker dropdown (replaces the raw TextEdit).
     // Populated from monitors::enumerate(); falls back to a text field
     // if enumeration fails.
-    ui.label("Target monitor")
+    ui.label(crate::i18n::t(lang, crate::i18n::Label::TargetMonitor))
         .on_hover_text("Which screen the sidebar docks to. 'primary' uses your main display.");
     #[cfg(windows)]
     {
         if let Ok(displays) = crate::gui::monitors::enumerate() {
             let current = &dock.monitor_id;
-            let mut selected_idx = displays.iter().position(|d| &d.id == current).unwrap_or(0);
+            // Cert v1.0 (frontend audit C1) — preserve the "primary" sentinel.
+            // The default config is monitor_id = "primary" which dynamically
+            // resolves to whatever the current primary display is (survives
+            // dock/undock). The prior code unconditionally overwrote "primary"
+            // with displays[0].id the first frame the panel opened, locking
+            // the sidebar to one physical display forever. Only commit a
+            // selection when the user actually picked an entry (found.is_some).
+            // Cert v1.0 (frontend audit C1, refined) — preserve the "primary"
+            // sentinel. `found` is whether current is a real device id;
+            // `initial_idx` is what the dropdown shows pre-click. We commit a
+            // selection only when the user actually moved `selected_idx`
+            // (selected_idx != initial_idx). This keeps "primary" intact when
+            // the user doesn't click, while still allowing selection FROM
+            // "primary" (the default) — the prior `found.is_some()` guard
+            // blocked every selection when current was "primary".
+            let found = displays
+                .iter()
+                .position(|d| d.id.eq_ignore_ascii_case(current));
+            let initial_idx = found.unwrap_or(0);
+            let mut selected_idx = initial_idx;
             let labels: Vec<String> = displays
                 .iter()
                 .map(|d| {
@@ -335,7 +740,11 @@ fn dock_edge_section(ui: &mut Ui, dock: &mut DockConfig, changed: &mut bool) {
                 }
             });
             if let Some(d) = displays.get(selected_idx) {
-                if d.id != dock.monitor_id {
+                // Commit only when the user moved the selection this frame.
+                // If current was "primary" and the user didn't click,
+                // selected_idx == initial_idx so dock.monitor_id is untouched
+                // and the dynamic "primary" resolution survives.
+                if selected_idx != initial_idx && d.id != dock.monitor_id {
                     dock.monitor_id.clone_from(&d.id);
                     *changed = true;
                 }
@@ -348,13 +757,19 @@ fn dock_edge_section(ui: &mut Ui, dock: &mut DockConfig, changed: &mut bool) {
     }
     #[cfg(not(windows))]
     {
-        ui.text_edit_singlevalue(&mut dock.monitor_id);
+        ui.text_edit_singleline(&mut dock.monitor_id);
     }
 }
 
 /// Render the theme-mode radio section.
-fn theme_section(ui: &mut Ui, theme: &mut ThemeConfig, changed: &mut bool) {
-    ui.label("Theme").on_hover_text(THEME_TOOLTIP);
+fn theme_section(
+    ui: &mut Ui,
+    theme: &mut ThemeConfig,
+    changed: &mut bool,
+    lang: crate::i18n::Language,
+) {
+    ui.label(crate::i18n::t(lang, crate::i18n::Label::Theme))
+        .on_hover_text(THEME_TOOLTIP);
     ui.horizontal(|row| {
         for &m in &["Dark", "Light", "System"] {
             let mut selected = theme.mode == m;
@@ -365,21 +780,6 @@ fn theme_section(ui: &mut Ui, theme: &mut ThemeConfig, changed: &mut bool) {
         }
     });
 }
-
-/// Normalize a TempUnit to the v1-supported set (Celsius/Fahrenheit). The
-/// Reading's wire unit is always Celsius (canonical); the DisplayConfig's
-/// `temp_unit` field only carries Celsius/Fahrenheit in v1.
-#[cfg(test)]
-fn display_temp_unit(unit: TempUnit) -> TempUnit {
-    unit
-}
-
-/// Silence unused-import lint: DisplayConfig is imported for symmetry with
-/// sidebar-domain types used by the helpers above (and for future raw-mode
-/// surfacing). The struct is referenced indirectly through the Config field
-/// accesses in render().
-#[allow(dead_code)]
-type _DisplayConfigRef = DisplayConfig;
 
 #[cfg(test)]
 mod tests {
@@ -610,17 +1010,6 @@ mod tests {
         assert_eq!(
             config.lock().unwrap().bandwidth.cycle_start_day,
             CycleStartDaySerde::LastDayOfMonth
-        );
-    }
-
-    // ===== Pure-fn sanity =====
-
-    #[test]
-    fn display_temp_unit_normalizes() {
-        assert_eq!(display_temp_unit(TempUnit::Celsius), TempUnit::Celsius);
-        assert_eq!(
-            display_temp_unit(TempUnit::Fahrenheit),
-            TempUnit::Fahrenheit
         );
     }
 }

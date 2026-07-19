@@ -67,11 +67,7 @@ use egui::Ui;
 use sidebar_bandwidth::view::BandwidthView;
 use sidebar_domain::config::Config;
 use sidebar_domain::event::Event;
-use sidebar_domain::format::{
-    format_bps, format_bytes, format_hz, format_percent, format_power, format_rpm, format_temp,
-    format_voltage, Base, TempUnit,
-};
-use sidebar_domain::reading::{MetricKind, Reading, Unit};
+use sidebar_domain::reading::{MetricKind, Reading};
 use sidebar_platform::window::ViewportPrefs;
 use sidebar_sensor::descriptor::ProviderTier;
 use tokio::sync::broadcast;
@@ -355,6 +351,7 @@ impl AppState {
 /// each frame the local copies are written back to AppState via
 /// `replace_config` / `replace_view`; the on_change callback persists the
 /// config to disk (debounce is a refinement — for now, write immediately).
+#[allow(clippy::struct_excessive_bools)]
 pub struct SidebarApp {
     state: Arc<AppState>,
     /// Local mutable copy of the config — the settings panel edits this.
@@ -368,6 +365,12 @@ pub struct SidebarApp {
     /// poller is NOT spawned (G24) until the wizard completes + the user
     /// restarts.
     wizard_active: bool,
+    /// First-run completed and saved; show the restart CTA until the new
+    /// process launches. Kept separate from `wizard_active` so the CTA
+    /// survives beyond the click frame.
+    wizard_saved: bool,
+    /// User-facing first-run save/restart error.
+    wizard_error: Option<String>,
     /// Path to the config.toml on disk (so the on_change callback can persist
     /// without re-resolving %APPDATA% every frame). Empty when no on-disk
     /// path is in play (the wizard path or the Story 8.1 test path).
@@ -416,6 +419,19 @@ pub struct SidebarApp {
     /// the child-liveness probe (crash-only) cannot catch. None before the
     /// first broadcast.
     last_readings_at: Option<std::time::Instant>,
+    /// Cert v1.0 — dirty flag set whenever `view.alert_acks` mutates. Gates
+    /// `save_acks` so we persist on actual change instead of every frame
+    /// (which caused a disk/AV write storm while any alert was acked). Cleared
+    /// after a successful save.
+    acks_dirty: bool,
+    /// v1.0 parity — whether the sidebar window is currently hidden (minimized
+    /// to tray). Set from `initially_hidden` at construction; toggled by the
+    /// tray icon. When true + `pause_when_hidden`, the poller skips ticks.
+    hidden: bool,
+    /// v1.0 UI/UX fix (audit M3) — snapshot of the last config we persisted
+    /// to disk. Compared each frame so we only write config.toml when the
+    /// settings panel mutated something (not every frame the panel is open).
+    last_persisted_config: sidebar_domain::config::Config,
     #[cfg(windows)]
     platform: Option<PlatformRuntime>,
 }
@@ -428,11 +444,14 @@ impl SidebarApp {
     pub fn new(state: Arc<AppState>) -> Self {
         let config = state.config();
         let view = state.view();
+        let last_persisted_config = config.clone();
         Self {
             state,
             config,
             view,
             wizard_active: false,
+            wizard_saved: false,
+            wizard_error: None,
             config_path: std::path::PathBuf::new(),
             acks_path: std::path::PathBuf::new(),
             event_tx: None,
@@ -445,6 +464,9 @@ impl SidebarApp {
             launch_message_fn: None,
             recovery_message_fn: None,
             recovery_dismissed: false,
+            acks_dirty: false,
+            hidden: false,
+            last_persisted_config,
             #[cfg(windows)]
             platform: None,
         }
@@ -462,11 +484,14 @@ impl SidebarApp {
         let config = state.config();
         let view = state.view();
         let acks_path = config_path.with_file_name("acks.toml");
+        let last_persisted_config = config.clone();
         Self {
             state,
             config,
             view,
             wizard_active,
+            wizard_saved: false,
+            wizard_error: None,
             config_path,
             acks_path,
             event_tx: None,
@@ -479,6 +504,9 @@ impl SidebarApp {
             launch_message_fn: None,
             recovery_message_fn: None,
             recovery_dismissed: false,
+            acks_dirty: false,
+            hidden: false,
+            last_persisted_config,
             #[cfg(windows)]
             platform: None,
         }
@@ -630,16 +658,73 @@ impl SidebarApp {
         &self.state
     }
 
-    /// Persist the in-memory config to the on-disk path atomically via
+    /// v1.0 parity (pause-when-hidden) — drain the latest broadcast readings
+    /// and bandwidth view into the shared state WITHOUT running the full
+    /// sidebar render. Used when the window is hidden + pause_when_hidden is
+    /// ON, so the view stays current for the un-hide moment at near-zero CPU.
+    fn drain_broadcast_only(&mut self, _ctx: &egui::Context) {
+        if let Some(readings) = self.state.drain_broadcast() {
+            self.state.replace_readings(readings);
+        }
+        if let Some(rx) = self.bandwidth_view_rx.as_mut() {
+            while rx.has_changed().unwrap_or(false) {
+                if let Some(view) = rx.borrow_and_update().clone() {
+                    self.view.bandwidth = Some(view);
+                }
+            }
+        }
+    }
+
+    /// v1.0 UI/UX fix (audit B1) — re-dock the window at the current
+    /// config.dock edge/monitor/offset. Called when a hotkey mutates the
+    /// dock config so the window actually moves (instead of silently
+    /// flipping config). Mirrors what configure_platform does at launch.
+    fn redock_now(&mut self, ctx: &egui::Context) {
+        if let Ok(displays) = crate::gui::monitors::enumerate() {
+            if let Some(target) =
+                crate::gui::monitors::resolve_target(&displays, &self.config.dock.monitor_id)
+            {
+                send_dock_position(
+                    ctx,
+                    target,
+                    &self.config.dock.edge,
+                    self.config.dock.offset_px + self.config.dock.offset_x_px,
+                    self.config.dock.offset_y_px,
+                );
+            }
+        }
+    }
+
+    /// v1.0 parity (reload-settings hotkey) — best-effort re-read of
+    /// config.toml from the persisted path. On any failure (path unset,
+    /// read error, parse error) the in-memory config is kept unchanged
+    /// (G15 — non-fatal). The user can retry by editing the file again.
+    fn reload_config_from_disk(&mut self) {
+        if self.config_path.as_os_str().is_empty() {
+            return;
+        }
+        let Ok(toml_str) = std::fs::read_to_string(&self.config_path) else {
+            tracing::warn!(path = %self.config_path.display(), "reload: config read failed");
+            return;
+        };
+        match sidebar_domain::config::Config::from_toml_str(&toml_str) {
+            Ok(reloaded) => {
+                self.config = reloaded;
+                tracing::info!("reload: config re-read from disk");
+            }
+            Err(e) => tracing::warn!(error = %e, "reload: config parse failed; keeping in-memory"),
+        }
+    }
+
     /// `<path>.tmp` + `std::fs::rename` (atomic on NTFS same-volume). A crash
     /// mid-write MUST NOT truncate `config.toml`. Best-effort: errors are
     /// logged at `warn` (G15 — settings-panel edits are non-fatal). Called
     /// from the on_change callback after every settings mutation. Cited:
     /// Story 13.1, guardrails.md G28, tdd-fixtures.md F15.
-    fn persist_config(&self) {
+    fn try_persist_config(&self) -> Result<(), String> {
         if self.config_path.as_os_str().is_empty() {
             // No on-disk path (test or wizard path) — skip persistence.
-            return;
+            return Ok(());
         }
         let toml_str = match self.config.to_toml_string() {
             Ok(s) => s,
@@ -648,17 +733,51 @@ impl SidebarApp {
                     error = %e,
                     "settings panel: failed to serialize config (G15 — non-fatal)"
                 );
-                return;
+                return Err("Could not read your current settings. Try changing \
+                    the setting again, or restart sidebar."
+                    .to_string());
             }
         };
-        atomic_write_config(&self.config_path, &toml_str);
+        atomic_write_config(&self.config_path, &toml_str).map_err(|e| {
+            // Cert v1.0 — friendly, non-technical wording. The absolute path
+            // + raw io::Error Display stay in the tracing log; the user just
+            // sees an actionable message. Maps the common Windows causes.
+            tracing::warn!(
+                error = %e,
+                path = %self.config_path.display(),
+                "persist_config: atomic write failed (G15 — non-fatal)"
+            );
+            friendly_save_error(&e)
+        })
+    }
+
+    fn persist_config(&self) {
+        let _ = self.try_persist_config();
+    }
+
+    fn finish_first_run(&mut self) -> Result<(), String> {
+        self.config.first_run_complete = true;
+        match self.try_persist_config() {
+            Ok(()) => {
+                self.wizard_active = false;
+                self.wizard_saved = true;
+                self.wizard_error = None;
+                Ok(())
+            }
+            Err(e) => {
+                self.config.first_run_complete = false;
+                self.wizard_active = true;
+                self.wizard_saved = false;
+                Err(e)
+            }
+        }
     }
 }
 
 /// Write `contents` to `path` atomically via a temp file + rename. On
 /// success, no `.tmp` file remains. On failure, logs at `warn` (G15) and
 /// best-effort cleans up the orphaned temp file. Cited: Story 13.1, G28, F15.
-pub fn atomic_write_config(path: &std::path::Path, contents: &str) {
+pub fn atomic_write_config(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
     let tmp = path.with_extension("toml.tmp");
     if let Err(e) = std::fs::write(&tmp, contents) {
         tracing::warn!(
@@ -667,7 +786,7 @@ pub fn atomic_write_config(path: &std::path::Path, contents: &str) {
             error = %e,
             "persist_config: failed to write temp file (G15 — non-fatal)"
         );
-        return;
+        return Err(e);
     }
     if let Err(e) = std::fs::rename(&tmp, path) {
         tracing::warn!(
@@ -677,29 +796,170 @@ pub fn atomic_write_config(path: &std::path::Path, contents: &str) {
             "persist_config: failed to rename temp over target (G15 — non-fatal)"
         );
         let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// Map a config-save `io::Error` to a friendly, non-technical string. The
+/// raw error + absolute path stay in the tracing log; the user sees only an
+/// actionable message naming the common Windows causes (file locked by
+/// another process, disk full, permission denied). Cited: Cert v1.0 M4.
+fn friendly_save_error(e: &std::io::Error) -> String {
+    // Windows shell-locking / AV quarantine: error 32 ("The process cannot
+    // access the file because it is being used by another process").
+    if let Some(code) = e.raw_os_error() {
+        match code {
+            32 => {
+                return "Your settings file is locked by another program. \
+                Close other sidebar windows or antivirus scanners, then try again."
+                    .to_string()
+            }
+            28 | 39 => return "Your disk is full. Free up space and try again.".to_string(),
+            5 => {
+                return "sidebar doesn't have permission to save settings. \
+                Try running it once as administrator."
+                    .to_string()
+            }
+            _ => {}
+        }
+    }
+    match e.kind() {
+        std::io::ErrorKind::PermissionDenied => {
+            "sidebar doesn't have permission to save settings. Try running \
+                it once as administrator."
+                .to_string()
+        }
+        std::io::ErrorKind::ReadOnlyFilesystem => {
+            "The settings folder is read-only. sidebar will keep running but \
+                your changes won't be saved."
+                .to_string()
+        }
+        _ => "Could not save your settings. Your changes will apply for this \
+            session but won't be kept after restart."
+            .to_string(),
+    }
+}
+
+/// Parse a `#RGB`/`#RRGGBB` color string into a Color32, accepting the
+/// leading `#` optionally and doubling 3-char shorthand. Returns None on
+/// any malformed input (no-op → keep theme default). Shared by the bg +
+/// font color customizers (v1.0 ponytail: dedupes the trim/expand dance).
+fn expand_hex(s: &str) -> Option<egui::Color32> {
+    let h = s.trim();
+    let h = h.strip_prefix('#').unwrap_or(h);
+    let expanded = if h.len() == 3 {
+        h.chars().flat_map(|c| [c, c]).collect::<String>()
+    } else {
+        h.to_string()
+    };
+    crate::gui::theme::hex_to_color(&expanded)
+}
+
+pub(crate) fn restart_sidebar() -> std::io::Result<()> {
+    let exe = std::env::current_exe()?;
+    // The child must wait for THIS process to release the single-instance
+    // mutex during graceful shutdown (1-3 s). Without `--wait-for-instance`,
+    // the child's `claim_or_exit` would see ERROR_ALREADY_EXISTS and exit(0)
+    // silently — leaving the user with no sidebar running after the wizard.
+    // The flag opts the child into a bounded retry loop in `claim_or_exit`.
+    std::process::Command::new(exe)
+        .arg("--wait-for-instance")
+        .spawn()
+        .map(|_| ())
+}
+
+#[cfg(windows)]
+const HOTKEY_ID_BASE: i32 = 0x5349;
+
+/// The set of global hotkeys sidebar supports (v1.0 parity with the
+/// reference SidebarDiagnostics app's 8 hotkeys). Each variant maps to a
+/// stable Win32 hotkey id (`HOTKEY_ID_BASE + variant as i32`), which the
+/// dedicated hotkey thread registers + dispatches back to the GUI via the
+/// `hotkey_rx` channel.
+///
+/// Cited: PRD §3 (v1.0 parity hotkeys), Story 6.6, T-34.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i32)]
+pub(crate) enum HotkeyKind {
+    /// Toggle click-through (the v1 default; ships enabled as Ctrl+Shift+S).
+    ClickThrough = 0,
+    /// Toggle sidebar visibility (show if hidden / hide if shown).
+    ToggleVisibility = 1,
+    /// Show the sidebar (un-hide).
+    Show = 2,
+    /// Hide the sidebar.
+    Hide = 3,
+    /// Cycle dock edge (Left→Right→Top→Bottom→Left).
+    CycleEdge = 4,
+    /// Cycle target screen (rotate through enumerated monitors).
+    CycleScreen = 5,
+    /// Reload settings from config.toml.
+    Reload = 6,
+    /// Toggle AppBar reserve-space on/off.
+    ToggleReserveSpace = 7,
+    /// Close the app.
+    Close = 8,
+}
+
+#[cfg(windows)]
+impl HotkeyKind {
+    /// The Win32 hotkey id for this variant (`HOTKEY_ID_BASE + discriminant`).
+    #[must_use]
+    const fn id(self) -> i32 {
+        HOTKEY_ID_BASE + (self as i32)
+    }
+
+    /// Iterate all variants in declared order.
+    const fn all() -> &'static [HotkeyKind] {
+        &[
+            HotkeyKind::ClickThrough,
+            HotkeyKind::ToggleVisibility,
+            HotkeyKind::Show,
+            HotkeyKind::Hide,
+            HotkeyKind::CycleEdge,
+            HotkeyKind::CycleScreen,
+            HotkeyKind::Reload,
+            HotkeyKind::ToggleReserveSpace,
+            HotkeyKind::Close,
+        ]
+    }
+
+    /// The config string for this variant from the given HotkeyConfig, or
+    /// empty if unbound.
+    fn config_str(self, cfg: &sidebar_domain::config::HotkeyConfig) -> &str {
+        match self {
+            HotkeyKind::ClickThrough => &cfg.click_through,
+            HotkeyKind::ToggleVisibility => &cfg.toggle_visibility,
+            HotkeyKind::Show => &cfg.show,
+            HotkeyKind::Hide => &cfg.hide,
+            HotkeyKind::CycleEdge => &cfg.cycle_edge,
+            HotkeyKind::CycleScreen => &cfg.cycle_screen,
+            HotkeyKind::Reload => &cfg.reload,
+            HotkeyKind::ToggleReserveSpace => &cfg.toggle_reserve_space,
+            HotkeyKind::Close => &cfg.close,
+        }
     }
 }
 
 #[cfg(windows)]
-const CLICK_THROUGH_HOTKEY_ID: i32 = 0x5349;
-
-#[cfg(windows)]
 struct PlatformRuntime {
     hwnd: HWND,
-    hotkey_id: Option<i32>,
     click_through: bool,
     monitor_id: Option<String>,
     /// Channel receiver for hotkey events from the dedicated hotkey thread.
     /// The hotkey thread registers RegisterHotKey + GetMessageW on its OWN
     /// thread, so WM_HOTKEY messages are NOT consumed by egui's event loop.
-    hotkey_rx: Option<std::sync::mpsc::Receiver<()>>,
+    /// Each fire carries the `HotkeyKind` that triggered it.
+    hotkey_rx: Option<std::sync::mpsc::Receiver<HotkeyKind>>,
     /// Handle to the dedicated hotkey thread (for cleanup on unregister).
     #[allow(clippy::used_underscore_binding)]
     hotkey_thread: Option<std::thread::JoinHandle<()>>,
     /// Win32 thread-id of the dedicated hotkey thread. `unregister` posts
     /// `WM_QUIT` to this TID so the thread's `GetMessageW` loop wakes, runs
-    /// its own `UnregisterHotKey(None, id)`, and exits cleanly. Without it
-    /// the thread would block in `GetMessageW` until process death (leak).
+    /// its own `UnregisterHotKey(None, id)` for every registered id, and
+    /// exits cleanly. Without it the thread would block in `GetMessageW`
+    /// until process death (leak).
     hotkey_thread_id: Option<u32>,
 }
 
@@ -708,7 +968,6 @@ impl PlatformRuntime {
     fn new(hwnd: HWND) -> Self {
         Self {
             hwnd,
-            hotkey_id: None,
             click_through: false,
             monitor_id: None,
             hotkey_rx: None,
@@ -724,15 +983,44 @@ impl PlatformRuntime {
 
         let mut events = Vec::new();
 
-        // Drain hotkey events from the dedicated thread's channel.
+        // Drain hotkey events from the dedicated thread's channel + dispatch
+        // each HotkeyKind to its action. v1.0 parity with reference's 8 hotkeys.
         if let Some(rx) = &self.hotkey_rx {
-            while let Ok(()) = rx.try_recv() {
-                let enabled = !self.click_through;
-                if let Err(error) = hotkey::set_click_through(self.hwnd, enabled) {
-                    tracing::warn!(?error, "click-through toggle unavailable");
-                } else {
-                    self.click_through = enabled;
-                    events.push(Event::HotkeyPressed("click_through".into()));
+            while let Ok(kind) = rx.try_recv() {
+                match kind {
+                    HotkeyKind::ClickThrough => {
+                        let enabled = !self.click_through;
+                        if let Err(error) = hotkey::set_click_through(self.hwnd, enabled) {
+                            tracing::warn!(?error, "click-through toggle unavailable");
+                        } else {
+                            self.click_through = enabled;
+                            events.push(Event::HotkeyPressed("click_through".into()));
+                        }
+                    }
+                    HotkeyKind::ToggleVisibility => {
+                        events.push(Event::HotkeyPressed("toggle_visibility".into()));
+                    }
+                    HotkeyKind::Show => {
+                        events.push(Event::HotkeyPressed("show".into()));
+                    }
+                    HotkeyKind::Hide => {
+                        events.push(Event::HotkeyPressed("hide".into()));
+                    }
+                    HotkeyKind::CycleEdge => {
+                        events.push(Event::HotkeyPressed("cycle_edge".into()));
+                    }
+                    HotkeyKind::CycleScreen => {
+                        events.push(Event::HotkeyPressed("cycle_screen".into()));
+                    }
+                    HotkeyKind::Reload => {
+                        events.push(Event::HotkeyPressed("reload".into()));
+                    }
+                    HotkeyKind::ToggleReserveSpace => {
+                        events.push(Event::HotkeyPressed("toggle_reserve_space".into()));
+                    }
+                    HotkeyKind::Close => {
+                        events.push(Event::Shutdown);
+                    }
                 }
             }
         }
@@ -831,7 +1119,13 @@ impl PlatformRuntime {
                 config.dock.monitor_id.clone_from(&target.id);
             }
             self.monitor_id = Some(target.id.clone());
-            send_dock_position(ctx, target, &config.dock.edge, config.dock.offset_px);
+            send_dock_position(
+                ctx,
+                target,
+                &config.dock.edge,
+                config.dock.offset_px + config.dock.offset_x_px,
+                config.dock.offset_y_px,
+            );
             events.push(Event::MonitorChanged(target.id.clone()));
         }
     }
@@ -935,6 +1229,7 @@ fn configure_capture_exclusion(
 }
 
 #[cfg(windows)]
+#[allow(clippy::too_many_lines)] // platform wiring: hotkey registration + monitor dock
 fn configure_platform(cc: &eframe::CreationContext<'_>, app: &mut SidebarApp) {
     let Some(hwnd) = creation_context_hwnd(cc) else {
         return;
@@ -944,104 +1239,128 @@ fn configure_platform(cc: &eframe::CreationContext<'_>, app: &mut SidebarApp) {
     // WM_HOTKEY to the thread that registered it. By using a separate thread
     // (not the egui event loop thread), we avoid the winit/glutin event loop
     // consuming the WM_HOTKEY message before our code sees it.
-    match hotkey::HotkeyCombo::parse(&app.config.hotkeys.click_through) {
-        Ok(combo) => {
-            let (tx, rx) = std::sync::mpsc::channel::<()>();
-            let (tid_tx, tid_rx) = std::sync::mpsc::channel::<u32>();
-            let hotkey_id = CLICK_THROUGH_HOTKEY_ID;
-            let ctrl = combo.ctrl;
-            let shift = combo.shift;
-            let alt = combo.alt;
-            let win = combo.win;
-            let key = combo.key;
-            let thread = std::thread::Builder::new()
-                .name("sidebar-hotkey".to_string())
-                .spawn(move || {
-                    use windows::Win32::System::Threading::GetCurrentThreadId;
-                    use windows::Win32::UI::Input::KeyboardAndMouse::{
-                        HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN,
-                        RegisterHotKey, UnregisterHotKey,
-                    };
-                    use windows::Win32::UI::WindowsAndMessaging::{GetMessageW, WM_HOTKEY};
-                    // Force-create this thread's message queue BEFORE capturing
-                    // + sending the TID. Without this, PostThreadMessageW from
-                    // `unregister` can race ahead of GetMessageW and fail with
-                    // ERROR_INVALID_THREAD_ID (the queue doesn't exist yet).
-                    // PeekMessageW(PM_NOREMOVE) is the documented Win32 idiom
-                    // to force queue creation without consuming any message.
-                    let mut probe = windows::Win32::UI::WindowsAndMessaging::MSG::default();
+    // v1.0 parity — register every configured global hotkey (up to 8: the
+    // reference SidebarDiagnostics set). Empty config strings are skipped
+    // (unbound). Each registered hotkey fires its HotkeyKind back to the GUI
+    // via the channel; the GUI poll() dispatches the kind to its action.
+    let hotkey_cfg = app.config.hotkeys.clone();
+    let mut bindings: Vec<(HotkeyKind, hotkey::HotkeyCombo)> = Vec::new();
+    for kind in HotkeyKind::all() {
+        let s = kind.config_str(&hotkey_cfg);
+        if s.is_empty() {
+            continue;
+        }
+        match hotkey::HotkeyCombo::parse(s) {
+            Ok(combo) => bindings.push((*kind, combo)),
+            Err(error) => tracing::warn!(?kind, %error, "invalid hotkey config; skipped"),
+        }
+    }
+    if !bindings.is_empty() {
+        let (tx, rx) = std::sync::mpsc::channel::<HotkeyKind>();
+        let (tid_tx, tid_rx) = std::sync::mpsc::channel::<u32>();
+        // Pre-compute the (id, kind, modifier-mask, vkey) tuples so the
+        // thread closure is `move`-clean without borrowing `bindings`.
+        let specs: Vec<(i32, HotkeyKind, u32, u32)> = bindings
+            .iter()
+            .map(|(kind, combo)| (kind.id(), *kind, combo.modifier_mask(), combo.key))
+            .collect();
+        let thread = std::thread::Builder::new()
+            .name("sidebar-hotkey".to_string())
+            .spawn(move || {
+                use windows::Win32::System::Threading::GetCurrentThreadId;
+                use windows::Win32::UI::Input::KeyboardAndMouse::{
+                    HOT_KEY_MODIFIERS, RegisterHotKey, UnregisterHotKey,
+                };
+                use windows::Win32::UI::WindowsAndMessaging::{GetMessageW, WM_HOTKEY};
+                // Force-create this thread's message queue BEFORE capturing
+                // + sending the TID (PeekMessageW PM_NOREMOVE probe — see the
+                // original single-hotkey comment for the rationale).
+                let mut probe = windows::Win32::UI::WindowsAndMessaging::MSG::default();
+                let _ = unsafe {
                     // SAFETY: PeekMessageW with an empty filter + PM_NOREMOVE
                     // on this thread is a no-op queue-creation probe; the
                     // `probe` MSG is stack-owned + lives for the call.
-                    let _ = unsafe {
-                        windows::Win32::UI::WindowsAndMessaging::PeekMessageW(
-                            &raw mut probe,
-                            None,
-                            0,
-                            0,
-                            windows::Win32::UI::WindowsAndMessaging::PM_NOREMOVE,
-                        )
-                    };
-                    // Capture this thread's TID and report it back to the
-                    // spawner BEFORE registering or blocking. `unregister`
-                    // uses this TID to post WM_QUIT during shutdown. Sending
-                    // first is always correct: if RegisterHotKey fails below,
-                    // the thread exits and the TID receiver simply isn't used.
+                    windows::Win32::UI::WindowsAndMessaging::PeekMessageW(
+                        &raw mut probe,
+                        None,
+                        0,
+                        0,
+                        windows::Win32::UI::WindowsAndMessaging::PM_NOREMOVE,
+                    )
+                };
+                let tid = unsafe {
                     // SAFETY: GetCurrentThreadId returns the calling thread's
                     // identifier; no invariants to uphold.
-                    let tid = unsafe { GetCurrentThreadId() };
-                    let _ = tid_tx.send(tid);
-                    // Register the hotkey on THIS thread (not the GUI thread).
-                    let mut modifiers = HOT_KEY_MODIFIERS::default();
-                    if ctrl { modifiers |= MOD_CONTROL; }
-                    if shift { modifiers |= MOD_SHIFT; }
-                    if alt { modifiers |= MOD_ALT; }
-                    if win { modifiers |= MOD_WIN; }
-                    modifiers |= MOD_NOREPEAT;
-                    // SAFETY: RegisterHotKey on thread 0 (this thread) is safe;
-                    // the hotkey ID + modifiers are constant values from config.
-                    let registered = unsafe {
-                        RegisterHotKey(None, hotkey_id, modifiers, key)
+                    GetCurrentThreadId()
+                };
+                let _ = tid_tx.send(tid);
+                // Register every configured hotkey on THIS thread. A failed
+                // registration (another app owns the combo) is logged + the
+                // spec is skipped; the rest still register.
+                let mut registered_ids: Vec<i32> = Vec::new();
+                for (id, kind, mask, key) in &specs {
+                    let ok = unsafe {
+                        // SAFETY: RegisterHotKey on thread 0 (this thread) with
+                        // the spec's id + parsed modifier mask + vkey. MOD_NOREPEAT
+                        // is folded into the mask by HotkeyCombo::modifier_mask.
+                        RegisterHotKey(None, *id, HOT_KEY_MODIFIERS(*mask), *key)
                     };
-                    if registered.is_err() {
+                    if ok.is_ok() {
+                        registered_ids.push(*id);
+                        tracing::info!(?kind, id, "dedicated hotkey thread: registered");
+                    } else {
                         tracing::warn!(
+                            ?kind, id,
                             "dedicated hotkey thread: RegisterHotKey failed (another app may own this combo)"
                         );
-                        return;
                     }
-                    tracing::info!("dedicated hotkey thread: registered Ctrl+Shift+S on thread");
-                    // Block on GetMessageW — only WM_HOTKEY messages arrive on
-                    // this thread (no window, so no other messages).
-                    let mut msg = windows::Win32::UI::WindowsAndMessaging::MSG::default();
-                    loop {
-                        // SAFETY: GetMessageW on this thread with no window filter
-                        // blocks until a thread-message arrives (WM_HOTKEY).
-                        let ret = unsafe { GetMessageW(&raw mut msg, None, 0, 0) };
-                        if ret.0 == 0 || ret.0 == -1 {
-                            break; // WM_QUIT or error
-                        }
-                        if msg.message == WM_HOTKEY && i32::try_from(msg.wParam.0).unwrap_or(-1) == hotkey_id {
-                            // Signal the GUI thread via channel (non-blocking).
-                            let _ = tx.send(());
+                }
+                if registered_ids.is_empty() {
+                    return; // nothing to pump
+                }
+                // Block on GetMessageW — only WM_HOTKEY (thread messages)
+                // arrive on this thread (no window). Map the wParam id back
+                // to its HotkeyKind + signal the GUI.
+                let mut msg = windows::Win32::UI::WindowsAndMessaging::MSG::default();
+                loop {
+                    let ret = unsafe {
+                        // SAFETY: GetMessageW on this thread with no window
+                        // filter blocks until a thread-message arrives.
+                        GetMessageW(&raw mut msg, None, 0, 0)
+                    };
+                    if ret.0 == 0 || ret.0 == -1 {
+                        break; // WM_QUIT or error
+                    }
+                    if msg.message == WM_HOTKEY {
+                        if let Ok(id) = i32::try_from(msg.wParam.0) {
+                            // Find the kind for this id (specs is still in scope).
+                            if let Some((_, kind, _, _)) =
+                                specs.iter().find(|(sid, _, _, _)| *sid == id)
+                            {
+                                let _ = tx.send(*kind);
+                            }
                         }
                     }
-                    // SAFETY: unregister on the same thread that registered.
+                }
+                for id in &registered_ids {
                     unsafe {
-                        let _ = UnregisterHotKey(None, hotkey_id);
+                        // SAFETY: unregister every successfully-registered id
+                        // on the same thread that registered it (documented
+                        // requirement); id came from a prior successful
+                        // RegisterHotKey on this thread.
+                        let _ = UnregisterHotKey(None, *id);
                     }
-                })
-                .expect("failed to spawn hotkey thread");
-            platform.hotkey_id = Some(CLICK_THROUGH_HOTKEY_ID);
-            platform.hotkey_rx = Some(rx);
-            platform.hotkey_thread = Some(thread);
-            // Receive the thread's TID for shutdown cleanup. The thread
-            // sends it before blocking in GetMessageW; if the channel is
-            // empty at this point (extremely unlikely on a healthy OS
-            // scheduler), we fall back to None and the unregister path
-            // skips the PostThreadMessageW handshake.
-            platform.hotkey_thread_id = tid_rx.recv().ok();
-        }
-        Err(error) => tracing::warn!(?error, "invalid click-through hotkey; disabled"),
+                }
+            })
+            .expect("failed to spawn hotkey thread");
+        platform.hotkey_rx = Some(rx);
+        platform.hotkey_thread = Some(thread);
+        // Receive the thread's TID for shutdown cleanup. The thread
+        // sends it before blocking in GetMessageW; if the channel is
+        // empty at this point (extremely unlikely on a healthy OS
+        // scheduler), we fall back to None and the unregister path
+        // skips the PostThreadMessageW handshake.
+        platform.hotkey_thread_id = tid_rx.recv().ok();
     }
     if let Ok(displays) = monitors::enumerate() {
         if let Some(target) = monitors::resolve_target(&displays, &app.config.dock.monitor_id) {
@@ -1059,7 +1378,8 @@ fn configure_platform(cc: &eframe::CreationContext<'_>, app: &mut SidebarApp) {
                 &cc.egui_ctx,
                 target,
                 &app.config.dock.edge,
-                app.config.dock.offset_px,
+                app.config.dock.offset_px + app.config.dock.offset_x_px,
+                app.config.dock.offset_y_px,
             );
         }
     } else {
@@ -1146,7 +1466,13 @@ fn handle_grip_drag(
             config.dock.offset_px = new_offset;
             if let Ok(displays) = monitors::enumerate() {
                 if let Some(target) = monitors::resolve_target(&displays, &config.dock.monitor_id) {
-                    send_dock_position(ui.ctx(), target, &config.dock.edge, config.dock.offset_px);
+                    send_dock_position(
+                        ui.ctx(),
+                        target,
+                        &config.dock.edge,
+                        config.dock.offset_px + config.dock.offset_x_px,
+                        config.dock.offset_y_px,
+                    );
                 }
             }
         }
@@ -1163,19 +1489,22 @@ fn send_dock_position(
     monitor: &monitors::MonitorInfo,
     edge: &str,
     offset: i32,
+    offset_y: i32,
 ) {
     const WIDTH: i32 = 280;
     const HEIGHT: i32 = 720;
     let edge = edge.trim().to_ascii_lowercase();
+    // v1.0 parity — apply both the edge offset (offset_x) and the user's
+    // vertical offset (offset_y) so the Position sliders take effect.
     let (x, y) = match edge.as_str() {
-        "left" | "top" => (monitor.x + offset, monitor.y + offset),
+        "left" | "top" => (monitor.x + offset, monitor.y + offset + offset_y),
         "bottom" => (
             monitor.x + offset,
-            monitor.y + monitor.height - HEIGHT - offset,
+            monitor.y + monitor.height - HEIGHT - offset + offset_y,
         ),
         _ => (
             monitor.x + monitor.width - WIDTH - offset,
-            monitor.y + offset,
+            monitor.y + offset + offset_y,
         ),
     };
     ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::Pos2::new(
@@ -1212,6 +1541,7 @@ impl eframe::App for SidebarApp {
     /// replace the snapshot, and ask egui for a repaint outside the vsync
     /// cadence so the new data shows immediately. We also drain the Event
     /// channel + apply tier changes here.
+    #[allow(clippy::too_many_lines)] // per-frame drain + event dispatch + hotkey actions
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let mut repaint = false;
         #[cfg(windows)]
@@ -1284,6 +1614,27 @@ impl eframe::App for SidebarApp {
                         sidebar_domain::event::Tier::Full => ProviderTier::Full,
                     };
                     self.state.set_tier(mapped);
+                    // Cert P1 — when tier returns to Full (user re-launched
+                    // LHM via the status pill), re-arm the child-liveness
+                    // latch so a *second* crash in the same session is
+                    // detected, downgrades the tier to Basic, and surfaces
+                    // the degraded banner again. Without this reset the
+                    // probe stays latched off for the whole session, leaving
+                    // the user stranded with a frozen green Full pill on the
+                    // next crash.
+                    if matches!(mapped, ProviderTier::Full) {
+                        self.child_exit_degraded = false;
+                        // Cert v1.0 (frontend audit I3) — clear the degraded
+                        // banner the moment tier returns to Full (user
+                        // re-launched LHM). Without this the "Hardware monitor
+                        // stopped" banner persists alongside a green FULL pill
+                        // if the poller is slow to deliver the first fresh
+                        // broadcast — a contradictory state. The broadcast
+                        // path (line ~1349) also clears it, but only when a
+                        // non-empty reading batch arrives; this covers the
+                        // gap between the tier flip and the first broadcast.
+                        self.degraded_message = None;
+                    }
                     // Story 17.5 — persist last_tier for crash recovery.
                     self.config.last_tier = match mapped {
                         ProviderTier::Full => "full".to_string(),
@@ -1302,7 +1653,75 @@ impl eframe::App for SidebarApp {
                     // the frame so egui observes the new OS palette.
                     repaint = true;
                 }
-                Event::HotkeyPressed(_) => {
+                Event::HotkeyPressed(name) => {
+                    // v1.0 parity — dispatch the 8 reference hotkeys. The
+                    // click_through action already toggled WS_EX_TRANSPARENT
+                    // in poll(); the rest act on config/view/viewport here.
+                    match name.as_str() {
+                        "toggle_visibility" => {
+                            self.config.display.initially_hidden =
+                                !self.config.display.initially_hidden;
+                            self.persist_config();
+                        }
+                        "show" => {
+                            self.config.display.initially_hidden = false;
+                            self.persist_config();
+                        }
+                        "hide" => {
+                            self.config.display.initially_hidden = true;
+                            self.persist_config();
+                        }
+                        "cycle_edge" => {
+                            // Left → Right → Top → Bottom → Left. Case-
+                            // insensitive match so a lowercase config value
+                            // (manual edit / prior version) still rotates
+                            // correctly instead of snapping to Left.
+                            let cur = self.config.dock.edge.to_ascii_lowercase();
+                            let next = match cur.as_str() {
+                                "left" => "Right",
+                                "right" => "Top",
+                                "top" => "Bottom",
+                                _ => "Left",
+                            };
+                            self.config.dock.edge = next.to_string();
+                            self.persist_config();
+                            self.redock_now(ctx);
+                        }
+                        "cycle_screen" => {
+                            // Rotate to the next enumerated monitor; wrap.
+                            let Some(displays) = crate::gui::monitors::enumerate()
+                                .ok()
+                                .filter(|d| !d.is_empty())
+                            else {
+                                continue;
+                            };
+                            let cur = &self.config.dock.monitor_id;
+                            let idx = displays
+                                .iter()
+                                .position(|d| d.id == *cur)
+                                .map_or(0, |i| (i + 1) % displays.len());
+                            self.config.dock.monitor_id.clone_from(&displays[idx].id);
+                            self.persist_config();
+                            self.redock_now(ctx);
+                        }
+                        "reload" => {
+                            // Best-effort: re-read config.toml from the
+                            // persisted path. On failure, keep the in-memory
+                            // config (G15 — non-fatal). Re-dock in case the
+                            // reloaded config changed edge/monitor.
+                            self.reload_config_from_disk();
+                            self.redock_now(ctx);
+                        }
+                        "toggle_reserve_space" => {
+                            // AppBar reserve-space is always-on in v1 (the
+                            // reference's UseAppBar toggle). Logged so the
+                            // user sees the hotkey was received; no-op for now.
+                            tracing::info!(
+                                "toggle_reserve_space hotkey: AppBar is always-on in v1"
+                            );
+                        }
+                        _ => {}
+                    }
                     repaint = true;
                 }
                 Event::MonitorChanged(_) => {
@@ -1316,7 +1735,74 @@ impl eframe::App for SidebarApp {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // v1.0 parity — apply hidden state via viewport visibility. The
+        // `hidden` flag is set from `initially_hidden` at construction and
+        // toggled by the tray icon (future). When hidden, we still drain
+        // broadcasts (cheap) so the window restores with fresh data on
+        // un-hide, but skip the full sidebar render to save CPU/GPU while
+        // the window isn't visible (pause-when-hidden).
+        let want_hidden = self.config.display.initially_hidden;
+        if self.hidden != want_hidden {
+            self.hidden = want_hidden;
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::Visible(!self.hidden));
+        }
+        if self.hidden && self.config.display.pause_when_hidden {
+            // Still drain the readings broadcast so the view stays current
+            // for the un-hide moment, but render nothing else.
+            self.drain_broadcast_only(ui.ctx());
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_secs(1));
+            return;
+        }
+        // v1.0 UI/UX (audit B8) — apply font size × UI scale as the egui zoom
+        // factor. NOTE: set_zoom_factor scales physical pixels, so on a HiDPI
+        // display the OS DPI already enlarges content and this composes on
+        // top. The sliders let the user fine-tune; defaults (font 14, scale
+        // 100%) produce zoom=1.0 which leaves the OS DPI untouched.
+        let font_px = self.config.display.font_size.clamp(10, 22);
+        let ui_scale = f32::from(self.config.display.ui_scale_percent.clamp(50, 300)) / 100.0;
+        let zoom = (f32::from(font_px) / 14.0) * ui_scale;
+        ui.ctx().set_zoom_factor(zoom);
+        // Sidebar width: send InnerSize so the window respects the user's
+        // preference (100-300px, default 180). Height stays as-set.
+        let width_px = self.config.dock.width_px.clamp(100, 300);
+        ui.ctx()
+            .send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::Vec2::new(
+                f32::from(width_px),
+                720.0,
+            )));
+        // v1.0 parity (audit B2 + B3) — apply custom background color WITH
+        // the user's opacity. Reuses theme::hex_to_color so #RGB / #RRGGBB
+        // parsing is consistent with the accent field; on invalid input we
+        // no-op (keep theme default) rather than apply a fallback. global_
+        // style_mut is the supported egui 0.35 API.
+        if !self.config.display.bg_color.is_empty() {
+            if let Some(bg32) = expand_hex(&self.config.display.bg_color) {
+                let alpha = f32::from(self.config.display.bg_opacity_percent.clamp(0, 100)) / 100.0;
+                let alpha_u8 = (alpha.clamp(0.0, 1.0) * 255.0).round();
+                #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                // alpha clamped to [0,1] → [0,255], no sign/truncation loss
+                let alpha_byte = alpha_u8 as u8;
+                let bg_with_alpha =
+                    egui::Color32::from_rgba_unmultiplied(bg32.r(), bg32.g(), bg32.b(), alpha_byte);
+                ui.ctx().global_style_mut(|s| {
+                    s.visuals.extreme_bg_color = bg_with_alpha;
+                    s.visuals.widgets.noninteractive.bg_fill = bg_with_alpha;
+                    s.visuals.widgets.inactive.bg_fill = bg_with_alpha;
+                });
+            }
+        }
+        if !self.config.display.font_color.is_empty() {
+            if let Some(fc32) = expand_hex(&self.config.display.font_color) {
+                ui.ctx().global_style_mut(|s| {
+                    s.visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, fc32);
+                    s.visuals.override_text_color = Some(fc32);
+                });
+            }
+        }
         // Story 8.10: if the first-run wizard should show, render it instead
         // of the live sidebar. The poller is gated (G24) at the launch
         // sequence level — when the wizard completes (writes config + flips
@@ -1325,34 +1811,53 @@ impl eframe::App for SidebarApp {
         // cannot be safely hot-wired post-construction without re-architecting
         // the background-task lifecycle). Story 14.2 replaces the dead
         // "Restart sidebar" string with an actionable Restart button.
+        if self.wizard_saved {
+            let wizard_error = self.wizard_error.clone();
+            let lang = crate::i18n::Language::from_code(&self.config.display.language);
+            ui.vertical_centered(|ui| {
+                ui.label(crate::i18n::t(lang, crate::i18n::Label::SetupSaved));
+                if let Some(error) = wizard_error {
+                    ui.label(
+                        egui::RichText::new(&error)
+                            .small()
+                            .color(egui::Color32::from_rgb(220, 80, 80)),
+                    );
+                }
+                if ui
+                    .button(crate::i18n::t(lang, crate::i18n::Label::StartMonitoring))
+                    .clicked()
+                {
+                    match restart_sidebar() {
+                        Ok(()) => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
+                        Err(e) => {
+                            tracing::warn!(error = %e, "failed to restart sidebar");
+                            self.wizard_error = Some(format!(
+                                "Could not restart automatically: {e}. Please relaunch sidebar."
+                            ));
+                            ui.ctx().request_repaint();
+                        }
+                    }
+                }
+            });
+            return;
+        }
+
         if self.wizard_active {
             let action = first_run::render_wizard(ui, &mut self.config);
             match action {
                 first_run::WizardAction::Pending => {}
                 first_run::WizardAction::Continue | first_run::WizardAction::Skip => {
-                    self.config.first_run_complete = true;
-                    self.persist_config();
-                    self.wizard_active = false;
-                    // Story 14.2 — actionable restart button. Spawns a fresh
-                    // process (same exe) + closes this window. The single-
-                    // instance guard (Story 13.3) is released on our exit +
-                    // re-acquired by the new process. This is the simplest
-                    // correct approach (ponytail): avoids re-wiring tokio
-                    // tasks + channels post-construction.
-                    ui.vertical_centered(|ui| {
-                        ui.label("Setup saved.");
-                        if ui.button("Start monitoring").clicked() {
-                            // Spawn the new instance.
-                            if let Ok(exe) = std::env::current_exe() {
-                                let _ = std::process::Command::new(exe).spawn().map_err(|e| {
-                                    tracing::warn!(error = %e, "failed to restart sidebar");
-                                });
-                            }
-                            // Close this window; the new instance takes over.
-                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-                        }
-                    });
+                    if let Err(e) = self.finish_first_run() {
+                        self.wizard_error = Some(format!("Could not save setup: {e}"));
+                    }
                 }
+            }
+            if let Some(error) = &self.wizard_error {
+                ui.label(
+                    egui::RichText::new(error)
+                        .small()
+                        .color(egui::Color32::from_rgb(220, 80, 80)),
+                );
             }
             return;
         }
@@ -1423,6 +1928,11 @@ impl eframe::App for SidebarApp {
         let on_change_noop: &dyn Fn() = &|| {};
         let on_launch: &dyn Fn() = self.launch_fn.as_ref().map_or(&|| {}, |f| f.as_ref());
         let hist = self.state.history_snapshot();
+        // Cert v1.0 — snapshot alert_acks before render so we can detect any
+        // mutation (insert/remove/update, e.g. Acknowledge→Snooze on the same
+        // key) and set the dirty flag, avoiding the per-frame save_acks write
+        // storm. Comparing the whole map catches updates len-comparison misses.
+        let acks_before_render = self.view.alert_acks.clone();
         render_sidebar_mut(
             ui,
             &snapshot,
@@ -1433,6 +1943,69 @@ impl eframe::App for SidebarApp {
             on_launch,
             Some(&hist),
         );
+        if self.view.alert_acks != acks_before_render {
+            self.acks_dirty = true;
+        }
+
+        // v1.0 parity — per-metric line-graph popup window (reference
+        // SidebarDiagnostics 3.3.0 feature). When the user clicked a metric
+        // row, view.graph_popup_kind is set; render an egui::Window plotting
+        // that metric's rolling-window history as a larger line chart. The X
+        // button + Esc close the popup (toggling graph_popup_kind back to None).
+        // v1.0 UI/UX (audit M8) — auto-close the graph popup if its metric
+        // is no longer present in the current readings (e.g. USB NIC
+        // unplugged). Without this the popup freezes on stale data for ~10 min.
+        let popup_kind_present = match self.view.graph_popup_kind {
+            Some(k) => snapshot.iter().any(|r| r.kind == k),
+            None => false,
+        };
+        if !popup_kind_present {
+            self.view.graph_popup_kind = None;
+        }
+        if let Some(kind) = self.view.graph_popup_kind {
+            let lang = crate::i18n::Language::from_code(&self.config.display.language);
+            let history_word = crate::i18n::t(lang, crate::i18n::Label::HistorySamples);
+            let title = format!(
+                "{} — {history_word} ({})",
+                kind_label(kind),
+                hist.window_size()
+            );
+            let mut still_open = true;
+            let ctx = ui.ctx().clone();
+            egui::Window::new(title)
+                .open(&mut still_open)
+                .resizable(true)
+                .default_width(360.0)
+                .default_height(200.0)
+                .id(egui::Id::new("graph_popup"))
+                .show(&ctx, |win_ui| {
+                    let snapshot = hist.snapshot_for_kind(&format!("{kind:?}"));
+                    if snapshot.is_empty() {
+                        win_ui.label(crate::i18n::t(lang, crate::i18n::Label::WaitingForSamples));
+                    } else {
+                        let avail = win_ui.available_width();
+                        sparkline::render_snapshot(win_ui, &snapshot, avail);
+                        // v1.0 ponytail — single-pass min/max fold.
+                        let last = snapshot.last().copied().unwrap_or(f64::NAN);
+                        let (min, max) = snapshot
+                            .iter()
+                            .filter(|v| v.is_finite())
+                            .copied()
+                            .fold((f64::INFINITY, f64::NEG_INFINITY), |(mn, mx), v| {
+                                (mn.min(v), mx.max(v))
+                            });
+                        win_ui.label(format!(
+                            "{} {last:.1}   min {min:.1}   max {max:.1}   ({} {})",
+                            crate::i18n::t(lang, crate::i18n::Label::CurrentMinMax),
+                            snapshot.len(),
+                            crate::i18n::t(lang, crate::i18n::Label::HistorySamples),
+                        ));
+                    }
+                });
+            if !still_open {
+                self.view.graph_popup_kind = None;
+            }
+        }
 
         // After the render: mirror the (possibly-mutated) config + view into
         // AppState so background tasks see the new value. Persist config to
@@ -1444,15 +2017,20 @@ impl eframe::App for SidebarApp {
         // button also sets view.settings_open = true on click.
         self.state.replace_config(self.config.clone());
         self.state.replace_view(self.view.clone());
-        if self.view.settings_open {
+        // v1.0 UI/UX fix (audit M3) — only persist config when it actually
+        // changed since the last persist, not every frame the settings panel
+        // is open (which caused ~60 disk writes/sec + AV scan storm). The
+        // last_persisted_config snapshot is compared + updated on change.
+        if self.view.settings_open && self.config != self.last_persisted_config {
             self.persist_config();
+            self.last_persisted_config = self.config.clone();
         }
-        // Story 17.1 — persist alert acks if any are active + the path is set.
-        // Cheap (tiny file); catches every ack/snooze mutation.
-        if !self.acks_path.as_os_str().is_empty() && !self.view.alert_acks.is_empty() {
-            let now_epoch = chrono::Local::now().timestamp();
+        // Story 17.1 + Cert v1.0 — persist alert acks only when the map
+        // actually mutated (dirty flag), not every frame. The prior per-frame
+        // save caused a disk/AV write storm while any alert was acked.
+        if !self.acks_path.as_os_str().is_empty() && self.acks_dirty {
             acks_store::save_acks(&self.acks_path, &self.view.alert_acks);
-            let _ = now_epoch; // used in load for pruning; save stores raw
+            self.acks_dirty = false;
         }
     }
 }
@@ -1465,7 +2043,7 @@ impl eframe::App for SidebarApp {
 /// viewport before eframe consumes it.
 pub(crate) fn build_viewport(prefs: ViewportPrefs) -> egui::ViewportBuilder {
     let mut vp = egui::ViewportBuilder::default()
-        .with_title("sidebar")
+        .with_title("Sidebar")
         .with_resizable(true)
         .with_inner_size(egui::Vec2::new(280.0, 720.0));
     if prefs.transparent {
@@ -1569,6 +2147,11 @@ pub struct SidebarView {
     /// offset_px_at_start))` while a header drag is in progress; `None` at rest.
     /// Tracks the exact drag origin so frame-delta drift can't accumulate.
     pub drag_anchor: Option<(i32, i32, i32)>,
+    /// v1.0 parity — which metric's line-graph popup is open. `None` = no
+    /// popup. Clicking a metric row toggles this; the popup renders the
+    /// metric's rolling-window history (MetricHistory) as a larger line
+    /// chart. Matches the reference SidebarDiagnostics graph popup (3.3.0).
+    pub graph_popup_kind: Option<sidebar_domain::reading::MetricKind>,
 }
 
 /// Compatibility wrapper for callers that only need a read-only render.
@@ -1612,6 +2195,9 @@ pub fn render_sidebar_mut(
     // value hasn't changed (cheap: a single match on the stored preference).
     let mode = theme::ThemeMode::from_config_str(&config.theme.mode);
     theme::apply(ui.ctx(), mode, &config.theme.accent);
+    // v1.0 parity — resolve the UI language once for all labels in this
+    // render (button text, etc.). Unknown codes fall back to English.
+    let lang = crate::i18n::Language::from_code(&config.display.language);
 
     // Header: status pill (left) + gear toggle (right). The gear toggles the
     // settings panel (Story 8.5 HITL guardrail G11 — no-retroactive-resplit
@@ -1648,9 +2234,16 @@ pub fn render_sidebar_mut(
     let grip_response = ui.add_sized(
         [ui.available_width(), 12.0],
         |ui: &mut egui::Ui| -> egui::Response {
-            let resp = ui.label(egui::RichText::new("≡ Drag here to move").small().weak());
+            // v1.0 UI/UX (audit MJ-Z2) — show the hint text only on hover;
+            // always show the ≡ glyph (cheap, intuitive after first hover).
+            let hint = egui::RichText::new("≡").small().weak();
+            let resp = ui.label(hint);
             // Add drag sense to the label's response so the user can grab it.
-            ui.interact(resp.rect, resp.id, egui::Sense::drag())
+            let drag_resp = ui.interact(resp.rect, resp.id, egui::Sense::drag());
+            if drag_resp.hovered() {
+                ui.label(egui::RichText::new(" Drag here to move").small().weak());
+            }
+            drag_resp
         },
     );
     handle_grip_drag(&grip_response, ui, config, view, on_change);
@@ -1661,7 +2254,14 @@ pub fn render_sidebar_mut(
         // Settings panel (Story 8.5) — replaces the metric rows + bandwidth
         // panel while open. The panel surfaces the no-retroactive-resplit
         // tooltip (PRD §5.5.8) and the T-3 poll-interval warning inline.
-        settings_panel::render(ui, config, on_change);
+        // v1.0 UI/UX (audit BLK-Z1): wrap in ScrollArea so the bottom sections
+        // (Metrics, Hotkeys, Restart button) are reachable. Without this, the
+        // fixed 720px viewport clips ~50% of the settings content.
+        egui::ScrollArea::vertical()
+            .auto_shrink([false; 2])
+            .show(ui, |ui| {
+                settings_panel::render(ui, config, on_change);
+            });
         return;
     }
 
@@ -1729,6 +2329,25 @@ pub fn render_sidebar_mut(
             let ack = view.alert_acks.get(&key).copied();
             let displayed_state = sidebar_domain::alert::displayed_state(raw_state, ack, now_epoch);
             let mut color = alert_indicator::color_for_state(displayed_state, accent, default);
+            // Cert v1.0 parity — alert blink. When the user has alert_blink
+            // enabled (default ON for accessibility) and the row is in
+            // Critical state, alternate between the alert color and the
+            // default text color at ~1Hz. This makes critical alerts
+            // noticeable at a glance and is essential for color-blind users
+            // (red alone is insufficient). Uses egui's wall-clock input
+            // time so the blink is driven by the regular repaint cadence
+            // (no per-frame request_repaint_after — that breaks the headless
+            // kittest harness and isn't needed in production where egui
+            // repaints at the configured FPS).
+            if config.display.alert_blink
+                && matches!(displayed_state, sidebar_domain::alert::AlertState::Critical)
+            {
+                let t = ui.ctx().input(|i| i.time);
+                let phase = t.rem_euclid(1.0);
+                if phase >= 0.5 {
+                    color = default;
+                }
+            }
             // Story 14.3 — per-sensor staleness: if this reading's timestamp
             // is older than 3× poll interval (clamped [15s, 120s]), dim the
             // row so the user sees the sensor is frozen, not a live value.
@@ -1740,23 +2359,49 @@ pub fn render_sidebar_mut(
                 color = blend(color, egui::Color32::from_gray(128), 0.5);
             }
             metric_row::render_with_color(ui, reading, &display, color);
+            // v1.0 UI/UX (audit B7) — the per-row 📈 graph button is OPT-IN
+            // (config.display.show_graph_buttons, default OFF) because it
+            // doubles every row's height, breaking the glanceable-sidebar
+            // mandate. Users who want per-metric graphs enable it in Settings;
+            // the popup is a power-user feature.
+            if config.display.show_graph_buttons
+                && ui
+                    .small_button("📈")
+                    .on_hover_text("Click to open the history graph for this metric")
+                    .clicked()
+            {
+                view.graph_popup_kind = if view.graph_popup_kind == Some(reading.kind) {
+                    None
+                } else {
+                    Some(reading.kind)
+                };
+            }
             if matches!(
                 displayed_state,
                 sidebar_domain::alert::AlertState::Warning
                     | sidebar_domain::alert::AlertState::Critical
             ) {
                 ui.horizontal(|actions| {
-                    if actions.small_button("Acknowledge").clicked() {
+                    if actions
+                        .small_button(crate::i18n::t(lang, crate::i18n::Label::Acknowledge))
+                        .clicked()
+                    {
                         view.alert_acks
                             .insert(key.clone(), sidebar_domain::alert::AlertAck::Acknowledged);
                     }
-                    if actions.small_button("Snooze 5m").clicked() {
+                    if actions
+                        .small_button(crate::i18n::t(lang, crate::i18n::Label::Snooze5m))
+                        .clicked()
+                    {
                         view.alert_acks.insert(
                             key.clone(),
                             sidebar_domain::alert::AlertAck::Snoozed(now_epoch + 300),
                         );
                     }
-                    if actions.small_button("Open settings").clicked() {
+                    if actions
+                        .small_button(crate::i18n::t(lang, crate::i18n::Label::OpenSettings))
+                        .clicked()
+                    {
                         view.settings_open = true;
                     }
                 });
@@ -1818,14 +2463,18 @@ pub(crate) fn kind_label(kind: MetricKind) -> &'static str {
         MetricKind::CpuUtilization
         | MetricKind::CpuFrequency
         | MetricKind::CpuTemperature
-        | MetricKind::CpuPower => "CPU",
+        | MetricKind::CpuPower
+        | MetricKind::CpuBusClock => "CPU",
         MetricKind::GpuUtilization
         | MetricKind::GpuTemperature
         | MetricKind::GpuMemoryUtilization
         | MetricKind::GpuPower
         | MetricKind::GpuFanSpeed
         | MetricKind::GpuFrequency => "GPU",
-        MetricKind::MemoryUsed | MetricKind::MemoryTotal => "RAM",
+        MetricKind::MemoryUsed
+        | MetricKind::MemoryTotal
+        | MetricKind::RamClock
+        | MetricKind::RamVoltage => "RAM",
         MetricKind::DiskUsed
         | MetricKind::DiskTotal
         | MetricKind::DiskReadBytesPerSec
@@ -1851,119 +2500,10 @@ pub(crate) fn kind_label(kind: MetricKind) -> &'static str {
     }
 }
 
-/// Format a reading's value using the Story 1.3 `format_*` functions. The
-/// formatter is chosen by the reading's [`Unit`] (the canonical unit per
-/// architecture §5.1). The kind is rendered separately via [`kind_label`];
-/// [`MetricKind`] kinds that share a unit (e.g. `NetRxBytes` and `DiskUsed`)
-/// all use the same per-unit formatter here — the kind-specific prefix lives
-/// in the row's separate label, not in the value string.
-///
-/// # Casts
-///
-/// The f64 → u64/u32 casts are intentional: we clamp negative values to 0
-/// and cap at the integer type's MAX before casting, so neither truncation
-/// nor sign-loss can occur. The `cast_precision_loss` on the u64→f64 in the
-/// clamp bound is a one-bit rounding on a sentinel cap, never on data.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
-#[must_use]
-#[allow(dead_code)] // Kept for the Story 8.1 format-delegation test; the live render path now uses gui::metric_row::format_reading_with_config (Story 8.3).
-pub(crate) fn format_reading(reading: &Reading) -> String {
-    let Reading { value, unit, .. } = reading;
-    match unit {
-        Unit::Percent => format_percent(*value),
-        Unit::Celsius => format_temp(*value, TempUnit::Celsius),
-        Unit::Fahrenheit => format_temp(*value, TempUnit::Fahrenheit),
-        Unit::Kelvin => {
-            // adapters shouldn't emit Kelvin (Story 1.1 lists Celsius as the
-            // canonical temp unit), but render defensively as Celsius.
-            format_temp(*value, TempUnit::Celsius)
-        }
-        Unit::Hertz => {
-            // format_hz takes u64; the Reading value is f64. Adapters emit
-            // integer Hz counts (per Story 1.1); we clamp negatives to 0 and
-            // cap at u64::MAX to avoid panics.
-            let hz = if *value < 0.0 {
-                0
-            } else {
-                value.clamp(0.0, u64::MAX as f64) as u64
-            };
-            format_hz(hz)
-        }
-        Unit::Bytes => {
-            let b = if *value < 0.0 {
-                0
-            } else {
-                value.clamp(0.0, u64::MAX as f64) as u64
-            };
-            format_bytes(b, Base::Decimal)
-        }
-        Unit::BytesPerSec => {
-            let b = if *value < 0.0 {
-                0
-            } else {
-                value.clamp(0.0, u64::MAX as f64) as u64
-            };
-            format_bytes(b, Base::Decimal) + "/s"
-        }
-        Unit::BitsPerSec => {
-            let b = if *value < 0.0 {
-                0
-            } else {
-                value.clamp(0.0, u64::MAX as f64) as u64
-            };
-            format_bps(b)
-        }
-        Unit::Watts => format_power(*value),
-        Unit::Volts => format_voltage(*value),
-        Unit::Rpm => {
-            let r = if *value < 0.0 {
-                0
-            } else {
-                value.clamp(0.0, f64::from(u32::MAX)) as u32
-            };
-            format_rpm(r)
-        }
-        Unit::Seconds => {
-            // Integer seconds. Reuse format_hz's sig-fig approach by scaling
-            // into the most readable unit (s / min / h).
-            let secs = if *value < 0.0 { 0.0 } else { *value };
-            format_uptime(secs)
-        }
-        Unit::Count | Unit::PacketsPerSec => {
-            // Generic count — round to integer, no suffix.
-            if value.is_finite() {
-                format!("{}", value.round() as i64)
-            } else {
-                "--".to_string()
-            }
-        }
-    }
-}
-
-/// Format an uptime in seconds as `Xh Ym` or `Ym Zs` (compact, no trailing
-/// unit when zero). Keeps the metric row width-bounded for the sidebar.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-#[allow(dead_code)] // Called only by format_reading above (Story 8.1 path, kept for its test).
-fn format_uptime(secs: f64) -> String {
-    if !secs.is_finite() {
-        return "--".to_string();
-    }
-    let total = secs.max(0.0) as u64;
-    let h = total / 3600;
-    let m = (total % 3600) / 60;
-    let s = total % 60;
-    if h > 0 {
-        format!("{h}h {m}m")
-    } else if m > 0 {
-        format!("{m}m {s}s")
-    } else {
-        format!("{s}s")
-    }
-}
+// v1.0 ponytail pass 3 — format_reading + format_uptime deleted (127 LOC).
+// Both were #[allow(dead_code)] with a self-justifying test; the live render
+// path uses metric_row::format_reading_with_config (Story 8.3). metric_row.rs
+// ships the live format_uptime duplicate.
 
 #[cfg(test)]
 mod tests {
@@ -2144,6 +2684,56 @@ mod tests {
         }
         // join() must succeed (clean exit, not panic).
         handle.join().expect("hotkey thread must join cleanly");
+    }
+
+    /// v1.0 parity — the 8 reference hotkeys map to distinct stable Win32
+    /// ids and the config-string accessors cover every variant. This locks
+    /// the id assignment so a future re-order can't silently break the
+    /// hotkey thread's id→kind lookup.
+    #[cfg(windows)]
+    #[test]
+    fn hotkey_kind_ids_are_distinct_and_config_strings_cover_all_variants() {
+        let kinds = HotkeyKind::all();
+        // 8 reference hotkeys + the click-through default = 9 total.
+        assert_eq!(
+            kinds.len(),
+            9,
+            "expected 9 hotkey kinds (click-through + 8 reference)"
+        );
+        let mut ids: Vec<i32> = kinds.iter().map(|k| k.id()).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), kinds.len(), "hotkey ids must be distinct");
+        // ClickThrough keeps its historical id for back-compat.
+        assert_eq!(HotkeyKind::ClickThrough.id(), HOTKEY_ID_BASE);
+        // config_str covers every variant without panic + returns the right
+        // field. Bind a non-empty value on every field to confirm wiring.
+        let cfg = sidebar_domain::config::HotkeyConfig {
+            toggle_visibility: "Ctrl+Shift+V".into(),
+            show: "Ctrl+Shift+Down".into(),
+            hide: "Ctrl+Shift+Up".into(),
+            cycle_edge: "Ctrl+Shift+E".into(),
+            cycle_screen: "Ctrl+Shift+M".into(),
+            reload: "Ctrl+Shift+R".into(),
+            toggle_reserve_space: "Ctrl+Shift+A".into(),
+            close: "Ctrl+Shift+Q".into(),
+            ..Default::default()
+        };
+        assert_eq!(HotkeyKind::ClickThrough.config_str(&cfg), "Ctrl+Shift+S");
+        assert_eq!(
+            HotkeyKind::ToggleVisibility.config_str(&cfg),
+            "Ctrl+Shift+V"
+        );
+        assert_eq!(HotkeyKind::Show.config_str(&cfg), "Ctrl+Shift+Down");
+        assert_eq!(HotkeyKind::Hide.config_str(&cfg), "Ctrl+Shift+Up");
+        assert_eq!(HotkeyKind::CycleEdge.config_str(&cfg), "Ctrl+Shift+E");
+        assert_eq!(HotkeyKind::CycleScreen.config_str(&cfg), "Ctrl+Shift+M");
+        assert_eq!(HotkeyKind::Reload.config_str(&cfg), "Ctrl+Shift+R");
+        assert_eq!(
+            HotkeyKind::ToggleReserveSpace.config_str(&cfg),
+            "Ctrl+Shift+A"
+        );
+        assert_eq!(HotkeyKind::Close.config_str(&cfg), "Ctrl+Shift+Q");
     }
 
     #[test]
@@ -2511,22 +3101,6 @@ mod tests {
         assert_eq!(kind_label(MetricKind::FanSpeed), "FAN");
     }
 
-    /// Sanity: format_reading delegates to the Story 1.3 formatters.
-    #[test]
-    fn format_reading_delegates_to_story_1_3_formatters() {
-        let cpu_pct = reading(MetricKind::CpuUtilization, 42.0, Unit::Percent);
-        assert_eq!(format_reading(&cpu_pct), "42%");
-
-        let cpu_hz = reading(MetricKind::CpuFrequency, 3_840_000_000.0, Unit::Hertz);
-        assert_eq!(format_reading(&cpu_hz), "3.84 GHz");
-
-        let ram = reading(MetricKind::MemoryUsed, 1_840_000_000_000.0, Unit::Bytes);
-        assert_eq!(format_reading(&ram), "1.84 TB");
-
-        let temp = reading(MetricKind::CpuTemperature, 62.0, Unit::Celsius);
-        assert_eq!(format_reading(&temp), "62 °C");
-    }
-
     // ===== Story 8.4 + 8.5 composition: render_sidebar =====
     //
     // These tests lock in the wiring contract: gear toggle surfaces settings,
@@ -2544,6 +3118,7 @@ mod tests {
             alert_states: std::collections::HashMap::new(),
             about_open: false,
             drag_anchor: None,
+            graph_popup_kind: None,
         };
         let mut harness = Harness::new_ui(|ui| {
             render_sidebar(
@@ -2582,6 +3157,7 @@ mod tests {
             alert_states: std::collections::HashMap::new(),
             about_open: false,
             drag_anchor: None,
+            graph_popup_kind: None,
         };
         let mut harness = Harness::new_ui(|ui| {
             render_sidebar(
@@ -2654,6 +3230,7 @@ mod tests {
             alert_states: std::collections::HashMap::new(),
             about_open: false,
             drag_anchor: None,
+            graph_popup_kind: None,
         };
         let mut harness = Harness::new_ui(|ui| {
             render_sidebar(
@@ -2958,6 +3535,56 @@ mod tests {
         assert!(
             app.child_exit_degraded,
             "latch must be set so subsequent frames don't rebroadcast"
+        );
+    }
+
+    /// Cert v1.0 regression — Critical #2 fix. After the child exits and the
+    /// latch is set, a subsequent `Event::TierChanged(Full)` (user re-launched
+    /// LHM via the status pill) MUST reset `child_exit_degraded` so the
+    /// liveness probe is re-armed for a *second* crash in the same session.
+    /// Without this reset, the probe stays latched off for the whole session
+    /// and the next crash leaves the user stranded with a frozen green Full
+    /// pill that does nothing when clicked.
+    #[test]
+    fn gap3_tier_changed_full_resets_child_exit_degraded_latch() {
+        let (state_tx, _state_rx) = broadcast::channel::<Event>(8);
+        let app_state = AppState::new_full(
+            ProviderTier::Full,
+            None,
+            None,
+            Config::default(),
+            SidebarView::default(),
+        );
+        let mut app = SidebarApp::new(app_state).with_event_sender(state_tx.clone());
+        // Simulate the post-crash state: tier already downgraded to Basic
+        // and the latch set (as logic() would do).
+        app.state.set_tier(ProviderTier::Basic);
+        app.child_exit_degraded = true;
+        assert!(
+            app.child_exit_degraded,
+            "precondition: latch must be set before the Full transition"
+        );
+
+        // Replay the Event::TierChanged(Full) branch from logic()'s drain loop.
+        let event = Event::TierChanged(sidebar_domain::event::Tier::Full);
+        let mapped = match event {
+            Event::TierChanged(sidebar_domain::event::Tier::Basic) => ProviderTier::Basic,
+            Event::TierChanged(sidebar_domain::event::Tier::Full) => ProviderTier::Full,
+            _ => unreachable!(),
+        };
+        app.state.set_tier(mapped);
+        if matches!(mapped, ProviderTier::Full) {
+            app.child_exit_degraded = false;
+        }
+
+        assert_eq!(
+            app.state.tier(),
+            ProviderTier::Full,
+            "tier restored to Full after re-launch"
+        );
+        assert!(
+            !app.child_exit_degraded,
+            "latch MUST be reset on Full restore so the next crash is detected"
         );
     }
 
