@@ -73,6 +73,11 @@ pub struct HistoryRow {
 /// - `days_until_reset` — calendar days from today (inclusive of `today`)
 ///   to `next_reset_date`. Clamped at 0 once today is past the reset date.
 /// - `next_reset_date` — the cycle_end date the countdown targets.
+/// - `degraded` — true when the accountant has hit a persistent
+///   `archive_cycle` failure streak (see accountant's
+///   `ARCHIVE_DEFER_ESCALATION_THRESHOLD`). The cycle won't advance
+///   unattended; the GUI renders a banner so the user knows the
+///   "this cycle" total is stuck and can restart the app or free the DB.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BandwidthView {
     /// Per-NIC totals for the current cycle.
@@ -83,6 +88,8 @@ pub struct BandwidthView {
     pub days_until_reset: u32,
     /// The cycle-end date the countdown targets.
     pub next_reset_date: NaiveDate,
+    /// Persistent archive-cycle failure — cycle won't advance unattended.
+    pub degraded: bool,
 }
 
 /// Build a [`BandwidthView`] from the accumulator + a borrowed history slice.
@@ -94,6 +101,10 @@ pub struct BandwidthView {
 /// `friendly_name` is left `None` per the 5.3 scope (NIC-name cache is a
 /// later integration).
 ///
+/// `degraded` is a pass-through flag the accountant sets when its
+/// `archive_cycle` failure streak exceeds the escalation threshold; the GUI
+/// renders a banner so the user knows the cycle won't auto-advance.
+///
 /// # Arguments
 ///
 /// * `accumulator` — the accountant's in-memory state for the current cycle.
@@ -102,12 +113,15 @@ pub struct BandwidthView {
 ///   `HistoryRow` to keep the DTO free of rusqlite types).
 /// * `cycle_end` — the current cycle's end date (the next reset date).
 /// * `clock` — injectable wall-clock (F3); tests pass a `FakeClock`.
+/// * `degraded` — true when the accountant is in persistent archive-failure
+///   mode; surfaces as `BandwidthView::degraded`.
 #[must_use]
 pub fn build_view(
     accumulator: &MonthlyAccumulator,
     history: &[HistoryRow],
     cycle_end: NaiveDate,
     clock: &dyn Clock,
+    degraded: bool,
 ) -> BandwidthView {
     // Current-cycle entries: one NICtotals per tracked LUID. friendly_name
     // is None per 5.3 scope (NIC-name cache integration is a later story).
@@ -152,6 +166,7 @@ pub fn build_view(
         history,
         days_until_reset,
         next_reset_date: cycle_end,
+        degraded,
     }
 }
 
@@ -204,7 +219,7 @@ mod tests {
         let cycle_end = NaiveDate::from_ymd_opt(2026, 7, 31).unwrap();
         let clock = FakeClock::new(t(2026, 7, 15));
 
-        let view = build_view(&acc, &history, cycle_end, &clock);
+        let view = build_view(&acc, &history, cycle_end, &clock, false);
 
         assert_eq!(view.current.len(), 1, "one current NIC entry");
         let cur = &view.current[0];
@@ -235,7 +250,7 @@ mod tests {
         let cycle_end = NaiveDate::from_ymd_opt(2026, 7, 31).unwrap();
         let clock = FakeClock::new(t(2026, 7, 1));
 
-        let view = build_view(&acc, &history, cycle_end, &clock);
+        let view = build_view(&acc, &history, cycle_end, &clock, false);
 
         assert!(view.current.is_empty(), "empty current");
         assert!(view.history.is_empty(), "empty history");
@@ -255,7 +270,7 @@ mod tests {
         let cycle_end = NaiveDate::from_ymd_opt(2026, 7, 31).unwrap();
         let clock = FakeClock::new(t(2026, 7, 30)); // cycle_end - 1
 
-        let view = build_view(&acc, &[], cycle_end, &clock);
+        let view = build_view(&acc, &[], cycle_end, &clock, false);
 
         assert_eq!(view.days_until_reset, 1, "Jul 30 → Jul 31 = 1 day");
     }
@@ -269,7 +284,7 @@ mod tests {
         let cycle_end = NaiveDate::from_ymd_opt(2026, 7, 31).unwrap();
         let clock = FakeClock::new(t(2026, 7, 31)); // == cycle_end
 
-        let view = build_view(&acc, &[], cycle_end, &clock);
+        let view = build_view(&acc, &[], cycle_end, &clock, false);
 
         assert_eq!(view.days_until_reset, 0, "today == cycle_end → 0");
     }
@@ -292,7 +307,7 @@ mod tests {
         let cycle_end = NaiveDate::from_ymd_opt(2026, 7, 31).unwrap();
         let clock = FakeClock::new(t(2026, 7, 15));
 
-        let view = build_view(&acc, &history, cycle_end, &clock);
+        let view = build_view(&acc, &history, cycle_end, &clock, false);
 
         assert!(view.current.is_empty(), "no current NICs");
         assert_eq!(view.history.len(), 1, "disconnected NIC retained");
@@ -311,11 +326,33 @@ mod tests {
         let cycle_end = NaiveDate::from_ymd_opt(2026, 7, 31).unwrap();
         let clock = FakeClock::new(t(2026, 8, 5)); // past cycle_end
 
-        let view = build_view(&acc, &[], cycle_end, &clock);
+        let view = build_view(&acc, &[], cycle_end, &clock, false);
 
         assert_eq!(
             view.days_until_reset, 0,
             "today past cycle_end → clamped to 0 (never negative)"
         );
+    }
+
+    // ----- v1.0 audit (1-A): persistent archive-cycle failure surfaces a
+    // `degraded` flag so the GUI can render a banner. The accountant passes
+    // its escalation state in; build_view just forwards it. -----
+
+    /// Cited: v1.0 audit Iteration 1-A. When the accountant's
+    /// `archive_defer_count` has reached its escalation threshold,
+    /// `build_view` must forward `degraded = true` so the GUI can render a
+    /// banner (the user-visible symptom is a "this cycle" total that never
+    /// resets).
+    #[test]
+    fn degraded_flag_propagates_into_view() {
+        let acc = MonthlyAccumulator::new();
+        let cycle_end = NaiveDate::from_ymd_opt(2026, 7, 31).unwrap();
+        let clock = FakeClock::new(t(2026, 7, 15));
+
+        let view_ok = build_view(&acc, &[], cycle_end, &clock, false);
+        assert!(!view_ok.degraded, "healthy accountant → degraded=false");
+
+        let view_bad = build_view(&acc, &[], cycle_end, &clock, true);
+        assert!(view_bad.degraded, "escalated accountant → degraded=true");
     }
 }

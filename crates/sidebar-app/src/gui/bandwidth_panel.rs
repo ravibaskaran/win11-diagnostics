@@ -40,6 +40,13 @@ pub const RESETS_TODAY: &str = "Resets today";
 /// from the current cycle (Boundary #3 — disconnected).
 pub const DISCONNECTED_TAG: &str = "(disconnected)";
 
+/// Banner shown when `BandwidthView::degraded` is set (v1.0 audit 1-A).
+/// The accountant hit a persistent `archive_cycle` failure streak — the
+/// cycle total is stuck and won't auto-advance. A restart usually clears
+/// it (frees the SQLite lock / picks up a schema fix).
+pub const DEGRADED_BANNER: &str =
+    "Bandwidth cycle reset failed — totals may be stale. Restart Sidebar.";
+
 /// Render the bandwidth panel: per-NIC rows + history strip below.
 ///
 /// - `view` — the Story 5.3 DTO from `Arc<RwLock<BandwidthView>>`.
@@ -57,6 +64,12 @@ pub const DISCONNECTED_TAG: &str = "(disconnected)";
 ///
 /// Empty `view.current` (no tracked NICs) renders [`EMPTY_TEXT`] and returns.
 pub fn render(ui: &mut Ui, view: &BandwidthView, display: &DisplayConfig) {
+    if view.degraded {
+        // v1.0 audit 1-A — surface a persistent archive-cycle failure even
+        // when no NICs are tracked (the cycle is still stuck). Renders above
+        // the empty/normal body so the user sees it first.
+        ui.label(egui::RichText::new(DEGRADED_BANNER).color(ui.visuals().warn_fg_color));
+    }
     if view.current.is_empty() {
         ui.label(EMPTY_TEXT);
         return;
@@ -309,6 +322,7 @@ mod tests {
             history: vec![],
             days_until_reset: 12,
             next_reset_date: NaiveDate::from_ymd_opt(2026, 7, 31).unwrap(),
+            degraded: false,
         };
         let display = default_display();
         let mut harness = Harness::new_ui(|ui| {
@@ -344,6 +358,7 @@ mod tests {
             history: vec![nic(1, "Wi-Fi", 40, 10)],
             days_until_reset: 12,
             next_reset_date: NaiveDate::from_ymd_opt(2026, 7, 31).unwrap(),
+            degraded: false,
         };
         let display = default_display();
         let mut harness = Harness::new_ui(|ui| {
@@ -374,6 +389,7 @@ mod tests {
             history: vec![],
             days_until_reset: 30,
             next_reset_date: NaiveDate::from_ymd_opt(2026, 7, 31).unwrap(),
+            degraded: false,
         };
         let display = default_display();
         let mut harness = Harness::new_ui(|ui| {
@@ -396,6 +412,7 @@ mod tests {
             history: vec![],
             days_until_reset: 0,
             next_reset_date: NaiveDate::from_ymd_opt(2026, 7, 31).unwrap(),
+            degraded: false,
         };
         let display = default_display();
         let mut harness = Harness::new_ui(|ui| {
@@ -423,6 +440,7 @@ mod tests {
             history: vec![nic(99, "Ethernet", 40, 10)],
             days_until_reset: 12,
             next_reset_date: NaiveDate::from_ymd_opt(2026, 7, 31).unwrap(),
+            degraded: false,
         };
         let display = default_display();
         let mut harness = Harness::new_ui(|ui| {
@@ -456,6 +474,7 @@ mod tests {
             history: vec![],
             days_until_reset: 12,
             next_reset_date: NaiveDate::from_ymd_opt(2026, 7, 31).unwrap(),
+            degraded: false,
         };
         let s = reset_countdown_label(&view);
         assert_eq!(s, "12 days until reset (2026-07-31)");
@@ -468,6 +487,7 @@ mod tests {
             history: vec![],
             days_until_reset: 0,
             next_reset_date: NaiveDate::from_ymd_opt(2026, 7, 31).unwrap(),
+            degraded: false,
         };
         assert_eq!(reset_countdown_label(&view), RESETS_TODAY);
     }
@@ -494,6 +514,7 @@ mod tests {
             history: vec![],
             days_until_reset: 12,
             next_reset_date: NaiveDate::from_ymd_opt(2026, 7, 31).unwrap(),
+            degraded: false,
         };
 
         // RFC 4180: CRLF line terminators, embedded newlines replaced with
@@ -501,6 +522,55 @@ mod tests {
         assert_eq!(
             export_bandwidth_csv(&view),
             "luid,adapter_name,rx_bytes,tx_bytes\r\n7,\"Wi-Fi, \"\"Lab\"\" VPN\",1000000000,2000000000\r\n"
+        );
+    }
+
+    // ===== v1.0 audit 1-A — degraded banner surfaces persistent archive failure
+
+    /// Cited: v1.0 audit Iteration 1-A. When `BandwidthView::degraded` is
+    /// true, the panel MUST render [`DEGRADED_BANNER`] so the user knows the
+    /// cycle total is stuck (instead of silently showing a stale number).
+    #[test]
+    fn degraded_renders_banner() {
+        let view = BandwidthView {
+            current: vec![nic(1, "Wi-Fi", 50, 20)],
+            history: vec![],
+            days_until_reset: 12,
+            next_reset_date: NaiveDate::from_ymd_opt(2026, 7, 31).unwrap(),
+            degraded: true,
+        };
+        let display = default_display();
+        let mut harness = Harness::new_ui(|ui| {
+            render(ui, &view, &display);
+        });
+        harness.run();
+        let labels = all_labels(&harness).join(" | ");
+        assert!(
+            labels.contains(DEGRADED_BANNER),
+            "degraded view must render banner (got: {labels})"
+        );
+    }
+
+    /// Cited: v1.0 audit Iteration 1-A. A healthy view MUST NOT render the
+    /// degraded banner — guards against accidentally defaulting it on.
+    #[test]
+    fn healthy_does_not_render_degraded_banner() {
+        let view = BandwidthView {
+            current: vec![nic(1, "Wi-Fi", 50, 20)],
+            history: vec![],
+            days_until_reset: 12,
+            next_reset_date: NaiveDate::from_ymd_opt(2026, 7, 31).unwrap(),
+            degraded: false,
+        };
+        let display = default_display();
+        let mut harness = Harness::new_ui(|ui| {
+            render(ui, &view, &display);
+        });
+        harness.run();
+        let labels = all_labels(&harness).join(" | ");
+        assert!(
+            !labels.contains(DEGRADED_BANNER),
+            "healthy view must not render degraded banner (got: {labels})"
         );
     }
 }

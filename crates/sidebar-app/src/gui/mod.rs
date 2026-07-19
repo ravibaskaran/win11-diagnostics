@@ -2442,6 +2442,7 @@ pub fn render_sidebar_mut(
                 history: vec![],
                 days_until_reset: 0,
                 next_reset_date: chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap_or_default(),
+                degraded: false,
             },
             &config.display,
         );

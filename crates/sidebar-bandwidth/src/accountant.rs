@@ -108,6 +108,18 @@ impl AccountantConfig {
 /// - `accumulator` — per-LUID in-memory state (Story 5.1).
 /// - `cycle_start` — the start date of the current billing cycle (stamped
 ///   on `current_cycle` rows; advanced on rollover).
+/// Deferral escalation threshold for `check_rollover` archive failures.
+///
+/// A single transient `archive_cycle` failure (e.g. SQLITE_BUSY exhausted) is
+/// expected + benign — the cycle advances on the next debounce tick. A
+/// PERSISTENT failure (corruption, schema fault, read-only filesystem) means
+/// the accumulator grows into the stale cycle forever and the user sees a
+/// "this cycle" total that silently never resets. After this many consecutive
+/// deferrals, the accountant escalates the log to `error!` with a distinct
+/// tag and surfaces a `degraded` flag through `BandwidthView` so the GUI can
+/// render a visible banner.
+const ARCHIVE_DEFER_ESCALATION_THRESHOLD: u32 = 3;
+
 pub struct BandwidthAccountant {
     rx: broadcast::Receiver<Vec<Reading>>,
     conn: Connection,
@@ -116,6 +128,11 @@ pub struct BandwidthAccountant {
     accumulator: MonthlyAccumulator,
     cycle_start: NaiveDate,
     active_cycle_start_day: CycleStartDay,
+    /// Consecutive `archive_cycle` failures since the last successful
+    /// rollover. Reset to 0 on success. Once it reaches
+    /// [`ARCHIVE_DEFER_ESCALATION_THRESHOLD`] the accountant is in degraded
+    /// mode (cycle won't advance; GUI banner surfaces).
+    archive_defer_count: u32,
     /// Story 12.8 Gap 2 — optional watch channel for publishing BandwidthView
     /// snapshots to the GUI after each flush. `None` in tests/older callers
     /// that don't need the live view.
@@ -249,6 +266,7 @@ impl BandwidthAccountant {
             accumulator,
             cycle_start,
             active_cycle_start_day,
+            archive_defer_count: 0,
             view_tx: None,
         }
     }
@@ -379,6 +397,7 @@ impl BandwidthAccountant {
             &history,
             cycle_end_date,
             self.clock.as_ref(),
+            self.archive_defer_count >= ARCHIVE_DEFER_ESCALATION_THRESHOLD,
         );
         // send errors only when ALL receivers were dropped; harmless.
         let _ = tx.send(Some(view));
@@ -442,7 +461,25 @@ impl BandwidthAccountant {
                 &cycle_end_str,
                 &archived_at,
             ) {
-                tracing::error!(error = %e, "rollover: archive_cycle failed — deferring cycle advance");
+                self.archive_defer_count = self.archive_defer_count.saturating_add(1);
+                if self.archive_defer_count >= ARCHIVE_DEFER_ESCALATION_THRESHOLD {
+                    // Persistent failure — the cycle will never advance
+                    // unattended. Escalate to a distinct error so log
+                    // scanners can pick it up; the GUI banner surfaces via
+                    // the `degraded` flag in `publish_view`.
+                    tracing::error!(
+                        error = %e,
+                        defer_count = self.archive_defer_count,
+                        cycle_start = %self.cycle_start,
+                        "rollover: persistent archive_cycle failure — cycle will not advance (degraded)"
+                    );
+                } else {
+                    tracing::error!(
+                        error = %e,
+                        defer_count = self.archive_defer_count,
+                        "rollover: archive_cycle failed — deferring cycle advance"
+                    );
+                }
                 return;
             }
             if let Err(e) = sidebar_persistence::bandwidth_repo::prune_history(
@@ -454,6 +491,9 @@ impl BandwidthAccountant {
             self.cycle_start = next_cycle_start(cycle_end_date);
             self.active_cycle_start_day = self.config.cycle_start_day;
             self.accumulator = MonthlyAccumulator::new();
+            // Reset the deferral counter on a successful rollover (transient
+            // recovery — the next persistent-failure streak starts fresh).
+            self.archive_defer_count = 0;
             tracing::info!(
                 new_cycle_start = %self.cycle_start,
                 "rollover: advanced to new billing cycle"
@@ -1502,6 +1542,216 @@ mod tests {
                 .any(|r| r.adapter_luid == 100 && r.rx_bytes == 500),
             "shutdown final-flush persisted the delta"
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // v1.0 audit 1-A — persistent archive_cycle failure must NOT advance
+    // cycle_start, must escalate after N deferrals, and must surface a
+    // degraded flag via BandwidthView.
+    //
+    // RED (the pre-fix code had an unbounded early-return + no escalation):
+    // the cycle would silently never reset; the GUI showed a stale total
+    // with zero feedback. The fix bounds the failure with a counter +
+    // surfaces `degraded` once it crosses
+    // [`ARCHIVE_DEFER_ESCALATION_THRESHOLD`].
+    // ---------------------------------------------------------------------
+    /// Cited: v1.0 audit Iteration 1-A. Forces repeated archive failure by
+    /// dropping the `current_cycle` table out from under the connection,
+    /// then drives the accountant across a rollover boundary multiple
+    /// times. Asserts: (1) `cycle_start` never advances past July, (2)
+    /// after N consecutive deferrals the accountant has escalated (we
+    /// inspect this via the `degraded` flag in the published
+    /// `BandwidthView`).
+    #[tokio::test]
+    async fn persistent_archive_failure_escalates_and_freezes_cycle_start() {
+        let (conn, db_path, dir) = open_temp_db();
+        // Seed a July row so the accountant's `cycle_start` is pinned at
+        // 2026-07-01 on construction.
+        bandwidth_repo::save_accumulator(
+            &conn,
+            100_i64,
+            "eth0",
+            1_000_i64,
+            500_i64,
+            "2026-07-01",
+            "2026-07-15 12:00:00",
+        )
+        .expect("seed pre-restart row");
+        drop(conn);
+
+        let accountant_conn = Connection::open(&db_path).expect("reopen");
+        // Break `archive_cycle` permanently: drop the `current_cycle` table.
+        // Every INSERT...SELECT in archive_cycle will now fail with "no such
+        // table: current_cycle" — a persistent (non-busy) failure.
+        accountant_conn
+            .execute("DROP TABLE current_cycle", [])
+            .expect("drop current_cycle to force persistent archive failure");
+
+        let (tx, rx) = broadcast::channel::<Vec<Reading>>(8);
+        let clock = FakeClock::new(t0_dt()); // 2026-07-15 — inside July cycle
+        let config = AccountantConfig {
+            cycle_start_day: CycleStartDay::day(1),
+            flush_interval: Duration::from_millis(50),
+            history_keep: 1,
+        };
+        let (view_tx, view_rx) = tokio::sync::watch::channel(None);
+        let accountant =
+            BandwidthAccountant::new(rx, accountant_conn, Box::new(clock.clone()), config)
+                .with_view_sender(view_tx);
+
+        let join = tokio::spawn(async move { accountant.run(CancellationToken::new()).await });
+
+        // Drive the rollover boundary: send a tick, advance the clock past
+        // 2026-07-31 (cycle_end for Day(1) July), then wait for several
+        // debounce ticks so check_rollover fires repeatedly. Each fires
+        // archive_cycle → fails → defers.
+        tx.send(net_readings(100, 2_000, 1_000)).expect("tick");
+        tokio::task::yield_now().await;
+        clock.set(
+            NaiveDate::from_ymd_opt(2026, 9, 5)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap(),
+        );
+        // Wait long enough for ARCHIVE_DEFER_ESCALATION_THRESHOLD (3)
+        // debounce ticks to fire + fail.
+        tokio::time::sleep(Duration::from_millis(400)).await;
+
+        // Inspect the published view BEFORE joining — the accountant is
+        // still running (we cancel it below).
+        let degraded = view_rx.borrow().as_ref().is_some_and(|v| v.degraded);
+        assert!(
+            degraded,
+            "persistent archive failure must escalate to degraded=true in BandwidthView"
+        );
+
+        // cycle_start stayed at July 1 — the deferral prevented the advance.
+        // We assert via the DB: no bandwidth_history row for July (archive
+        // never succeeded) and the seeded current_cycle row was lost when
+        // we dropped the table, so the only signal we can check is the
+        // accountant's published view.next_reset_date which is computed
+        // from cycle_start. next_reset_date for July cycle = 2026-07-31.
+        let next_reset = view_rx.borrow().as_ref().map(|v| v.next_reset_date);
+        assert_eq!(
+            next_reset,
+            Some(NaiveDate::from_ymd_opt(2026, 7, 31).unwrap()),
+            "cycle_start must stay at July 1 (next_reset_date = July 31); got {next_reset:?}"
+        );
+
+        // Cleanly stop the accountant (drop sender triggers the final-flush
+        // exit path).
+        drop(tx);
+        let _ = tokio::time::timeout(Duration::from_secs(2), join)
+            .await
+            .expect("accountant exits within 2s");
+        drop(dir);
+    }
+
+    // ---------------------------------------------------------------------
+    // v1.0 audit 1-C — regression test for the P0 data-loss fix (the
+    // `archive_cycle` failure deferral that prevents the next UPSERT from
+    // zeroing the surviving rows).
+    //
+    // The prior audit shipped the deferral but deleted the only test that
+    // exercised it (a tautology). This test forces archive_cycle to fail
+    // mid-rollover and asserts: (1) the old cycle's rows survive in
+    // `current_cycle` with their original byte totals, (2) a subsequent
+    // flush does NOT overwrite them with zero (the deferral held
+    // cycle_start steady so the UPSERT targets the same row with the
+    // same accumulator value).
+    // ---------------------------------------------------------------------
+    /// Cited: v1.0 audit Iteration 1-C. Forces archive_cycle failure by
+    /// dropping the `bandwidth_history` table (the INSERT...SELECT target
+    /// inside archive_cycle) so the archive transaction fails. Asserts
+    /// the seeded current_cycle row survives + a follow-up flush doesn't
+    /// zero it.
+    #[tokio::test]
+    async fn archive_failure_preserves_current_cycle_rows_against_next_flush() {
+        let (conn, db_path, dir) = open_temp_db();
+        // Seed a July row with concrete byte totals.
+        bandwidth_repo::save_accumulator(
+            &conn,
+            100_i64,
+            "eth0",
+            40_000_i64,
+            20_000_i64,
+            "2026-07-01",
+            "2026-07-15 12:00:00",
+        )
+        .expect("seed current row");
+        drop(conn);
+
+        let accountant_conn = Connection::open(&db_path).expect("reopen");
+        // Break archive_cycle: drop bandwidth_history so the INSERT...SELECT
+        // fails. current_cycle stays intact (the DELETE inside the archive
+        // transaction never runs because the INSERT fails first; rusqlite
+        // rolls back the transaction).
+        accountant_conn
+            .execute("DROP TABLE bandwidth_history", [])
+            .expect("drop history to break archive_cycle");
+
+        let (tx, rx) = broadcast::channel::<Vec<Reading>>(8);
+        let clock = FakeClock::new(t0_dt()); // 2026-07-15
+        let config = AccountantConfig {
+            cycle_start_day: CycleStartDay::day(1),
+            flush_interval: Duration::from_millis(50),
+            history_keep: 1,
+        };
+        let accountant =
+            BandwidthAccountant::new(rx, accountant_conn, Box::new(clock.clone()), config);
+
+        let join = tokio::spawn(async move { accountant.run(CancellationToken::new()).await });
+
+        // Push a delta (rx 1000→1500 = +500, tx 500→700 = +200) + cross the
+        // rollover boundary. The rehydrated accumulator has 40_000/20_000
+        // (from the seeded row); after the two ticks it's 40_500/20_200.
+        tx.send(net_readings(100, 1_000, 500))
+            .expect("tick 1 (baseline)");
+        tokio::task::yield_now().await;
+        tx.send(net_readings(100, 1_500, 700))
+            .expect("tick 2 (delta +500/+200)");
+        tokio::task::yield_now().await;
+        clock.set(
+            NaiveDate::from_ymd_opt(2026, 9, 5)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap(),
+        );
+        // Let several debounce ticks fire: rollover attempts archive_cycle
+        // (fails), then flush() runs against the SAME cycle_start (the
+        // deferral held it steady) → UPSERT writes 40_500/20_200 onto the
+        // same row.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        drop(tx);
+        let _ = tokio::time::timeout(Duration::from_secs(2), join)
+            .await
+            .expect("accountant exits within 2s");
+
+        // Inspect the DB: exactly one row for LUID 100, and its byte totals
+        // equal the rehydrated + delta (NOT zero, NOT the seeded pre-delta
+        // value — the next flush wrote the accumulator's true value).
+        let reader = inspect_db(&db_path);
+        let rows = bandwidth_repo::load_current_cycle(&reader).expect("load_current_cycle");
+        assert_eq!(
+            rows.len(),
+            1,
+            "exactly 1 LUID row survived the failed archive"
+        );
+        let row = &rows[0];
+        assert_eq!(row.adapter_luid, 100_i64, "LUID 100");
+        assert_eq!(
+            row.rx_bytes, 40_500_i64,
+            "rx_bytes must be rehydrated+delta (40_000+500); the failed archive must NOT have zeroed it"
+        );
+        assert_eq!(
+            row.tx_bytes, 20_200_i64,
+            "tx_bytes must be rehydrated+delta (20_000+200); the failed archive must NOT have zeroed it"
+        );
+        // cycle_start is still July — the deferral held it steady so the
+        // UPSERT landed on the original row.
+        assert_eq!(row.cycle_start, "2026-07-01");
+        drop(dir);
     }
 
     // ---------------------------------------------------------------------
