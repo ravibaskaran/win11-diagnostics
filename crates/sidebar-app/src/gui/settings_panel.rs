@@ -256,44 +256,51 @@ pub fn render(ui: &mut Ui, config: &mut Config, on_change: &dyn Fn()) {
     ui.horizontal(|row| {
         row.label("CPU warn:");
         let mut v = config.thresholds.cpu_temp_warn as f32;
+        // Constrain the slider RANGE so warn can never exceed critical-gap.
+        // The prior code clamped the value AFTER the drag — silently snapping
+        // warn down with zero user feedback (audit 1-B). Bounding the range
+        // makes the invalid position unreachable: the drag physically stops
+        // at critical-gap instead of snapping after release.
+        let warn_max = warn_slider_max(config.thresholds.cpu_temp_critical, 40.0);
         if row
-            .add(egui::Slider::new(&mut v, 40.0..=100.0).suffix(" °C"))
+            .add(egui::Slider::new(&mut v, 40.0..=warn_max).suffix(" °C"))
             .changed()
         {
-            let clamped = f64::from(v).min(config.thresholds.cpu_temp_critical - 5.0);
-            config.thresholds.cpu_temp_warn = clamped;
+            config.thresholds.cpu_temp_warn = f64::from(v);
             changed = true;
         }
         row.label("critical:");
         let mut c = config.thresholds.cpu_temp_critical as f32;
+        // Symmetric constraint: critical's MIN is warn+gap so dragging it
+        // below warn is unreachable (no post-hoc snap-up).
+        let crit_min = critical_slider_min(config.thresholds.cpu_temp_warn, 110.0);
         if row
-            .add(egui::Slider::new(&mut c, 50.0..=110.0).suffix(" °C"))
+            .add(egui::Slider::new(&mut c, crit_min..=110.0).suffix(" °C"))
             .changed()
         {
-            config.thresholds.cpu_temp_critical =
-                f64::from(c).max(config.thresholds.cpu_temp_warn + 5.0);
+            config.thresholds.cpu_temp_critical = f64::from(c);
             changed = true;
         }
     });
     ui.horizontal(|row| {
         row.label("GPU warn:");
         let mut v = config.thresholds.gpu_temp_warn as f32;
+        let warn_max = warn_slider_max(config.thresholds.gpu_temp_critical, 40.0);
         if row
-            .add(egui::Slider::new(&mut v, 40.0..=100.0).suffix(" °C"))
+            .add(egui::Slider::new(&mut v, 40.0..=warn_max).suffix(" °C"))
             .changed()
         {
-            config.thresholds.gpu_temp_warn =
-                f64::from(v).min(config.thresholds.gpu_temp_critical - 5.0);
+            config.thresholds.gpu_temp_warn = f64::from(v);
             changed = true;
         }
         row.label("critical:");
         let mut c = config.thresholds.gpu_temp_critical as f32;
+        let crit_min = critical_slider_min(config.thresholds.gpu_temp_warn, 110.0);
         if row
-            .add(egui::Slider::new(&mut c, 50.0..=110.0).suffix(" °C"))
+            .add(egui::Slider::new(&mut c, crit_min..=110.0).suffix(" °C"))
             .changed()
         {
-            config.thresholds.gpu_temp_critical =
-                f64::from(c).max(config.thresholds.gpu_temp_warn + 5.0);
+            config.thresholds.gpu_temp_critical = f64::from(c);
             changed = true;
         }
     });
@@ -781,6 +788,36 @@ fn theme_section(
     });
 }
 
+/// Minimum gap between warn and critical temperature thresholds (°C).
+/// Audited at v1.0 (1-B): the prior code clamped values after the drag,
+/// silently snapping warn down or critical up. Bounding the slider RANGE
+/// with this gap makes the invalid position unreachable.
+const THRESHOLD_GAP: f64 = 5.0;
+
+/// Upper bound for a warn slider given the current critical value, so the
+/// slider range physically prevents `warn > critical - gap`. Clamped to
+/// `floor` so a very low critical (e.g. 50) still yields a usable range
+/// `floor..=45` rather than an empty `floor..=45`.
+///
+/// Pure helper extracted so the contract is unit-tested independently of
+/// the egui slider widget (audit 1-B).
+#[must_use]
+fn warn_slider_max(critical: f64, floor: f64) -> f32 {
+    ((critical - THRESHOLD_GAP) as f32).max(floor as f32)
+}
+
+/// Lower bound for a critical slider given the current warn value, so the
+/// slider range physically prevents `critical < warn + gap`. Clamped to
+/// `ceil` so a very high warn doesn't push the min past the slider's
+/// absolute ceiling (which would produce an inverted range).
+///
+/// Pure helper extracted so the contract is unit-tested independently of
+/// the egui slider widget (audit 1-B).
+#[must_use]
+fn critical_slider_min(warn: f64, ceil: f64) -> f32 {
+    ((warn + THRESHOLD_GAP) as f32).min(ceil as f32)
+}
+
 #[cfg(test)]
 mod tests {
     //! Story 8.5 TDD contract tests (F8 egui_kittest + pure-fn unit tests).
@@ -1011,5 +1048,71 @@ mod tests {
             config.lock().unwrap().bandwidth.cycle_start_day,
             CycleStartDaySerde::LastDayOfMonth
         );
+    }
+
+    // ===== v1.0 audit 1-B — threshold slider range constraints =====
+    //
+    // The bug: dragging warn above critical-5 silently snapped down via a
+    // post-drag clamp. The fix bounds the slider RANGE so the invalid
+    // position is unreachable. These tests pin the helpers that compute
+    // the bounds.
+
+    /// Cited: v1.0 audit Iteration 1-B. With critical=50, warn's max must
+    /// be 45 (= 50 - THRESHOLD_GAP) so the slider physically stops there.
+    /// This is the exact scenario the bug report named (dragging warn to
+    /// 80 while critical=50 silently snapped to 45).
+    #[test]
+    fn warn_slider_max_caps_at_critical_minus_gap() {
+        // critical=50 → warn_max = 45
+        assert_eq!(warn_slider_max(50.0, 40.0), 45.0);
+        // critical=100 → warn_max = 95
+        assert_eq!(warn_slider_max(100.0, 40.0), 95.0);
+    }
+
+    /// Cited: v1.0 audit Iteration 1-B. When critical is so low that
+    /// `critical - gap` dips below the floor, the floor wins — otherwise
+    /// the slider range would be inverted (max < min).
+    #[test]
+    fn warn_slider_max_floors_below_threshold() {
+        // critical=42 → 42-5=37 < floor 40 → returns 40 (floor wins).
+        assert_eq!(warn_slider_max(42.0, 40.0), 40.0);
+    }
+
+    /// Cited: v1.0 audit Iteration 1-B. Symmetric to warn: critical's min
+    /// is warn+gap so dragging it below warn is unreachable.
+    #[test]
+    fn critical_slider_min_rises_with_warn_plus_gap() {
+        // warn=80 → critical_min = 85
+        assert_eq!(critical_slider_min(80.0, 110.0), 85.0);
+        // warn=40 → critical_min = 45
+        assert_eq!(critical_slider_min(40.0, 110.0), 45.0);
+    }
+
+    /// Cited: v1.0 audit Iteration 1-B. When warn is so high that
+    /// `warn + gap` exceeds the ceiling, the ceiling wins — otherwise
+    /// the slider range would be inverted (min > max).
+    #[test]
+    fn critical_slider_min_ceils_above_threshold() {
+        // warn=108 → 108+5=113 > ceil 110 → returns 110 (ceil wins).
+        assert_eq!(critical_slider_min(108.0, 110.0), 110.0);
+    }
+
+    /// Cited: v1.0 audit Iteration 1-B. End-to-end invariant: for any
+    /// (warn, critical) pair the user can produce via the constrained
+    /// sliders, `warn <= critical - gap` must hold. Walks the reachable
+    /// warn surface [floor, warn_slider_max] for several critical values.
+    #[test]
+    fn constrained_slider_bounds_preserve_gap_invariant() {
+        for critical in [50_f64, 70.0, 90.0, 110.0] {
+            let warn_max = warn_slider_max(critical, 40.0) as f64;
+            // Walk a few warn values inside the reachable range.
+            for warn in [40_f64, (40.0 + warn_max) / 2.0, warn_max] {
+                assert!(
+                    warn <= critical - THRESHOLD_GAP + 1e-6,
+                    "warn {warn} must stay <= critical {critical} - gap {}: invariant violated",
+                    THRESHOLD_GAP
+                );
+            }
+        }
     }
 }
