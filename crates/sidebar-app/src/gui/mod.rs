@@ -1568,6 +1568,17 @@ impl eframe::App for SidebarApp {
                 if self.state.tier() == ProviderTier::Full {
                     self.degraded_message = None;
                 }
+            } else if self.state.tier() == ProviderTier::Full && self.degraded_message.is_none() {
+                // v1.0 audit 2 (P1) — LHM started (HTTP probe succeeded, tier
+                // flipped to Full) but the adapter is returning zero
+                // sensors. Without this latch the user sees a silent green
+                // pill + 15 s of confusing wait until the staleness banner
+                // fires. Surface a one-shot message so they know to restart
+                // or update LHM. Latched on `is_none()` so we don't
+                // re-render the message every tick.
+                self.degraded_message = Some(
+                    "Full mode is running but no sensors were found. Restart sidebar or update LibreHardwareMonitor.",
+                );
             }
             repaint = true;
         }

@@ -14,7 +14,8 @@
 //!
 //! - NaN / ±Inf → `"--"` (T-20 defensive — adapters must not emit NaN, but we
 //!   guard).
-//! - Unknown `MetricKind × Unit` combination → `"unknown"`, logged at `warn!`.
+//! - Unknown `MetricKind × Unit` combination → `"--"` (v1.0 audit 2: was
+//!   `"unknown"`), logged at `warn!`.
 //!
 //! ## Format dispatch table (MetricKind × Unit → Story 1.3 fn)
 //!
@@ -32,8 +33,9 @@
 //! | Process{Cpu,Gpu}Percent                     | Percent         | `format_percent`          | (same)                  |
 //! | UptimeSeconds                               | Seconds         | `format_uptime`           | (same)                  |
 //!
-//! Any other pair → `"unknown"`, logged at `warn!` (defensive — adapters
-//! should never emit a mismatched kind × unit, but we never panic).
+//! Any other pair → `"--"` (v1.0 audit 2: was `"unknown"`), logged at
+//! `warn!` (defensive — adapters should never emit a mismatched kind ×
+//! unit, but we never panic).
 //!
 //! ## Cited
 //!
@@ -81,7 +83,7 @@ pub fn render_with_color(ui: &mut Ui, reading: &Reading, display: &DisplayConfig
 }
 
 /// Format a reading's value per the MetricKind × Unit dispatch table, honoring
-/// the DisplayConfig toggles. Returns `"--"` for NaN (T-20) and `"unknown"`
+/// the DisplayConfig toggles. Returns `"--"` for NaN (T-20) and for unknown
 /// for unrecognized MetricKind × Unit combinations (logged at `warn!`).
 #[must_use]
 #[allow(clippy::too_many_lines)] // exhaustive MetricKind × Unit dispatch; splitting hurts readability
@@ -100,7 +102,7 @@ pub(crate) fn format_reading_with_config(reading: &Reading, display: &DisplayCon
     // The dispatch table. We match on the (kind, unit) pair: the kind names
     // the *semantic* of the value (frequency, temperature, percent, ...), and
     // the unit names the *wire format*. A mismatched pair (e.g. CpuFrequency
-    // with Unit::Bytes) is an adapter bug — we render "unknown" and log.
+    // with Unit::Bytes) is an adapter bug — we render "--" and log.
     //
     // Variants are written fully qualified (no `use MetricKind::*`) per the
     // workspace `clippy::enum_glob_use = "deny"` policy.
@@ -214,14 +216,17 @@ pub(crate) fn format_reading_with_config(reading: &Reading, display: &DisplayCon
         // --- Anything else: unknown combination ---
         // Logged at warn so an adapter emitting mismatched kind × unit is
         // surfaced in CI/manual smoke (G15 — structured logs, no panic).
+        // v1.0 audit 2 (P1) — render "--" (same sentinel as the NaN path)
+        // instead of the raw "unknown" string. A non-technical user can
+        // interpret "--"; "unknown" reads as a broken app.
         (kind, unit) => {
             tracing::warn!(
                 target = "sidebar.app.metric_row",
                 kind = ?kind,
                 unit = ?unit,
-                "unknown MetricKind × Unit combination — rendering 'unknown'"
+                "unknown MetricKind × Unit combination — rendering '--'"
             );
-            "unknown".to_string()
+            "--".to_string()
         }
     }
 }
@@ -428,19 +433,21 @@ mod tests {
         );
     }
 
-    // ===== Boundary #3: unknown MetricKind → "unknown", logged =====
+    // ===== Boundary #3: unknown MetricKind → "--" (v1.0 audit 2), logged =====
 
     #[test]
-    fn unknown_kind_renders_unknown() {
+    fn unknown_kind_renders_dash() {
         // Every MetricKind variant is known to the dispatch table at compile
         // time (exhaustive match), so this test exercises the Unit mismatch
         // path: a frequency kind paired with a Bytes unit is an unknown
-        // combination → "unknown".
+        // combination → "--" (v1.0 audit 2: was "unknown", now the same
+        // sentinel as the NaN path so non-technical users don't see a
+        // broken-app string).
         let r = reading(MetricKind::CpuFrequency, 1.0, Unit::Bytes);
         assert_eq!(
             format_reading_with_config(&r, &default_display()),
-            "unknown",
-            "an unrecognized MetricKind × Unit combination must render 'unknown'"
+            "--",
+            "an unrecognized MetricKind × Unit combination must render '--'"
         );
     }
 
