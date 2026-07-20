@@ -12,6 +12,11 @@ sidebar-setup.exe
 # Agent tooling state — NOT for the public repo (local session state only)
 .atl/
 .engram/
+.zcode/
+.agents/
+.codex/
+.claude/
+.local/
 
 # Coverage / bench output
 /coverage/
@@ -69,4 +74,3 @@ Thumbs.db
 # .gitignore cannot hide files that are already tracked or present in Git history.
 docs/internal/
 verify/internal/
-.zcode/
