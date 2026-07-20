@@ -455,8 +455,9 @@ mod tests {
     // ----- Real-backend smoke test (#[ignore]: needs NVIDIA HW for real data) -----
     //
     // This test verifies the real-backend wiring COMPILES and runs without
-    // panicking. On machines WITHOUT NVIDIA hardware (like LAPTOP-PLN56DNU),
-    // `Nvml::init()` fails and `RealNvmlBackend` returns empty — which we
+    // panicking. On machines WITHOUT NVIDIA hardware (e.g. integrated-graphics
+    // laptops), `Nvml::init()` fails and `RealNvmlBackend` returns empty —
+    // which we
     // assert as the correct NVML-unavailable behavior. On CI runners WITH
     // NVIDIA hardware, this test would produce non-empty readings from real
     // GPUs; either outcome is acceptable. The test is `#[ignore]`'d so the

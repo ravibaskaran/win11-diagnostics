@@ -1,7 +1,7 @@
 # Story 13.5 + T-46 — reference-machine evidence runner.
 #
 # Bottles every evidence gate into one command for the designated T-31
-# reference machine (LAPTOP-PLN56DNU). Produces a single evidence bundle
+# reference machine. Produces a single evidence bundle
 # under verify/evidence/<date>/ that can be attached to the v1.0.0 release.
 #
 # Stages:

@@ -37,7 +37,7 @@ Cross-references: PRD §6 (NFR statements), architecture.md §7 (testing strateg
 - **Revision rationale:** Originally 80 MiB (pre-egui 0.35, pre-gl/wgpu). The
   egui immediate-mode GUI with font/texture cache + Rust runtime contributes
   ~187 MiB even with the lightweight glow renderer (verified 2026-07-12 on
-  Win11 25H2, AMD Ryzen AI 7 350). The application logic (sensors, bandwidth,
+  Win11 25H2, a modern AMD Ryzen APU). The application logic (sensors, bandwidth,
   SQLite) contributes only ~12 MiB; the remaining ~175 MiB is egui's rendering
   pipeline. The original SidebarDiagnostics C# app used ~200+ MiB. Revised to
   200 MiB to match reality while still targeting lightweight operation.
@@ -194,9 +194,9 @@ Cross-references: PRD §6 (NFR statements), architecture.md §7 (testing strateg
 
 ### T-31 — Reference machine (generalized per dev-env inventory 2026-07-07)
 - **Spec:** Any modern 8+ core x86_64 CPU, ≥ 16 GB RAM, Win11 24H2 (build 26100) OR 25H2 (build 26200).
-- **Designated v1 reference (signed off 2026-07-13):** LAPTOP-PLN56DNU —
-  AMD Ryzen AI 7 350 (8+8 cores), 24 GB RAM, Win11 25H2 build 26200,
-  AMD Radeon 860M iGPU (no NVIDIA). All NFR-1/NFR-3/NFR-4 acceptance
+- **Designated v1 reference (signed off 2026-07-13):** the reference machine —
+  a modern AMD Ryzen APU (8+8 cores), ≥16 GB RAM, Win11 25H2,
+  integrated AMD graphics (no NVIDIA). All NFR-1/NFR-3/NFR-4 acceptance
   evidence in `verify/pending-HITL-gates.md` §10.1 was measured on this
   machine and is now authoritative (not illustrative) for v1 sign-off.
   NVIDIA-only paths (Story 3.2) are validated on a separate CI runner
@@ -315,7 +315,7 @@ Cross-references: PRD §6 (NFR statements), architecture.md §7 (testing strateg
 - **Target:** `sidebar-domain` and `sidebar-sensor` ≥ 80% line coverage; adapter/platform crates ≥ 60% (Win32 FFI is hard to cover fully); `sidebar-app` ≥ 40% (GUI).
 
 ### T-46 — Reference-machine evidence bundle (Audit Pass 5)
-- **Value:** The v1.0.0 tag MUST be backed by a single `verify/reference-machine.ps1` run on the designated T-31 reference machine (LAPTOP-PLN56DNU), producing an evidence bundle under `verify/evidence/<date>/`.
+- **Value:** The v1.0.0 tag MUST be backed by a single `verify/reference-machine.ps1` run on the designated T-31 reference machine (the reference machine), producing an evidence bundle under `verify/evidence/<date>/`.
 - **Bundle contents (mandatory):** `workspace-tests.txt` (full L0-L3 matrix output), `ignored-suite.txt` (all 13 `#[ignore]`'d integration tests — real HW / UAC / desktop), `poll_cost.txt` (NFR-1 criterion bench + calibration constant), `scriptable-smoke.txt` (the 6 automatable smoke items), `sha256.txt` (release exe SHA-256), `manual-smoke.md` (the 12 human-walked items with PASS/FAIL per row).
 - **Exit convention:** `0` on full PASS (all automated stages green + all manual items PASS); `1` on any failure. The script MUST NOT exit 0 if any automated stage failed, even if the manual items were not yet walked.
 - **Cited by:** Story 13.5, guardrails.md G28.

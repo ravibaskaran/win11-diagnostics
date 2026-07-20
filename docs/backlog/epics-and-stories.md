@@ -507,7 +507,7 @@
     4. Malformed LHM JSON (missing `value` field on a sensor) → that node skipped, others returned.
     5. Two CPUs (dual-socket) → `SensorId.instance = "cpu/0"` and `"cpu/1"` derived from LHM node `id`.
     6. LHM v0.9.6 vs v0.9.7 schema drift (new field added) → `serde(default)` tolerance, no fail.
-- **Explicit Swarm Guardrails:** HITL on HTTP timeout T-10 (G11). HITL on `ureq` version (R2 — prefer maintained sync client). Shell gate. **Local-test note:** This dev machine (LAPTOP-PLN56DNU, AMD Ryzen AI 7 350) is the IDEAL LHM test target — v0.9.6 has Ryzen AI 300-series support. `#[ignore]`'d integration tests run cleanly here after `scripts/fetch_ohm.ps1` + manual LHM launch.
+- **Explicit Swarm Guardrails:** HITL on HTTP timeout T-10 (G11). HITL on `ureq` version (R2 — prefer maintained sync client). Shell gate. **Local-test note:** This dev machine (the reference machine, a modern AMD Ryzen APU) is the IDEAL LHM test target — v0.9.6 has Ryzen AI 300-series support. `#[ignore]`'d integration tests run cleanly here after `scripts/fetch_ohm.ps1` + manual LHM launch.
 
 ---
 
@@ -699,7 +699,7 @@
 - **Gentle-AI SDD Phase Checklist:**
   1. [ ] **Plan:** LHM binary path resolution. Child-handle ownership tracking (sidebar-owned vs user-owned). Job Object setup. Config keys are known and covered by patch tests; app-level child-monitor wiring is present in the current 12.8 worktree slice, with real UAC/LHM validation still pending.
   2. [ ] **Implement:** `crates/sidebar-platform/src/ohm_supervisor.rs`. **All `unsafe` per F11 with SAFETY comments.** No COM init needed (was required for WMI).
-  3. [ ] **Validate:** Integration against bundled LHM v0.9.6 on this dev machine (LAPTOP-PLN56DNU, Ryzen AI 7 350 — LHM v0.9.6 has Ryzen AI 300-series support).
+  3. [ ] **Validate:** Integration against bundled LHM v0.9.6 on this dev machine (the reference machine, Ryzen AI 7 350 — LHM v0.9.6 has Ryzen AI 300-series support).
 - **TDD Contract & Test Cases:**
   - **Unit Test Cases (Happy Path) — `trait HttpClient` mock:**
     1. Mock HTTP probe returns LHM-shaped JSON → `probe()` returns `Tier::Full`.
