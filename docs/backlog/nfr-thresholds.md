@@ -1,6 +1,6 @@
 # NFR Thresholds — sidebar-v1
 
-**Single source of truth for every numeric boundary in the system.** Every test that asserts a numeric NFR MUST cite this file as `nfr-thresholds.md#T-<id>` in a doc-comment. This prevents threshold drift across stories and makes the swarm's tests self-validating.
+**Single source of truth for every numeric boundary in the system.** Every test that asserts a numeric NFR MUST cite this file as `nfr-thresholds.md#T-<id>` in a doc-comment. This prevents threshold drift across stories and makes tests self-validating.
 
 Cross-references: PRD §6 (NFR statements), architecture.md §7 (testing strategy), guardrails.md G14 (resource bounds), G17 (generation bounds).
 
@@ -301,12 +301,12 @@ Cross-references: PRD §6 (NFR statements), architecture.md §7 (testing strateg
 - **L2 UI snapshots (`cargo test --test ui_snapshots`):** ≤ 30 s total.
 - **L3 bench (`cargo bench`):** ≤ 600 s total.
 - **L4 smoke:** manual; scriptable subset ≤ 5 min on the release runner.
-- **Hard rule:** If a story's tests would push any layer over its budget, the swarm MUST split the story or optimize — never silently exceed. See G27.
+- **Hard rule:** If a story's tests would push any layer over its budget, the contributor MUST split the story or optimize — never silently exceed. See G27.
 
 ### T-41 — Aggregate PR regression budget
 - **Value:** The full L0+L1+L2+L3 matrix (the "regression run") MUST complete in ≤ 750 s on the Windows CI runner (60 + 60 + 30 + 600 = 750).
 - **Cache:** `Swatinem/rust-cache@v2` MUST be used; cache hit brings cold-build time under the budget.
-- **Failure action:** If the regression run exceeds 750s, CI fails with `regression-budget-exceeded`. The swarm MUST split the offending story or mark it for orchestrator review.
+- **Failure action:** If the regression run exceeds 750s, CI fails with `regression-budget-exceeded`. The contributor MUST split the offending story or mark it for orchestrator review.
 
 ### T-42 — Coverage delta floor
 - **Value:** For every PR touching crate(s) C, the line coverage of C MUST NOT decrease.

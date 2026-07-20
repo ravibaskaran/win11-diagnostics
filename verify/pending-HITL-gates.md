@@ -95,7 +95,7 @@ authoritative (not illustrative) for v1 sign-off.
   DoD or T-40/T-41 budgets (G19).
 - **11.3 every snapshot acceptance** — `cargo insta accept` requires HITL
   review (G19).
-- **11.4 PROGRESS.md schema/tampering** — HITL mandatory; the swarm reads
+- **11.4 PROGRESS.md schema/tampering** — HITL mandatory; contributors read
   this file (G11/G19).
 
 ## Story 12.x — Epic 12 (PER-STORY GATES)

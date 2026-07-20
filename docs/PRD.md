@@ -4,9 +4,6 @@
 **Phase:** implementation snapshot (Epic 0–8 delivered; closure work pending)
 **Status:** Requirements remain authoritative; current implementation gaps are listed in §12
 **Date:** 2026-07-07 (v2 amendment, same date)
-**Workspace:** `C:\dev\hobby\sidebar`
-**Engram artifact:** `sdd/sidebar-v1/proposal` (type: `decision`, topic_key upsert)
-**Research foundation:** Engram observations `sdd-init/sidebar/*` (topic keys: `sdd-init/sidebar`, `sdd-init/sidebar/stack`, `sdd-init/sidebar/architecture`, `sdd-init/sidebar/testing`, `sdd-init/sidebar/conventions`, `sdd-init/sidebar/risks`)
 
 > **What changed in v2 (this amendment).** This is an UPDATE pass on an existing PRD; all original v1 content is preserved and extended. Four amendments are integrated below:
 > 1. **Network adapter throughput is now IN scope** (was Out-of-Scope in v1). See §3 (Tier 4) and §7.
@@ -599,4 +596,4 @@ Sources evaluated and **excluded** from v1 under the lightweight mandate:
 
 ---
 
-**End of PRD.** Companion document: `architecture.md` (Engram: `sdd/sidebar-v1/design`).
+**End of PRD.** Companion document: `architecture.md`.

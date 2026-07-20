@@ -6,7 +6,7 @@
 
 ## EPIC 0 — Foundation Workspace & Scaffolding
 - **System Objective:** Bootstrap the Cargo workspace, supply-chain policy, repo hygiene, CI scaffolding, and shared dependency pinning so downstream stories have a hardened compile target.
-- **Swarm Mapping:** Platform-Foundation Agent.
+- **Owner:** Platform-Foundation Agent.
 
 ### STORY 0.1: Workspace Skeleton + Pinned Dependency Manifest
 - **User Story:** As the Architect, I want a Cargo workspace with all 11 library crates + 1 binary crate stubbed (12 packages total), dependencies split between `[workspace.dependencies]` (shared) and per-crate `[dependencies]`, so every subsequent story compiles in isolation without version drift.
@@ -23,7 +23,7 @@
     1. MSRV violation: set `rust-version = "99.0.0"` in one crate temporarily; `cargo build` must error with `rustc` MSRV diagnostic (not a generic compile error).
     2. Dependency conflict: introduce two crates pinning different major versions of `tokio`; `cargo tree --duplicates` MUST list the conflict (CI gate). Fixture F6.
     3. Empty workspace member: remove `src/lib.rs` from one crate; `cargo check` MUST fail with `error[E0761]: --crate-type bin requires a main.rs` or analogous precise diagnostic — no silent skip.
-- **Explicit Swarm Guardrails:** HITL approval required on pinned versions (G3/T-32). Shell permission gate on `cargo` invocation (G19). NO dependency may be added without the license-comment (CI denies via Story 0.3).
+- **Guardrails:** HITL approval required on pinned versions (G3/T-32). Shell permission gate on `cargo` invocation (G19). NO dependency may be added without the license-comment (CI denies via Story 0.3).
 
 ### STORY 0.2: CI Workflow — `ci.yml` (Windows runner, test+bench+clippy+fmt+deny+audit)
 - **User Story:** As the Architect, I want a GitHub Actions workflow on `windows-latest` that runs the full test suite, NFR-1 perf bench, clippy with `-D warnings`, fmt check, `cargo deny`, and `cargo audit` on every PR.
@@ -42,7 +42,7 @@
     3. fmt drift: inject unformatted code; CI fails at fmt gate.
     4. `cargo deny` finds a forbidden license (inject GPL dep in a test branch); CI fails at deny gate.
     5. Test budget breach (T-22): if `cargo test` exceeds 120s, CI fails with explicit message (use `timeout 120` wrapper).
-- **Explicit Swarm Guardrails:** HITL on runner-OS or toolchain changes (G19). Shell gate on `gh workflow run`. Egress allowlist enforced (G16).
+- **Guardrails:** HITL on runner-OS or toolchain changes (G19). Shell gate on `gh workflow run`. Egress allowlist enforced (G16).
 
 ### STORY 0.3: Supply-Chain Policy (`deny.toml` + `cargo audit`)
 - **User Story:** As the Architect, I want `deny.toml` encoding the T-32 license allowlist + the T-33 RUSTSEC advisory policy, plus `cargo audit` integration, so no forbidden license or known-vulnerable dep can merge (G3/G18).
@@ -59,7 +59,7 @@
     1. Inject a GPL-licensed crate (`gpl-test-crate` placeholder in a test branch); `cargo deny check licenses` MUST fail naming the offending crate.
     2. Inject a known-vulnerable version of a real dep (e.g. an old `chrono` with a RUSTSEC advisory); `cargo audit` MUST fail.
     3. An advisory muted in `deny.toml` with no expiry date → CI fails with "muted advisory missing expiry" (T-33 enforcement).
-- **Explicit Swarm Guardrails:** HITL mandatory (G11/G19) — initial supply-chain policy is a project-owner decision. Any future modification to `deny.toml` also requires HITL.
+- **Guardrails:** HITL mandatory (G11/G19) — initial supply-chain policy is a project-owner decision. Any future modification to `deny.toml` also requires HITL.
 
 ### STORY 0.4: Toolchain Pin (`rust-toolchain.toml`) + Release Profile
 - **User Story:** As the Architect, I want the toolchain pinned to MSRV 1.95 + a `[profile.release]` tuned for NFR-3 (cold start) and NFR-4 (RSS), so every contributor and CI uses the same compiler with the same optimizations.
@@ -76,7 +76,7 @@
     1. Toolchain mismatch: temporarily bump channel to `2.0.0`; `cargo build` fails with MSRV/distribution error.
     2. `panic = "abort"` regression test: a `catch_unwind` test under default profile (unwind) MUST succeed; document that switching to abort would break G15.
     3. Binary size with `lto = "fat"` is measurably smaller than `lto = false` (assert via `cargo build --release` then `wc -c`; record baseline).
-- **Explicit Swarm Guardrails:** HITL on toolchain bump (G19). HITL on `[profile.release]` changes affecting panic strategy (G15 interlock).
+- **Guardrails:** HITL on toolchain bump (G19). HITL on `[profile.release]` changes affecting panic strategy (G15 interlock).
 
 ### STORY 0.5: Repo Hygiene (`LICENSE`, `README.md`, `SECURITY.md`, `.gitignore`, `Cargo.lock` policy)
 - **User Story:** As the Architect, I want the standard OSS repo hygiene files in place so the project is publishable and SignPath-eligible (Story 9.1 depends on `LICENSE` + `README.md`).
@@ -92,7 +92,7 @@
     1. `Cargo.lock` is committed (`.gitignore` does NOT exclude it); test asserts `git ls-files Cargo.lock` returns the file.
     2. `SECURITY.md` explicitly states the G16 no-runtime-egress policy (grep).
     3. `LICENSE` typo injection (replace one word); hash differs from canonical — fixture test catches.
-- **Explicit Swarm Guardrails:** HITL on LICENSE choice (MPL-2.0 vs MIT) — affects downstream compatibility. License decision is project-owner.
+- **Guardrails:** HITL on LICENSE choice (MPL-2.0 vs MIT) — affects downstream compatibility. License decision is project-owner.
 
 ### STORY 0.6: Workspace Lints + Common Error Type
 - **User Story:** As the Architect, I want workspace-wide `[lints.rust]` + `[lints.clippy]` plus a shared `sidebar_error::Error` type so every crate uses uniform error handling and the same lint gates.
@@ -109,7 +109,7 @@
     1. Inject `dbg!()` in one crate; clippy MUST fail with `clippy::dbg_macro`.
     2. Inject `unsafe` without SAFETY comment; clippy MUST fail with `undocumented_unsafe_blocks`.
     3. `Error` enum exhaustiveness: adding a variant forces all `match` sites to update (compile-time).
-- **Explicit Swarm Guardrails:** HITL on adding new workspace lints (could block legitimate patterns).
+- **Guardrails:** HITL on adding new workspace lints (could block legitimate patterns).
 
 ### STORY 0.7: Dev Environment Scripts (activation + verification + OHM fetch)
 - **User Story:** As the Architect, I want `scripts/env.ps1`, `scripts/verify-dev-env.ps1`, and `scripts/fetch_ohm.ps1` so any contributor (human or agentic) can activate the relocatable dev env, verify all prerequisites are present, and acquire the bundled OHM binary deterministically (T-44).
@@ -140,13 +140,13 @@
     4. `fetch_ohm.ps1` with hash mismatch (corrupted download) → deletes the bad file, exits non-zero, no partial state.
     5. `fetch_ohm.ps1` with no network (CI sandbox) → times out cleanly within 30s per G16, no hang.
     6. `env.ps1` invoked from bash (not pwsh) → graceful error message ("must run from PowerShell 7"), no partial PATH mutation.
-- **Explicit Swarm Guardrails:** HITL on the OHM version pin (R7/G19 — external upstream trust). HITL on any change to `verify-dev-env.ps1`'s prerequisite list (T-44 is a contract).
+- **Guardrails:** HITL on the OHM version pin (R7/G19 — external upstream trust). HITL on any change to `verify-dev-env.ps1`'s prerequisite list (T-44 is a contract).
 
 ---
 
 ## EPIC 1 — Domain Core (Pure Types & Logic)
 - **System Objective:** Implement the pure, no-IO domain layer (`sidebar-domain`) that every adapter, formatter, and the bandwidth accountant depends on.
-- **Swarm Mapping:** Domain-Logic Agent.
+- **Owner:** Domain-Logic Agent.
 
 ### STORY 1.1: Core Reading Types (`MetricKind`, `Unit`, `SensorId`, `Reading`, `BatteryState`)
 - **User Story:** As the Domain Agent, I want the canonical types defined exactly per architecture §5.1 so all downstream code shares one vocabulary.
@@ -164,7 +164,7 @@
     1. `Reading` with `value: f64::NAN`: `PartialEq` MUST NOT equate it to itself (NaN semantics). Document that adapters MUST NOT emit NaN per T-20.
     2. `SensorId` with empty `instance` constructs (legal for global sensors).
     3. `Reading::value` accepts `f64::INFINITY` at construction (no panic) but `format_*` (Story 1.3) MUST render `"--"` per T-20.
-- **Explicit Swarm Guardrails:** Commit gate: `cargo clippy -p sidebar-domain -- -D warnings`. No HITL (pure types).
+- **Guardrails:** Commit gate: `cargo clippy -p sidebar-domain -- -D warnings`. No HITL (pure types).
 
 ### STORY 1.2: Snapshot + EWMA Smoother + Alert Threshold
 - **User Story:** As the Domain Agent, I want `Snapshot` (timestamped `Vec<Reading>` + tier) plus pure smoothing/alerting functions so the GUI renders calm values with threshold alerts.
@@ -182,7 +182,7 @@
     2. Hysteresis flap: oscillation 88→92→88 with threshold 90, hysteresis 5 MUST NOT return to Normal until value < 85.
     3. `check_threshold(f64::NAN, ...)` returns `Normal` (graceful, no panic) per G15.
     4. `check_threshold(f64::INFINITY, threshold=90, ...) == Critical` (mathematically sensible).
-- **Explicit Swarm Guardrails:** Coverage gate.
+- **Guardrails:** Coverage gate.
 
 ### STORY 1.3: NFR-8 Format Module (Human-Readable Defaults)
 - **User Story:** As the Domain Agent, I want the `format` module per architecture §5.4 (AD-13) so every UI value defaults to human-readable output.
@@ -202,7 +202,7 @@
     4. `format_hz(0) == "0 Hz"` (not `"0 GHz"`).
     5. `format_battery(78, BatteryState::Charging) == "78% (Charging)"`.
     6. `format_battery(255, BatteryState::Unknown) == "-- (Unknown)"` (T-20 sentinel handling).
-- **Explicit Swarm Guardrails:** Coverage gate: 100% of public functions.
+- **Guardrails:** Coverage gate: 100% of public functions.
 
 ### STORY 1.4: Billing Pure Functions (`cycle_end`, `next_cycle_start`, `CycleStartDay`)
 - **User Story:** As the Domain Agent, I want pure date-arithmetic functions for the bandwidth billing cycle, with the `CycleStartDay` invariant (T-26) enforced at construction, so rollover is fully unit-testable (R9 mitigation).
@@ -222,7 +222,7 @@
     4. `CycleStartDay::Day(0)` constructor: panics in debug (T-26), clamps + logs in release.
     5. `CycleStartDay::Day(29)` constructor: same — Day variant rejects 29+.
     6. Proptest (F7): for `d ∈ 1..=28`, `year ∈ 2020..=2100`, `month ∈ 1..=12`, `cycle_end - cycle_start ∈ [27, 31]` (T-25).
-- **Explicit Swarm Guardrails:** HITL on the Day(29+) rejection contract (G11) — this is marquee-feature policy.
+- **Guardrails:** HITL on the Day(29+) rejection contract (G11) — this is marquee-feature policy.
 
 ### STORY 1.5: Config Schema + Migration (TOML, `config_version = 1`)
 - **User Story:** As the Domain Agent, I want a versioned `Config` struct covering all PRD §3 UX features + v2 bandwidth + theme + dock + monitors + thresholds + hotkeys + first-run flag.
@@ -294,7 +294,7 @@
     8. `[hotkeys] click_through = ""` → empty string treated as "hotkey disabled" (documented).
     9. `[metrics] enabled` contains unknown MetricKind name → that entry dropped + `warn!`.
     10. `first_run_complete` missing → treated as `false` (wizard runs).
-- **Explicit Swarm Guardrails:** Coverage gate. HITL if any new section is added (config schema is a contract).
+- **Guardrails:** Coverage gate. HITL if any new section is added (config schema is a contract).
 
 ### STORY 1.6: Aggregate (top-N) + Graph (rolling window)
 - **User Story:** As the Domain Agent, I want pure top-N process selection and rolling-window sparkline functions.
@@ -313,13 +313,13 @@
     3. Ties: stable order preserved.
     4. `RollingWindow` push `f64::NAN` → behavior documented (recommend: store but mark; sparkline renders gap).
     5. `RollingWindow::new(0)` → constructor panics OR accepts and always evicts immediately (DECIDE; recommend panic, violates T-22 lower bound).
-- **Explicit Swarm Guardrails:** Coverage gate.
+- **Guardrails:** Coverage gate.
 
 ---
 
 ## EPIC 2 — Sensor Abstraction & Cost Classifier
 - **System Objective:** Define `SensorProvider`, `SensorDescriptor`, `CostClass`, `Tier`, and the compile-time `classify_for_v1` gate (NFR-1 enforcement).
-- **Swarm Mapping:** Sensor-Framework Agent.
+- **Owner:** Sensor-Framework Agent.
 
 ### STORY 2.1: SensorProvider Trait + Mockall Auto-Mock
 - **User Story:** As the Sensor Agent, I want the `SensorProvider` trait with `mockall::automock` so every adapter implements one contract and domain logic can be tested against canned readings (AD-4).
@@ -336,7 +336,7 @@
     1. Mock returns empty `Vec<Reading>` — caller handles.
     2. Mock panics on second call — caller does not double-poll (assert call count = 1).
     3. `Arc<dyn SensorProvider>` crosses threads — `Send + Sync` proven via `static_assertions::assert_impl_all`.
-- **Explicit Swarm Guardrails:** HITL architectural review (keystone trait).
+- **Guardrails:** HITL architectural review (keystone trait).
 
 ### STORY 2.2: SensorDescriptor + CostClass + Tier Enums
 - **User Story:** As the Sensor Agent, I want descriptor/cost-class/tier types so adapters self-declare cost and tier (AD-5, AD-7).
@@ -352,7 +352,7 @@
   - **Boundary & Edge Case Test Cases:**
     1. `metrics: &[]` — legal but documented as suspicious.
     2. `Tier::Both` semantics documented (tier-agnostic; runs in both modes).
-- **Explicit Swarm Guardrails:** None.
+- **Guardrails:** None.
 
 ### STORY 2.3: `classify_for_v1` — Compile-Time Cost + Tier Gate
 - **User Story:** As the Sensor Agent, I want `classify_for_v1` filtering Heavy/Deferred + tier-incompatible sources, so NFR-1 is enforced at registry-build time.
@@ -371,13 +371,13 @@
     3. Empty input → empty output.
     4. Duplicate descriptors (same name) → both retained (document; dedup is NOT the classifier's job).
     5. `warn!` fields verified via `tracing_subscriber::layer()` capture in test.
-- **Explicit Swarm Guardrails:** HITL on `warn!` field schema (G11). CI gate: no `Heavy`/`Deferred` in v1 registry without waiver comment.
+- **Guardrails:** HITL on `warn!` field schema (G11). CI gate: no `Heavy`/`Deferred` in v1 registry without waiver comment.
 
 ---
 
 ## EPIC 3 — Adapter Implementations
 - **System Objective:** Implement every concrete `SensorProvider` adapter.
-- **Swarm Mapping:** Adapter Agent (per-crate), LHM HTTP Agent for `/data.json`.
+- **Owner:** Adapter Agent (per-crate), LHM HTTP Agent for `/data.json`.
 
 ### STORY 3.1: `sidebar-adapter-sysinfo` (CPU/RAM/disk/processes/uptime)
 - **User Story:** As the Adapter Agent, I want a sysinfo-backed provider for CPU util, freq, RAM, disk capacity, processes, uptime.
@@ -396,7 +396,7 @@
     3. CPU usage exactly 100.0 → reading value 100.0.
     4. Two rapid `read_all` calls → `Mutex<System>` allows both; second reflects refreshed data.
     5. sysinfo returns NaN-typed value (cannot, but if it did) → adapter skips that reading (T-20).
-- **Explicit Swarm Guardrails:** Windows-only integration. Shell gate on sysinfo version bump.
+- **Guardrails:** Windows-only integration. Shell gate on sysinfo version bump.
 
 ### STORY 3.2: `sidebar-adapter-nvml` (NVIDIA GPU)
 - **User Story:** As the Adapter Agent, I want an nvml-wrapper-backed NVIDIA GPU provider.
@@ -415,7 +415,7 @@
     2. 2 GPUs → `instance "0"` and `"1"`.
     3. NVML call exceeds 100ms (T-13) → returns empty, logs.
     4. NVML error mid-poll → partial readings, logged.
-- **Explicit Swarm Guardrails:** HITL on NVML error taxonomy. `#[ignore]` runnable via `--ignored`.
+- **Guardrails:** HITL on NVML error taxonomy. `#[ignore]` runnable via `--ignored`.
 
 ### STORY 3.2b: `sidebar-adapter-nvml` Process-GPU (Watch — conditional)
 - **User Story:** As the Adapter Agent, I want per-process GPU% via NVML, classified Watch, conditional on bench result (OQ-2).
@@ -431,7 +431,7 @@
     1. 0 processes → empty.
     2. Bench: 5-min simulated poll measures adapter CPU% — MUST be ≤0.5% (T-1).
     3. Feature off → no `ProcessGpuPercent` readings.
-- **Explicit Swarm Guardrails:** HITL on OQ-2 ship/defer decision (G11).
+- **Guardrails:** HITL on OQ-2 ship/defer decision (G11).
 
 ### STORY 3.3: `sidebar-adapter-battery` (starship-battery)
 - **User Story:** As the Adapter Agent, I want a battery provider.
@@ -447,7 +447,7 @@
     1. No battery → empty.
     2. 100% idle → `BatteryState::Idle`.
     3. Rate sign convention documented (negative on AC = charging).
-- **Explicit Swarm Guardrails:** None.
+- **Guardrails:** None.
 
 ### STORY 3.4: `sidebar-adapter-pdh` (Per-drive R/W throughput)
 - **User Story:** As the Adapter Agent, I want a PDH-backed per-drive R/W bytes/sec provider.
@@ -464,7 +464,7 @@
     2. Zero-activity drive → value 0.0 (not omitted).
     3. Hot-plugged USB drive → picked up next tick.
     4. SAFETY: every `unsafe` block has `// SAFETY:` comment (CI lint G2).
-- **Explicit Swarm Guardrails:** Shell gate on Windows-only test. HITL on any new `unsafe`.
+- **Guardrails:** Shell gate on Windows-only test. HITL on any new `unsafe`.
 
 ### STORY 3.5: `sidebar-adapter-net` (Per-NIC via GetIfTable2) — v2 MARQUEE
 - **User Story:** As the Adapter Agent, I want a per-NIC throughput provider using `GetIfTable2` so live RX/TX counters are surfaced.
@@ -483,7 +483,7 @@
     3. NIC reappears → resumes; LUID matches.
     4. Zero NICs → empty.
     5. SAFETY: every `unsafe` FFI block documented (CI lint).
-- **Explicit Swarm Guardrails:** HITL on LUID stability assumption (G11) — R10 fallback to MAC if sdd-verify disproves. HITL on any new `unsafe`.
+- **Guardrails:** HITL on LUID stability assumption (G11) — R10 fallback to MAC if sdd-verify disproves. HITL on any new `unsafe`.
 
 ### STORY 3.6: `sidebar-adapter-ohm` (LHM HTTP bridge) — Full mode *(revised 2026-07-08 — was WMI)*
 - **User Story:** As the OHM Agent, I want an HTTP-backed provider that `GET`s `http://127.0.0.1:17127/data.json` from the bundled LibreHardwareMonitor subprocess, parsing the JSON sensor tree for CPU temp/power/fan/voltage, AMD/Intel GPU, SSD SMART/temp.
@@ -507,13 +507,13 @@
     4. Malformed LHM JSON (missing `value` field on a sensor) → that node skipped, others returned.
     5. Two CPUs (dual-socket) → `SensorId.instance = "cpu/0"` and `"cpu/1"` derived from LHM node `id`.
     6. LHM v0.9.6 vs v0.9.7 schema drift (new field added) → `serde(default)` tolerance, no fail.
-- **Explicit Swarm Guardrails:** HITL on HTTP timeout T-10 (G11). HITL on `ureq` version (R2 — prefer maintained sync client). Shell gate. **Local-test note:** This dev machine (the reference machine, a modern AMD Ryzen APU) is the IDEAL LHM test target — v0.9.6 has Ryzen AI 300-series support. `#[ignore]`'d integration tests run cleanly here after `scripts/fetch_ohm.ps1` + manual LHM launch.
+- **Guardrails:** HITL on HTTP timeout T-10 (G11). HITL on `ureq` version (R2 — prefer maintained sync client). Shell gate. **Local-test note:** This dev machine (the reference machine, a modern AMD Ryzen APU) is the IDEAL LHM test target — v0.9.6 has Ryzen AI 300-series support. `#[ignore]`'d integration tests run cleanly here after `scripts/fetch_ohm.ps1` + manual LHM launch.
 
 ---
 
 ## EPIC 4 — Persistence Layer (SQLite)
 - **System Objective:** Implement the SQLite-backed bandwidth state store (AD-11).
-- **Swarm Mapping:** DB Agent.
+- **Owner:** DB Agent.
 
 ### STORY 4.1: Schema Init + PRAGMAs
 - **User Story:** As the DB Agent, I want the `current_cycle`, `bandwidth_history`, and `current_cycle_metadata` tables + WAL/`user_version` PRAGMAs.
@@ -531,7 +531,7 @@
     1. Corrupt/non-SQLite file at path → `init()` returns Err, no overwrite.
     2. Read-only FS → Err with clear message.
     3. `adapter_luid` insert of `u64::MAX` → round-trips as `i64` (LUID is 64-bit; verify no sign issues — DECIDE: store as `i64` reinterpret-cast).
-- **Explicit Swarm Guardrails:** HITL on `adapter_luid` integer-width (G11). Shell gate on `rusqlite` version. G21 (all SQLite via `sidebar-persistence`).
+- **Guardrails:** HITL on `adapter_luid` integer-width (G11). Shell gate on `rusqlite` version. G21 (all SQLite via `sidebar-persistence`).
 
 ### STORY 4.2: Bandwidth Repo (save / load / archive / prune)
 - **User Story:** As the DB Agent, I want repo functions for the rollover lifecycle.
@@ -549,7 +549,7 @@
     2. Save new LUID → INSERT (upsert).
     3. Save existing LUID → UPDATE.
     4. Concurrent save (two threads) → SQLite busy; T-12 retry ceiling (5 attempts) respected, then Err if still busy.
-- **Explicit Swarm Guardrails:** G21.
+- **Guardrails:** G21.
 
 ### STORY 4.3: Migration (`v0_to_v2`)
 - **User Story:** As the DB Agent, I want a migration module tracking schema via `user_version`.
@@ -566,13 +566,13 @@
   - **Boundary & Edge Case Test Cases:**
     1. `user_version = 99` → Err "unknown future schema".
     2. Migration fails mid-way (inject fault) → txn rolls back, `user_version` unchanged.
-- **Explicit Swarm Guardrails:** G21.
+- **Guardrails:** G21.
 
 ---
 
 ## EPIC 5 — Bandwidth Accountant
 - **System Objective:** Implement the `BandwidthAccountant` task (architecture §6, flows F/G/H/I).
-- **Swarm Mapping:** Async-Orchestration Agent.
+- **Owner:** Async-Orchestration Agent.
 
 ### STORY 5.1: MonthlyAccumulator (in-memory)
 - **User Story:** As the Domain Agent, I want an in-memory `MonthlyAccumulator` keyed on LUID with wraparound handling (T-23).
@@ -590,7 +590,7 @@
     2. First call (prev=None) → delta=0 (baseline).
     3. rx=0, tx=0 → no accumulation, no panic.
     4. Proptest (F7): random valid counter sequences; cumulative rx_bytes always equals sum of deltas.
-- **Explicit Swarm Guardrails:** None (pure).
+- **Guardrails:** None (pure).
 
 ### STORY 5.2: Accountant Task (subscribe + accumulate + flush + rollover)
 - **User Story:** As the Async Agent, I want the `BandwidthAccountant` tokio task (architecture §6, flows F/G).
@@ -610,7 +610,7 @@
     4. Flush fails (Simulate SQLite disk full via TempDir permission flip) → error logged, accountant continues (G15).
     5. Rapid 100 ticks within 60s debounce (T-15) → only 1 flush.
     6. Shutdown signal mid-flush → graceful within T-19 (3000ms) grace.
-- **Explicit Swarm Guardrails:** HITL on Clock trait contract (G11). Shell gate on tokio version. G15 panic-safety.
+- **Guardrails:** HITL on Clock trait contract (G11). Shell gate on tokio version. G15 panic-safety.
 
 ### STORY 5.3: BandwidthView DTO + Builder
 - **User Story:** As the Domain Agent, I want a `BandwidthView` DTO so the GUI renders without touching SQLite (flow H).
@@ -627,13 +627,13 @@
     2. `days_until_reset` when today == cycle_end-1 → 1.
     3. `days_until_reset` when today == cycle_end → 0.
     4. NIC in history not in current (disconnected) → history retained.
-- **Explicit Swarm Guardrails:** None.
+- **Guardrails:** None.
 
 ---
 
 ## EPIC 6 — Platform Layer (Win32)
 - **System Objective:** Win32 integration: transparent topmost window, AppBar, DWM, DPI v2, OhmSupervisor.
-- **Swarm Mapping:** Win32-Native Agent.
+- **Owner:** Win32-Native Agent.
 
 ### STORY 6.1: Transparent Borderless Topmost Viewport + Peek Exclusion + Capture Exclusion
 - **User Story:** As the Win32 Agent, I want an egui/eframe viewport that is transparent, borderless, always-on-top, DWM-peek-excluded, and optionally excluded from supported capture APIs for streamers (AD-1, NFR-7, R4).
@@ -656,7 +656,7 @@
     3. Manual smoke: transparency fails on specific GPU driver → R4 materialized; document workaround.
     4. SAFETY comment presence (CI lint G2).
     5. Capture exclusion unsupported (older Windows/invalid HWND) → non-fatal warning and continue.
-- **Explicit Swarm Guardrails:** HITL **mandatory** (G11) — manual smoke on real Win11, capture exclusion is a streamer-privacy feature that needs visual review. HITL on any `unsafe`. Shell gate on egui version.
+- **Guardrails:** HITL **mandatory** (G11) — manual smoke on real Win11, capture exclusion is a streamer-privacy feature that needs visual review. HITL on any `unsafe`. Shell gate on egui version.
 
 ### STORY 6.2: AppBar Dock Registration (SHAppBarMessage)
 - **User Story:** As the Win32 Agent, I want AppBar registration so the sidebar reserves edge space.
@@ -674,7 +674,7 @@
     2. Double-register → no-op or returns existing.
     3. Unregister without register → no-op.
     4. Monitor disconnect → re-dock to primary or hide (documented).
-- **Explicit Swarm Guardrails:** HITL smoke on multi-monitor. HITL on `unsafe`.
+- **Guardrails:** HITL smoke on multi-monitor. HITL on `unsafe`.
 
 ### STORY 6.3: Per-Monitor DPI Awareness v2
 - **User Story:** As the Win32 Agent, I want per-monitor DPI v2 (NFR-6).
@@ -690,12 +690,12 @@
   - **Boundary & Edge Case Test Cases:**
     1. API fails (older Windows) → fallback to system DPI, logged.
     2. Calling twice → no-op.
-- **Explicit Swarm Guardrails:** HITL on `unsafe`.
+- **Guardrails:** HITL on `unsafe`.
 
 ### STORY 6.4: OhmSupervisor (subprocess launch + monitor + teardown) *(revised 2026-07-08 — was WMI)*
 - **User Story:** As the Win32 Agent, I want the `OhmSupervisor` (AD-8, §3 flow D/E, G10) — probe the LHM HTTP endpoint, write the resolved port into LHM config, launch bundled LibreHardwareMonitor via `ShellExecuteW("runas")` on user action, monitor, tear down.
 - **Technical Context:** AD-8 + §6 + AD-7 (revised) + T-10/T-11/T-45 + G10. **`OhmSupervisor::probe()` runs `GET http://127.0.0.1:17127/data.json` via `ureq` with 500ms timeout T-10.** If 200 + body looks like LHM JSON signature (top-level array, first element has `Text` and `Children`) → Full. If connection-refused/timeout → Basic. `launch_elevated()` picks a free port (17127..17137), patches `LibreHardwareMonitor.exe.config` (`runWebServerMenuItem=true`, `listenerPort=<chosen>`), invokes `ShellExecuteW("runas")` (5s launch timeout T-11), then re-probes. Job Object wrapping (G10) reaps sidebar-launched LHM on host crash; shutdown kills only sidebar-owned children. **The current integration slice wires the app-level monitor/degrade task; it gates degradation to children explicitly launched by the sidebar. Real UAC/LHM smoke remains HITL.**
-- **⚠️ Verified-fact note (researched 2026-07-08 during dev-env certification):** LHM v0.9.6's HTTP server defaults to OFF (`runWebServerMenuItem=false` in `MainForm.cs`) and defaults to port 8085 (`_settings.GetValue("listenerPort", 8085)`). Both must be set in `LibreHardwareMonitor.exe.config`'s `<appSettings>`-equivalent section before launch. Without `runWebServerMenuItem=true`, LHM starts cleanly but listens on ZERO ports — the swarm WILL see connection-refused and conclude "Full mode unavailable" incorrectly. This is the #1 gotcha for Story 6.4.
+- **⚠️ Verified-fact note (researched 2026-07-08):** LHM v0.9.6's HTTP server defaults to OFF (`runWebServerMenuItem=false` in `MainForm.cs`) and defaults to port 8085 (`_settings.GetValue("listenerPort", 8085)`). Both must be set in `LibreHardwareMonitor.exe.config`'s `<appSettings>`-equivalent section before launch. Without `runWebServerMenuItem=true`, LHM starts cleanly but listens on ZERO ports — the probe WILL see connection-refused and conclude "Full mode unavailable" incorrectly. This is the #1 gotcha for Story 6.4.
 - **Gentle-AI SDD Phase Checklist:**
   1. [ ] **Plan:** LHM binary path resolution. Child-handle ownership tracking (sidebar-owned vs user-owned). Job Object setup. Config keys are known and covered by patch tests; app-level child-monitor wiring is present in the current 12.8 worktree slice, with real UAC/LHM validation still pending.
   2. [ ] **Implement:** `crates/sidebar-platform/src/ohm_supervisor.rs`. **All `unsafe` per F11 with SAFETY comments.** No COM init needed (was required for WMI).
@@ -717,13 +717,13 @@
     10. **Non-LHM discrimination:** something else returns HTTP 200 on 17127 but body isn't LHM JSON → treated as occupied → port fallback.
     11. **HTTP-server-not-enabled regression:** LHM config written but `runWebServerMenuItem` key missing or set to `false` → LHM launches, listens on zero ports → probe times out → Basic mode. Test asserts the config-write includes BOTH `runWebServerMenuItem=true` AND `listenerPort=<port>` (the #1 gotcha — see Verified-fact note in Technical Context).
     12. **Tier-change broadcast (T-38, F12):** LHM crash triggers `Event::TierChanged(Basic)` on the Event channel within 500ms; GUI status pill flips; coalescing prevents pill-flap if LHM restabilizes within 500ms.
-- **Explicit Swarm Guardrails:** HITL **mandatory** (G11) — UAC + process-ownership + Job Object logic + port-write-to-LHM-config + tier-change-broadcast contract. HITL on `ShellExecuteW` invocation. Shell gate. G23 (Event channel discipline).
+- **Guardrails:** HITL **mandatory** (G11) — UAC + process-ownership + Job Object logic + port-write-to-LHM-config + tier-change-broadcast contract. HITL on `ShellExecuteW` invocation. Shell gate. G23 (Event channel discipline).
 
 ---
 
 ## EPIC 7 — Application Wiring
 - **System Objective:** Wire the binary: tokio runtime, provider registry, poller, broadcast, two-tier probe.
-- **Swarm Mapping:** Runtime-Wiring Agent.
+- **Owner:** Runtime-Wiring Agent.
 
 ### STORY 7.1: Provider Registry
 - **User Story:** As the Wiring Agent, I want a registry building `Vec<Arc<dyn SensorProvider>>` filtered by `classify_for_v1(active_tier)` (AD-5, §5.4).
@@ -741,7 +741,7 @@
     2. Hot tier switch Basic→Full mid-session → registry rebuilt; ohm added.
     3. Empty registry → empty vec, no panic.
     4. Idempotency (F6): rebuild twice produces identical registry.
-- **Explicit Swarm Guardrails:** None.
+- **Guardrails:** None.
 
 ### STORY 7.2: Poller Task (interval + broadcast publish)
 - **User Story:** As the Wiring Agent, I want the poller task (AD-6, §6 flow A/B/C) — fires every `poll_interval_seconds`, runs providers on the blocking pool with a shared deadline, concatenates, timestamps, and publishes via broadcast.
@@ -760,7 +760,7 @@
     3. Receiver lags → oldest dropped (T-14), `warn!`.
     4. Interval = 0 → clamped to 1s (T-3).
     5. Aggregate CPU% over 5-min simulated window across all providers ≤ T-2 (2%).
-- **Explicit Swarm Guardrails:** HITL on `catch_unwind`/`AssertUnwindSafe` decision (G11).
+- **Guardrails:** HITL on `catch_unwind`/`AssertUnwindSafe` decision (G11).
 
 ### STORY 7.3: Two-Tier Auto-Detect Probe (on every launch)
 - **User Story:** As the Wiring Agent, I want the launch-time probe (AD-7, PRD §5.2).
@@ -778,13 +778,13 @@
     2. Host elevated but LHM not installed → Basic + "install LHM" hint.
     3. Rapid relaunch (LHM running from previous session on port 17127) → probe succeeds immediately.
     4. LHM running but on fallback port 17128 (port 17127 was occupied at last launch) → probe tries 17127 (fails), then 17128 (succeeds) within 1s total.
-- **Explicit Swarm Guardrails:** HITL — must verify "no UAC on default first launch" (G11, success metric).
+- **Guardrails:** HITL — must verify "no UAC on default first launch" (G11, success metric).
 
 ---
 
 ## EPIC 8 — GUI (egui)
 - **System Objective:** Render sidebar UI: status pill, metric rows (NFR-8), bandwidth panel, settings.
-- **Swarm Mapping:** Frontend-UI Agent.
+- **Owner:** Frontend-UI Agent.
 
 ### STORY 8.1: AppState + egui::App + Repaint on Broadcast
 - **User Story:** As the UI Agent, I want `AppState` wired to `eframe::App` repaint on broadcast (§6, T-9).
@@ -801,7 +801,7 @@
     1. Empty readings → "Waiting for data..." placeholder, no panic.
     2. RwLock poisoned → GUI reads last good snapshot, logs (G15).
     3. 1000 readings → render within T-9 (16ms); document truncation if exceeded.
-- **Explicit Swarm Guardrails:** HITL smoke on Win11.
+- **Guardrails:** HITL smoke on Win11.
 
 ### STORY 8.2: Status Pill
 - **User Story:** As the UI Agent, I want the status pill (PRD §5.3).
@@ -817,7 +817,7 @@
   - **Boundary & Edge Case Test Cases:**
     1. `tier=Full` → "FULL" green, click no-op or info.
     2. Tooltip text matches PRD §5.3 verbatim (snapshot).
-- **Explicit Swarm Guardrails:** HITL — UAC trigger must be explicit user action only.
+- **Guardrails:** HITL — UAC trigger must be explicit user action only.
 
 ### STORY 8.3: Metric Row (NFR-8)
 - **User Story:** As the UI Agent, I want a metric row component formatting each reading via `format` (NFR-8).
@@ -834,7 +834,7 @@
     1. CpuTemperature with `temp_unit=Fahrenheit` → "144 °F" (T-29).
     2. NaN reading → "--" (T-20).
     3. Unknown MetricKind → "unknown", logged.
-- **Explicit Swarm Guardrails:** None.
+- **Guardrails:** None.
 
 ### STORY 8.4: Bandwidth Panel — v2 MARQUEE
 - **User Story:** As the UI Agent, I want the bandwidth panel (PRD §3 Tier 4, §5.5.8).
@@ -851,7 +851,7 @@
     1. Empty BandwidthView → "No network adapters tracked".
     2. `days_until_reset=0` → "Resets today" (document exact string).
     3. NIC in history not current → "(disconnected)" annotation.
-- **Explicit Swarm Guardrails:** HITL — marquee feature, visual review (G11).
+- **Guardrails:** HITL — marquee feature, visual review (G11).
 - **Integration note (2026-07-12):** the accountant now publishes `BandwidthView` snapshots over a watch channel, including retained SQLite history; the GUI bridge is tested, while visual Win11 review remains HITL.
 
 ### STORY 8.5: Settings Panel
@@ -870,13 +870,13 @@
     2. `poll_interval=0` → clamped to 1 (T-3) with visible warning.
     3. `cycle_start_day=29` rejected at UI (T-26); user must pick ≤28 or "Last day".
     4. Settings closed without save → autosave vs revert (DECIDE: autosave debounced, no revert).
-- **Explicit Swarm Guardrails:** HITL on no-retroactive-resplit rule (G11).
+- **Guardrails:** HITL on no-retroactive-resplit rule (G11).
 
 ---
 
 ## EPIC 9 — Build & Release Pipeline (Zero-Cost)
 - **System Objective:** SignPath + GitHub Releases + winget + optional Store (AD-14, §11).
-- **Swarm Mapping:** Release-Engineering Agent.
+- **Owner:** Release-Engineering Agent.
 
 ### STORY 9.1: SignPath Project Setup + Code Signing Policy
 - **User Story:** As the Release Agent, I want SignPath Foundation set up + `code-signing-policy.md` so sidebar.exe can be signed for free (AD-14, §11.2).
@@ -895,7 +895,7 @@
     2. Policy missing required section (approver MFA) → pre-commit hook flags.
     3. OHM download hash mismatch → CI fails fast, no packaging.
     4. OHM download URL 404 (release retired) → CI fails with actionable message.
-- **Explicit Swarm Guardrails:** HITL **mandatory** (G11/G19) — external trust submission. Egress to `github.com/ArcadeRenegade/SidebarDiagnostics`... wait — OHM is at `github.com/ArcadeRenegade/SidebarDiagnostics`? No — OHM is `github.com/ArcadeRenegade/SidebarDiagnostics` is the upstream we're cloning; LibreHardwareMonitor is at `github.com/LibreHardwareMonitor/LibreHardwareMonitor`. The CI egress allowlist MUST include `github.com/LibreHardwareMonitor`, `objects.githubusercontent.com` (G16).
+- **Guardrails:** HITL **mandatory** (G11/G19) — external trust submission. Egress to `github.com/ArcadeRenegade/SidebarDiagnostics`... wait — OHM is at `github.com/ArcadeRenegade/SidebarDiagnostics`? No — OHM is `github.com/ArcadeRenegade/SidebarDiagnostics` is the upstream we're cloning; LibreHardwareMonitor is at `github.com/LibreHardwareMonitor/LibreHardwareMonitor`. The CI egress allowlist MUST include `github.com/LibreHardwareMonitor`, `objects.githubusercontent.com` (G16).
 
 ### STORY 9.2: `release.yml` Workflow (Build → Sign → Publish)
 - **User Story:** As the Release Agent, I want the release workflow (§11.1 Stages 1–4): build → SignPath sign → package ZIP + MSIX → GitHub Release + winget PR.
@@ -913,13 +913,13 @@
     2. winget PR fails (rate limit) → workflow does NOT fail release; logs warning.
     3. Tag push without `release-approver` → blocks at env gate.
     4. Binary hash differs across two runs → warn (G18 best-effort reproducibility).
-- **Explicit Swarm Guardrails:** HITL **mandatory** (G11/G19) — release-approver env. No auto-publish on tag.
+- **Guardrails:** HITL **mandatory** (G11/G19) — release-approver env. No auto-publish on tag.
 
 ---
 
 ## EPIC 10 — Acceptance & Verify
 - **System Objective:** NFR verification harness: perf bench, smoke checklist, coverage gate, network-egress assertion.
-- **Swarm Mapping:** QA Agent.
+- **Owner:** QA Agent.
 
 ### STORY 10.1: `poll_cost` Criterion Bench + NFR-3/NFR-4 Executable Tests + Network Egress Assertion
 - **User Story:** As the QA Agent, I want the criterion bench enforcing T-1/T-2, plus executable tests for cold-start (T-7) and RSS (T-4/T-5/T-6), plus a runtime network-egress assertion (G16), so NFRs are verified in CI not just manually.
@@ -943,7 +943,7 @@
     5. SQLite incremental RSS > T-6 (3 MiB) → test fails.
     6. CI runner noisier than reference T-31 → flaky; document tolerance band (e.g. ±20%).
     7. Egress test: if sidebar.exe opens ANY socket (regression) → test fails naming the destination IP.
-- **Explicit Swarm Guardrails:** HITL — T-1 threshold + T-31 reference-hardware policy (G11). HITL on any new `unsafe`.
+- **Guardrails:** HITL — T-1 threshold + T-31 reference-hardware policy (G11). HITL on any new `unsafe`.
 
 ### STORY 10.2: Manual Smoke Checklist Automation (where feasible)
 - **User Story:** As the QA Agent, I want the §7.4 manual smoke checklist codified so verify runs are reproducible.
@@ -958,7 +958,7 @@
     2. Scriptable items (config round-trip after reboot simulation) pass.
   - **Boundary & Edge Case Test Cases:**
     1. Manual item marked failed → verify run fails with item highlighted.
-- **Explicit Swarm Guardrails:** HITL — manual smoke cannot be automated away (G11).
+- **Guardrails:** HITL — manual smoke cannot be automated away (G11).
 
 ---
 
@@ -985,7 +985,7 @@ The stories below close the gaps found in audit pass 3. Each maps to a specific 
     2. Upstream release retired (404) → script exits non-zero with actionable message naming the missing tag.
     3. Network egress blocked (CI sandbox) → script times out cleanly within 30s (not infinite).
     4. License file alongside LHM (MPL-2.0) — fetched and placed at `resources/LibreHardwareMonitor.LICENSE.txt`; verify it exists post-fetch.
-- **Explicit Swarm Guardrails:** HITL **mandatory** (G11/G19) — OHM version choice is an upstream-trust decision. Egress to `github.com/LibreHardwareMonitor` + `objects.githubusercontent.com` required in G16 allowlist.
+- **Guardrails:** HITL **mandatory** (G11/G19) — OHM version choice is an upstream-trust decision. Egress to `github.com/LibreHardwareMonitor` + `objects.githubusercontent.com` required in G16 allowlist.
 
 ---
 
@@ -1011,7 +1011,7 @@ The stories below close the gaps found in audit pass 3. Each maps to a specific 
     3. Configured `[dock] monitor_id` not present (unplugged) → re-dock to primary + `warn!` (T-36).
     4. System theme registry key missing → fallback to `Dark` default.
     5. `WM_SETTINGCHANGE` broadcast → `Event::ThemeChanged("dark"|"light")` published within 100ms.
-- **Explicit Swarm Guardrails:** HITL on `RegisterHotKey` invocation (G19). HITL on capture cloak behavior — needs streamer review. HITL on any `unsafe`.
+- **Guardrails:** HITL on `RegisterHotKey` invocation (G19). HITL on capture cloak behavior — needs streamer review. HITL on any `unsafe`.
 
 ---
 
@@ -1035,7 +1035,7 @@ The stories below close the gaps found in audit pass 3. Each maps to a specific 
     2. Channel overflow (T-14 cap 8) → oldest dropped + `warn!`.
     3. Coalescer task panics → caught, logged, fallback: pass-through without coalescing (G15).
     4. `Event::Shutdown` published → all subscribers drain within their T-39 phase.
-- **Explicit Swarm Guardrails:** HITL **mandatory** (G11/G19) — Event enum + channel contract is an architectural keystone; modifications ripple.
+- **Guardrails:** HITL **mandatory** (G11/G19) — Event enum + channel contract is an architectural keystone; modifications ripple.
 
 ---
 
@@ -1056,7 +1056,7 @@ The stories below close the gaps found in audit pass 3. Each maps to a specific 
     2. OhmSupervisor hangs → phase 3 budget exceeded → Job Object (G10) reaps OHM via kernel, forced exit.
     3. Force-flush fails (SQLite disk full) → logged, shutdown continues (data loss accepted per R11).
     4. Double shutdown signal (Ctrl+C twice) → second is no-op; first is already in progress.
-- **Explicit Swarm Guardrails:** HITL **mandatory** (G11/G19) — process-termination policy.
+- **Guardrails:** HITL **mandatory** (G11/G19) — process-termination policy.
 
 ---
 
@@ -1077,7 +1077,7 @@ The stories below close the gaps found in audit pass 3. Each maps to a specific 
     1. Accent `"garbage"` → fallback `#4CAF50` + `warn!`.
     2. Accent `"#RGB"` (short form) → expanded to `#RRGGBB`.
     3. System theme changes (event received) → visuals update without restart.
-- **Explicit Swarm Guardrails:** HITL on snapshot acceptance (`cargo insta accept`).
+- **Guardrails:** HITL on snapshot acceptance (`cargo insta accept`).
 
 ---
 
@@ -1097,7 +1097,7 @@ The stories below close the gaps found in audit pass 3. Each maps to a specific 
     1. NaN in window → gap in line (documented).
     2. Window larger than widget width → downsample (or document overflow behavior).
     3. All values identical → flat line at vertical center.
-- **Explicit Swarm Guardrails:** None.
+- **Guardrails:** None.
 
 ---
 
@@ -1117,7 +1117,7 @@ The stories below close the gaps found in audit pass 3. Each maps to a specific 
     1. Hysteresis: oscillation 88→92→88 with threshold 80/95, hysteresis 5 → color doesn't flap (1.2 contract).
     2. Threshold unset (None) → no alerting, default color.
     3. NaN reading → no alert, default color (T-20).
-- **Explicit Swarm Guardrails:** None.
+- **Guardrails:** None.
 
 ---
 
@@ -1137,7 +1137,7 @@ The stories below close the gaps found in audit pass 3. Each maps to a specific 
     1. Disable ALL metrics → sidebar shows "No metrics enabled" placeholder.
     2. Reorder persisted across restart (config round-trip via Story 1.5).
     3. Metric in `[metrics] order` but not in `enabled` → ignored (no crash).
-- **Explicit Swarm Guardrails:** None.
+- **Guardrails:** None.
 
 ---
 
@@ -1159,7 +1159,7 @@ The stories below close the gaps found in audit pass 3. Each maps to a specific 
     2. Wizard completed but `config.toml` write fails (read-only FS) → wizard surfaces error, allows retry.
     3. Wizard closed via window-X → treated as skip (defaults applied).
     4. Poller does NOT start while wizard is showing (G24 — wizard is the gate).
-- **Explicit Swarm Guardrails:** HITL **mandatory** (G11/G19) — first impression; visual review.
+- **Guardrails:** HITL **mandatory** (G11/G19) — first impression; visual review.
 
 ---
 
@@ -1179,7 +1179,7 @@ The stories below close the gaps found in audit pass 3. Each maps to a specific 
     1. `check_on_startup = true` + network failure → silent, logged.
     2. Mock HTTP returns 404 → silent, logged.
     3. Egress test asserts sidebar.exe opens ZERO sockets when `check_on_startup = false` (the default).
-- **Explicit Swarm Guardrails:** HITL **mandatory** (G11/G19) — runtime network egress is a privacy policy decision. Recommend v1.1 deferral.
+- **Guardrails:** HITL **mandatory** (G11/G19) — runtime network egress is a privacy policy decision. Recommend v1.1 deferral.
 
 ---
 
@@ -1226,7 +1226,7 @@ Epic 10 (Verify)
 
 ## EPIC 11 — Regression Harness & Story Wiring (Audit Pass 4)
 - **System Objective:** Build the cumulative regression harness, story-progress tracker, and UI snapshot infrastructure that guarantee zero regressions as stories accumulate. Every downstream story's PR depends on this Epic being in place.
-- **Swarm Mapping:** QA Infrastructure Agent.
+- **Owner:** QA Infrastructure Agent.
 
 ### STORY 11.1: Test Layer Scaffold + `regression-harness.md` Reference
 - **User Story:** As the QA Infra Agent, I want the L0–L4 layer scaffold formalized as the canonical test-runner model so every story's tests declare their layer and the harness runs them in strict order.
@@ -1250,7 +1250,7 @@ Epic 10 (Verify)
     1. L0 job exceeds 60s budget (T-40) → fails with `layer-budget-exceeded: L0`.
     2. L1 job runs on non-Windows runner → fails (L1 is Windows-only).
     3. L3 job skipped because not a Windows runner → fails (L3 mandatory on Windows).
-- **Explicit Swarm Guardrails:** HITL **mandatory** (G11/G19) — harness architecture is a keystone.
+- **Guardrails:** HITL **mandatory** (G11/G19) — harness architecture is a keystone.
 
 ### STORY 11.2: CI Regression Gate (full matrix per PR)
 - **User Story:** As the QA Infra Agent, I want CI to run the FULL L0+L1+L2+L3 matrix on every PR (not just the touched crate) so the cumulative-regression contract (G25) is enforced.
@@ -1275,7 +1275,7 @@ Epic 10 (Verify)
     2. Coverage delta < 0 (T-42) → CI fails with `coverage-regression: crate sidebar-domain -2.3%`.
     3. Matrix exceeds T-41 budget → fails with `regression-budget-exceeded`.
     4. Cache miss (cold build) → still completes within budget OR fails gracefully with actionable message.
-- **Explicit Swarm Guardrails:** HITL on any change to the regression contract (G19).
+- **Guardrails:** HITL on any change to the regression contract (G19).
 
 ### STORY 11.3: UI Snapshot Harness (`insta` + `egui_kittest`)
 - **User Story:** As the QA Infra Agent, I want the UI snapshot infrastructure (`insta` + `egui_kittest`) wired into L2 with a self-contained reference snapshot, so GUI stories (Epic 8) can add their own snapshots on top without a circular dependency on 8.1.
@@ -1299,15 +1299,15 @@ Epic 10 (Verify)
     1. Snapshot drift (intentional change to the label text) → `cargo insta test` fails with diff; HITL must run `cargo insta accept` and re-push.
     2. Snapshot drift (unintentional — egui version bump changes rendering) → CI fails; report shows the diff.
     3. New snapshot file added without HITL review → CI warns (the `requires-hitl-snapshot` label check).
-- **Explicit Swarm Guardrails:** HITL on every snapshot acceptance (G19).
+- **Guardrails:** HITL on every snapshot acceptance (G19).
 
 ### STORY 11.4: Story Progress Tracker (`PROGRESS.md` auto-update)
-- **User Story:** As the QA Infra Agent, I want `docs/backlog/PROGRESS.md` auto-updated on every merge so the swarm can read it at task-startup to know which stories are done and which to pick next.
+- **User Story:** As the QA Infra Agent, I want `docs/backlog/PROGRESS.md` auto-updated on every merge so contributors can read it at task-startup to know which stories are done and which to pick next.
 - **Technical Context:** `regression-harness.md` §6.4 + G27. CI job on `main` branch (post-merge) parses merged PRs (via `git log` + PR-title convention `Story X.Y:`), updates `PROGRESS.md` table, commits back to `main`.
 - **Wiring:**
   - **Layer:** unit (the updater logic is pure; the CI job is integration)
   - **Depends-On:** [0.2, 11.2]
-  - **Blocks:** nothing strictly, but the swarm RECOMMENDS this be in place before Epic 1 stories merge (so progress is tracked from the start)
+  - **Blocks:** nothing strictly, but it is RECOMMENDED this be in place before Epic 1 stories merge (so progress is tracked from the start)
   - **Next:** (terminal — no Next; this story enables the loop)
   - **Parallel-With:** [11.3]
   - **DoD:** After a sample PR titled `Story 0.1: ...` merges, `PROGRESS.md` row for 0.1 shows `merged` within one CI run.
@@ -1324,7 +1324,7 @@ Epic 10 (Verify)
     2. PR title missing story ID → parser skips, logs `warn!` to CI output.
     3. `PROGRESS.md` schema change → CI fails fast (schema is a contract per G19).
     4. Reverted PR → row status changes from `merged` to `reverted` (track via `git log --revert`).
-- **Explicit Swarm Guardrails:** HITL **mandatory** (G11/G19) — the swarm reads this file; tampering or schema drift = silent story-skipping.
+- **Guardrails:** HITL **mandatory** (G11/G19) — the contributor reads this file; tampering or schema drift = silent story-skipping.
 
 ---
 
@@ -1409,7 +1409,7 @@ Epic 10 (Verify)
     1. Config dir is read-only — `persist_config` logs `warn!` and does not panic (G15 non-fatal); no `.tmp` left behind.
     2. Corrupt-file backup fails (disk full) — `load_config` still returns defaults; logs the backup failure at `warn!` but does not panic (G15).
     3. Concurrent writes from two threads — atomic rename guarantees the final file is one of the two writes, never a mix (assert via two threads + read-back).
-- **Explicit Swarm Guardrails:** No new dependency (use `std::fs`). No `unsafe` (pure Rust). Cite G15 (non-fatal recovery) + G28 (hardening) in every `warn!` log line.
+- **Guardrails:** No new dependency (use `std::fs`). No `unsafe` (pure Rust). Cite G15 (non-fatal recovery) + G28 (hardening) in every `warn!` log line.
 
 ### STORY 13.2: SQLite corruption quarantine + auto-recreate
 - **User Story:** As a non-technical user, I want bandwidth tracking to recover automatically if the database file gets corrupted, so I don't lose the feature forever with no way to fix it.
@@ -1433,7 +1433,7 @@ Epic 10 (Verify)
     1. `quarantine_preserves_corrupt_file_for_forensics` — the renamed-aside file's bytes are byte-identical to the original garbage (no mutation).
     2. Quarantine rename fails (e.g. target path is read-only) — `quarantine_and_reopen` returns `Err(Error::Io(...))`; `run_accountant_on_thread` logs + disables the accountant (G15 — does not crash the host).
     3. `run_accountant_on_thread` recovers after quarantine — the accountant runs against the fresh DB and persists a sample reading without error.
-- **Explicit Swarm Guardrails:** No new dependency. No `unsafe`. Do NOT weaken `schema::init`'s existing contract. Cite G15 + G21 + G28 in log lines.
+- **Guardrails:** No new dependency. No `unsafe`. Do NOT weaken `schema::init`'s existing contract. Cite G15 + G21 + G28 in log lines.
 
 ### STORY 13.3: Single-instance named-mutex guard
 - **User Story:** As a non-technical user who double-clicks the exe, I want the second click to do nothing (not launch a second instance that clobbers my settings and registers a second AppBar).
@@ -1456,7 +1456,7 @@ Epic 10 (Verify)
   - **Boundary & Edge Case Test Cases (cite G2, G10, G28, F11):**
     1. Second launch detects the first — spawn two child processes back-to-back; the second exits 0 within 2s (tripped the mutex) while the first keeps running. (May require a `--hold-open` test flag to keep the first alive; document if so.)
     2. Mutex creation fails (extremely unlikely — kernel out of handles) — `claim_or_exit` logs `error!` and falls through (does not block the launch — better to risk a double-instance than to block the user from the app entirely). Document this tradeoff in the SAFETY comment.
-- **Explicit Swarm Guardrails:** HITL on the `unsafe` block per G2/G19 (reviewer confirms the SAFETY invariant holds on Win11 24H2 + 25H2). Every `unsafe` block has a `// SAFETY:` comment (workspace lint `clippy::undocumented_unsafe_blocks = "deny"`). No new dependency.
+- **Guardrails:** HITL on the `unsafe` block per G2/G19 (reviewer confirms the SAFETY invariant holds on Win11 24H2 + 25H2). Every `unsafe` block has a `// SAFETY:` comment (workspace lint `clippy::undocumented_unsafe_blocks = "deny"`). No new dependency.
 
 ### STORY 13.4: Settings tooltips + jargon cleanup + About dialog
 - **User Story:** As a non-technical user, I want every setting explained in plain language and a way to see what this app is + how to use Full mode, so I don't have to Google "GB vs GiB" or wonder how to get temperature readings.
@@ -1481,7 +1481,7 @@ Epic 10 (Verify)
     1. About dialog closes when the user clicks the close button (kittest click + assert `open == false`).
     2. About dialog Full-mode instructions contain the literal phrase "View → Web Server" (the Path A one-time-click documentation).
     3. Tooltips render on hover (kittest `on_hover_text` registers the text in the access tree).
-- **Explicit Swarm Guardrails:** No new dependency. No `unsafe`. HITL on the tooltip wording (G19 — first-impression UX review, analog to Story 8.10). Cite G28 + T-37 in doc comments.
+- **Guardrails:** No new dependency. No `unsafe`. HITL on the tooltip wording (G19 — first-impression UX review, analog to Story 8.10). Cite G28 + T-37 in doc comments.
 
 ### STORY 13.5: Reference-machine runner script + LHM one-time-click docs
 - **User Story:** As the release engineer, I want a single command that runs every evidence gate on the designated reference machine (T-31) and produces a bundle I can attach to the release, so the v1.0.0 tag is backed by reproducible proof rather than ad-hoc notes.
@@ -1504,7 +1504,7 @@ Epic 10 (Verify)
   - **Boundary & Edge Case Test Cases (cite T-46, G25, G28, F14):**
     1. Script pre-flight fails on missing Rust → exits 1 with a clear message (assert via a mocked `cargo --version` failure path, or by inspecting the script's pre-flight block).
     2. Script exits non-zero if any automated stage fails (assert by inspecting the `$ErrorActionPreference = 'Stop'` + `throw` convention).
-- **Explicit Swarm Guardrails:** No new Rust dependency. HITL on the manual-item wording (the 12 prompts are the human-walker UX). Cite T-46 + G25 + G28 in the script header.
+- **Guardrails:** No new Rust dependency. HITL on the manual-item wording (the 12 prompts are the human-walker UX). Cite T-46 + G25 + G28 in the script header.
 
 ---
 
@@ -1530,7 +1530,7 @@ Epic 10 (Verify)
 - **TDD Contract & Test Cases:**
   - **Unit Test Cases (Happy Path):** (1) UacDeclined maps to the "declined" message string. (2) Success maps to None (no banner). (3) The banner auto-clears when tier flips to Full with a non-empty broadcast.
   - **Boundary & Edge Case Test Cases (cite G29):** (1) A launch that times out after T-11 surfaces the Timeout message, not a silent gray pill. (2) BinaryMissing surfaces the reinstall message. (3) The banner does NOT auto-clear if the user just dismisses it manually (needs a dismiss button).
-- **Explicit Swarm Guardrails:** No new dependency. Cite G29 (silent-failure surfaces) in every message string's doc comment.
+- **Guardrails:** No new dependency. Cite G29 (silent-failure surfaces) in every message string's doc comment.
 
 ### STORY 14.2: Wizard hot-start (no restart required)
 - **User Story:** As a non-technical user completing the first-run wizard, I want sensors to appear immediately — not a dead "Restart sidebar" string with no restart button.
@@ -1549,7 +1549,7 @@ Epic 10 (Verify)
 - **TDD Contract & Test Cases:**
   - **Unit Test Cases (Happy Path):** (1) Wizard Continue fires the Notify signal. (2) The poller spawns within 2s of the signal.
   - **Boundary & Edge Case Test Cases (cite G24, G29):** (1) If the poller fails to spawn (e.g. runtime error), the user sees an error banner, not a silent hang. (2) The wizard gate (G24) still holds — the poller does NOT start until the user clicks Continue/Skip.
-- **Explicit Swarm Guardrails:** HITL on the hot-start UX (G19 — first impression). Cite G24 (the poller is still gated on wizard completion; this story removes the RESTART requirement, not the gate).
+- **Guardrails:** HITL on the hot-start UX (G19 — first impression). Cite G24 (the poller is still gated on wizard completion; this story removes the RESTART requirement, not the gate).
 
 ### STORY 14.3: Per-sensor staleness detection + visual indicator
 - **User Story:** As a non-technical user, if one sensor (e.g. GPU temp) hangs while others keep working, I want to see that it's stale — not a frozen number that looks plausible.
@@ -1568,7 +1568,7 @@ Epic 10 (Verify)
 - **TDD Contract & Test Cases:**
   - **Unit Test Cases (Happy Path):** (1) A reading stamped `now` renders as fresh (no dim). (2) A reading stamped 60s ago (poll=10s → threshold=30s) renders as stale (dimmed + glyph).
   - **Boundary & Edge Case Test Cases (cite G29):** (1) The threshold scales with poll interval (poll=1s → threshold=3s, clamped to 15s min). (2) An empty readings vec shows WAITING_TEXT, not a stale badge.
-- **Explicit Swarm Guardrails:** No new dependency. Cite G29.
+- **Guardrails:** No new dependency. Cite G29.
 
 ### STORY 14.4: Config-corruption + DB-corruption user banners
 - **User Story:** As a non-technical user whose settings or bandwidth history got corrupted, I want to SEE that it happened + where my backup is — not a silent reset to defaults that makes me think I lost everything.
@@ -1587,7 +1587,7 @@ Epic 10 (Verify)
 - **TDD Contract & Test Cases:**
   - **Unit Test Cases (Happy Path):** (1) A corrupt config.toml sets `config_recovered` to the backup path. (2) A corrupt bandwidth.db sets `db_quarantined` to the backup path.
   - **Boundary & Edge Case Test Cases (cite G29):** (1) The banner dismiss button clears the flag (one-shot). (2) If the backup itself fails, the banner still fires but without a path ("…back up failed; settings were reset.").
-- **Explicit Swarm Guardrails:** Cite G29 + G15 (non-fatal recovery).
+- **Guardrails:** Cite G29 + G15 (non-fatal recovery).
 
 ### STORY 14.5: Generalized user-message stack (Vec<UserMessage> framework)
 - **User Story:** As the product owner, I want a single general framework for surfacing user-facing messages (info/warning/error), so stories 14.1-14.4 + future conditions all feed into one dismissible stack rather than ad-hoc fields.
@@ -1606,7 +1606,7 @@ Epic 10 (Verify)
 - **TDD Contract & Test Cases:**
   - **Unit Test Cases (Happy Path):** (1) Three messages stack in insertion order. (2) Dismissing by MessageId removes only that one. (3) Auto-clear rules (e.g. degraded clears on Full broadcast) still fire.
   - **Boundary & Edge Case Test Cases (cite G29):** (1) Duplicate MessageId is deduped (no message spam). (2) The stack doesn't grow unbounded (max 5; oldest dropped).
-- **Explicit Swarm Guardrails:** HITL on the message wording (G19). Cite G29.
+- **Guardrails:** HITL on the message wording (G19). Cite G29.
 
 ---
 
@@ -1632,7 +1632,7 @@ Epic 10 (Verify)
 - **TDD Contract & Test Cases:**
   - **Unit Test Cases (Happy Path):** (1) The host emits at least one JSON frame within 2s of launch. (2) The JSON parses as `Vec<LhmNode>`.
   - **Boundary & Edge Case Test Cases (cite G10, G16):** (1) If the library fails to load (e.g. .NET 4.7.2 missing), the host exits non-zero with a clear stderr message. (2) The host does NOT open any network socket (G16 — pipe only).
-- **Explicit Swarm Guardrails:** HITL mandatory (G11/G19) — this is a new signed binary running elevated. The C# source MUST be in the repo (not just the binary) for audit. Cite G10 (sidebar kills only hosts it launched) + G16 (pipe, not HTTP).
+- **Guardrails:** HITL mandatory (G11/G19) — this is a new signed binary running elevated. The C# source MUST be in the repo (not just the binary) for audit. Cite G10 (sidebar kills only hosts it launched) + G16 (pipe, not HTTP).
 
 ### STORY 15.2: SensorSource trait refactor + pipe client
 - **User Story:** As the sidebar adapter layer, I want a `SensorSource` trait so I can consume either the new pipe host OR the old HTTP path (for fallback / testing) without changing the adapter.
@@ -1651,7 +1651,7 @@ Epic 10 (Verify)
 - **TDD Contract & Test Cases:**
   - **Unit Test Cases (Happy Path):** (1) `PipeSource::read_frame` returns a valid JSON string. (2) The adapter parses it identically to the HTTP path.
   - **Boundary & Edge Case Test Cases (cite G16, G10):** (1) Host exits mid-read → `Err` surfaced + child-liveness degrades to Basic. (2) Malformed JSON → `Err` (same as HTTP path).
-- **Explicit Swarm Guardrails:** No new Rust dependency (`std::process::Command` is stdlib). Cite G16 (pipe is local-process only, not network).
+- **Guardrails:** No new Rust dependency (`std::process::Command` is stdlib). Cite G16 (pipe is local-process only, not network).
 
 ### STORY 15.3: Delete dead HTTP code + config-patching + port-fallback
 - **User Story:** As the codebase, I want the HTTP client, the LHM config-patching, and the 11-port fallback chain removed — they're dead code once the pipe host is the primary path.
@@ -1670,7 +1670,7 @@ Epic 10 (Verify)
 - **TDD Contract & Test Cases:**
   - **Unit Test Cases (Happy Path):** (1) No production code references `validate_loopback_url` or `pick_free_port`. (2) The adapter test suite still passes via `HttpSource` mock.
   - **Boundary & Edge Case Test Cases (cite G17):** (1) The deletion does not weaken G16 (the pipe is local-process, stricter than loopback HTTP).
-- **Explicit Swarm Guardrails:** Cite G17 (deletion over addition) + G3 (no dead code).
+- **Guardrails:** Cite G17 (deletion over addition) + G3 (no dead code).
 
 ---
 
@@ -1696,7 +1696,7 @@ Epic 10 (Verify)
 - **TDD Contract & Test Cases:**
   - **Unit Test Cases (Happy Path):** (1) The pipe server reads a request + responds with a frame. (2) Service stop kills the host child (G10).
   - **Boundary & Edge Case Test Cases (cite G10, G16):** (1) Host crash → service detects + restarts it (liveness probe). (2) Multiple sidebar UIs connecting → one frame per request (no contention).
-- **Explicit Swarm Guardrails:** HITL mandatory (G11/G19) — a LocalSystem service is the highest-trust binary in the product. The `windows-service` crate addition requires a G3 license audit. Cite G10 + G16.
+- **Guardrails:** HITL mandatory (G11/G19) — a LocalSystem service is the highest-trust binary in the product. The `windows-service` crate addition requires a G3 license audit. Cite G10 + G16.
 
 ### STORY 16.2: Sidebar UI IPC client (named-pipe consumer)
 - **User Story:** As the sidebar UI, I want to talk to the service over a named pipe instead of spawning an elevated child myself, so I never need UAC after install.
@@ -1715,7 +1715,7 @@ Epic 10 (Verify)
 - **TDD Contract & Test Cases:**
   - **Unit Test Cases (Happy Path):** (1) Pipe available → uses service. (2) Pipe absent → falls back to direct host.
   - **Boundary & Edge Case Test Cases (cite G16):** (1) Pipe connect timeout (1s) → fall back. (2) Service dies mid-session → child-liveness degrades to Basic (existing 12.8 wiring).
-- **Explicit Swarm Guardrails:** Cite G16.
+- **Guardrails:** Cite G16.
 
 ### STORY 16.3: Inno Setup installer (.iss) + service registration
 - **User Story:** As a non-technical user, I want to download one installer, run it, accept one UAC prompt, and have sidebar + the service + the sensor host installed + the service auto-started — so I never think about elevation again.
@@ -1734,7 +1734,7 @@ Epic 10 (Verify)
 - **TDD Contract & Test Cases:**
   - **Unit Test Cases (Happy Path):** (1) The .iss parses via `iscc /qp` (compile-only check). (2) The output EXE is signed.
   - **Boundary & Edge Case Test Cases (cite T-47, G19):** (1) Uninstall removes the service. (2) Reinstall upgrades without error. (3) The installer works when invoked by winget (`winget install` path).
-- **Explicit Swarm Guardrails:** HITL mandatory (G11/G19) — the installer is the trust entry point. Inno Setup itself is free + OSS; the `iscc` compiler is a build-tool dependency (like `actionlint`). Cite T-47.
+- **Guardrails:** HITL mandatory (G11/G19) — the installer is the trust entry point. Inno Setup itself is free + OSS; the `iscc` compiler is a build-tool dependency (like `actionlint`). Cite T-47.
 
 ### STORY 16.4: winget manifest + release pipeline integration
 - **User Story:** As a user, I want to `winget install sidebar` and get the installed + serviced version, not a portable ZIP.
@@ -1753,7 +1753,7 @@ Epic 10 (Verify)
 - **TDD Contract & Test Cases:**
   - **Unit Test Cases (Happy Path):** (1) `release.yml` actionlint-clean. (2) The winget manifest validates against the schema.
   - **Boundary & Edge Case Test Cases (cite T-47, G19):** (1) SignPath failure → unsigned draft (existing fallback). (2) winget PR submission is manual (HITL).
-- **Explicit Swarm Guardrails:** HITL on the winget PR submission (G19 — public artifact). Cite T-47.
+- **Guardrails:** HITL on the winget PR submission (G19 — public artifact). Cite T-47.
 
 ### STORY 16.5: Installer upgrade + rollback testing
 - **User Story:** As a user upgrading from v1.0.0 to v1.0.1, I want the installer to upgrade cleanly (stop old service, replace files, start new service) without losing my config or bandwidth data — and if the new version is broken, I want to roll back.
@@ -1772,7 +1772,7 @@ Epic 10 (Verify)
 - **TDD Contract & Test Cases:**
   - **Unit Test Cases (Happy Path):** (1) `IsServiceInstalled` detects a running service. (2) The .iss compiles with the `[Code]` section.
   - **Boundary & Edge Case Test Cases (cite T-47):** (1) First install (no prior service) → skip the stop/upgrade logic. (2) Service is installed but stopped → start-after-overwrite fires. (3) `%PROGRAMFILES%\sidebar` is locked (files in use) → installer prompts to close sidebar first.
-- **Explicit Swarm Guardrails:** HITL mandatory (G19 — upgrades can brick an installation). Cite T-47.
+- **Guardrails:** HITL mandatory (G19 — upgrades can brick an installation). Cite T-47.
 
 ### STORY 16.6: Portable ZIP dual-distribution
 - **User Story:** As a power user who doesn't want an installer, I want a portable ZIP that works without admin rights — with the tradeoff that I'll see a UAC prompt on each Full-mode launch (no service).
@@ -1791,7 +1791,7 @@ Epic 10 (Verify)
 - **TDD Contract & Test Cases:**
   - **Unit Test Cases (Happy Path):** (1) `release.yml` actionlint-clean with both artifacts. (2) The portable ZIP contains all required files.
   - **Boundary & Edge Case Test Cases (cite T-47):** (1) Portable ZIP runs without admin rights (Basic mode). (2) Portable ZIP Full mode prompts UAC (expected — no service).
-- **Explicit Swarm Guardrails:** Cite T-47.
+- **Guardrails:** Cite T-47.
 
 ---
 
@@ -1817,7 +1817,7 @@ Epic 10 (Verify)
 - **TDD Contract & Test Cases:**
   - **Unit Test Cases (Happy Path):** (1) A snooze with `until > now` survives restart. (2) A snooze with `until < now` is pruned on load.
   - **Boundary & Edge Case Test Cases (cite G28):** (1) Corrupt `acks.toml` → recover to empty (no crash). (2) Atomic write (temp + rename).
-- **Explicit Swarm Guardrails:** No new dependency (toml is already a workspace dep). Cite G28.
+- **Guardrails:** No new dependency (toml is already a workspace dep). Cite G28.
 
 ### STORY 17.2: Threshold configuration UI
 - **User Story:** As a user, I want to set "warn me when CPU temp > 80°C" via the settings panel — not by hand-editing config.toml.
@@ -1832,7 +1832,7 @@ Epic 10 (Verify)
 - **TDD Contract & Test Cases:**
   - **Unit Test Cases (Happy Path):** (1) Sliders render with the current config values. (2) Changing a slider fires on_change + persists.
   - **Boundary & Edge Case Test Cases (cite G28):** (1) warn >= critical → clamped + warning shown.
-- **Explicit Swarm Guardrails:** Cite G28.
+- **Guardrails:** Cite G28.
 
 ### STORY 17.3: Bandwidth CSV export
 - **User Story:** As a user tracking my bandwidth usage, I want to export my history to CSV.
@@ -1847,7 +1847,7 @@ Epic 10 (Verify)
 - **TDD Contract & Test Cases:**
   - **Unit Test Cases (Happy Path):** (1) `export_csv` produces valid CSV with headers.
   - **Boundary & Edge Case Test Cases (cite G28):** (1) Empty DB → CSV with headers only.
-- **Explicit Swarm Guardrails:** Cite G28.
+- **Guardrails:** Cite G28.
 
 ### STORY 17.4: DPI-change handling (WM_DPICHANGED)
 - **User Story:** As a user who changes Windows display scaling mid-session, I want the sidebar to re-render at the new DPI — not stay tiny or overflow.
@@ -1862,7 +1862,7 @@ Epic 10 (Verify)
 - **TDD Contract & Test Cases:**
   - **Unit Test Cases (Happy Path):** (1) The DPI message is decoded + `set_pixels_per_point` called.
   - **Boundary & Edge Case Test Cases (cite G28):** (1) DPI = 96 (100%) → no-op.
-- **Explicit Swarm Guardrails:** Cite G28. Unsafe FFI per G2.
+- **Guardrails:** Cite G28. Unsafe FFI per G2.
 
 ### STORY 17.5: Crash-recovery messaging (last_tier sentinel)
 - **User Story:** As a user whose sidebar crashed while in Full mode, I want to know on next launch that Full mode needs re-enabling — not a surprising gray pill.
@@ -1877,7 +1877,7 @@ Epic 10 (Verify)
 - **TDD Contract & Test Cases:**
   - **Unit Test Cases (Happy Path):** (1) `last_tier=Full` + current=Basic → message fires once.
   - **Boundary & Edge Case Test Cases (cite G29):** (1) Message is one-shot (dismissed on first pill click).
-- **Explicit Swarm Guardrails:** Cite G29.
+- **Guardrails:** Cite G29.
 
 ### STORY 17.6: Discoverability polish (hotkey + drag label + About wording)
 - **User Story:** As a non-technical user, I want to discover the click-through hotkey, the drag-to-move grip, and the honest UAC cadence without reading docs.
@@ -1892,7 +1892,7 @@ Epic 10 (Verify)
 - **TDD Contract & Test Cases:**
   - **Unit Test Cases (Happy Path):** (1) About renders the config hotkey. (2) Drag label is "Drag here to move".
   - **Boundary & Edge Case Test Cases (cite G28):** (1) Custom hotkey string reflected in About.
-- **Explicit Swarm Guardrails:** HITL on wording (G19). Cite G28.
+- **Guardrails:** HITL on wording (G19). Cite G28.
 
 ### STORY 17.7: Monitor-picker dropdown (wizard + settings)
 - **User Story:** As a multi-monitor user, I want to pick my target monitor from a dropdown — not type a DeviceID string.
@@ -1907,13 +1907,13 @@ Epic 10 (Verify)
 - **TDD Contract & Test Cases:**
   - **Unit Test Cases (Happy Path):** (1) ComboBox renders the enumerated monitors. (2) Selecting one sets `config.dock.monitor_id`.
   - **Boundary & Edge Case Test Cases (cite G28):** (1) Enumerate fails → TextEdit fallback.
-- **Explicit Swarm Guardrails:** Cite G28.
+- **Guardrails:** Cite G28.
 
 ---
 
 ## APPENDIX: Story Wiring Matrix (Audit Pass 4)
 
-Every story's `Wiring:` block in a single lookup table. The swarm consults this appendix to compute the ready set and the critical-path next pickup. See `regression-harness.md` §3 for the schema and §4 for the critical path.
+Every story's `Wiring:` block in a single lookup table. Contributors consult this appendix to compute the ready set and the critical-path next pickup. See `regression-harness.md` §3 for the schema and §4 for the critical path.
 
 | Story | Layer | Depends-On | Blocks | Next | Parallel-With |
 |---|---|---|---|---|---|
@@ -2017,10 +2017,10 @@ Every story's `Wiring:` block in a single lookup table. The swarm consults this 
 - **Layer** declares which test layer(s) the story's own tests live at. Determines which CI jobs MUST pass for the story's PR.
 - **Depends-On** lists story IDs that MUST be `merged` in `PROGRESS.md` before this story can start.
 - **Blocks** lists stories that cannot start until this one merges.
-- **Next** is the deterministic critical-path pickup after this story merges (when the swarm is single-threaded). Where multiple stories are eligible, the lowest `(Epic, Story)` number wins.
-- **Parallel-With** lists stories that may run concurrently (multi-agent swarm) once mutual `Depends-On` constraints are met.
+- **Next** is the deterministic critical-path pickup after this story merges (for a single-threaded contributor). Where multiple stories are eligible, the lowest `(Epic, Story)` number wins.
+- **Parallel-With** lists stories that may run concurrently (multi-agent) once mutual `Depends-On` constraints are met.
 
-### Critical path (single-threaded swarm)
+### Critical path (single-threaded)
 
 ```
 0.1 → 0.2 → 0.3 → 0.4 → 0.5 → 0.6
@@ -2047,7 +2047,7 @@ rows, including INT), plus the 8-story post-release parity/closure extension
 + the 5-story Epic 13 hardening extension (73 total). The other current
 stories are parallel-burst-eligible per §5 of `regression-harness.md`.
 
-### Parallel-burst optimization (multi-agent swarm, max 3 concurrent per G17)
+### Parallel-burst optimization (multi-agent, max 3 concurrent per G17)
 
 | Burst window | Eligible stories |
 |---|---|

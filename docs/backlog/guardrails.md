@@ -1,6 +1,6 @@
 # Cross-Cutting Guardrails — sidebar-v1 (Audited, Hardened)
 
-**Applies to every story in `epics-and-stories.md`.** Ingest as part of the swarm's system prompt before executing any story. Two-pass audit added G13–G22 and hardened G1–G12.
+**Applies to every story in `epics-and-stories.md`.** Ingest as part of the contributor's context before executing any story. Two-pass audit added G13–G22 and hardened G1–G12.
 
 ---
 
@@ -77,7 +77,7 @@
 
 ## G11 — Marquee-Feature HITL Story Gates
 
-The following stories require mandatory human sign-off before the swarm may mark them complete. (See G19 for the per-action matrix that supplements this.)
+The following stories require mandatory human sign-off before the contributor may mark them complete. (See G19 for the per-action matrix that supplements this.)
 
 | Story | Why HITL |
 |---|---|
@@ -100,12 +100,12 @@ The following stories require mandatory human sign-off before the swarm may mark
 | 9.2 | External publishing; release-approver env. |
 | 10.1 | 0.5% threshold + reference-hardware policy. |
 | 11.1 | Regression harness architecture — every downstream test depends on it. |
-| 11.4 | Progress-tracker automation — the swarm reads this file to pick the next story; trust boundary. |
+| 11.4 | Progress-tracker automation — the contributor reads this file to pick the next story; trust boundary. |
 
 ## G12 — Skill/Orchestrator Convergence
 
-- This backlog converges with `docs/PRD.md` and `docs/architecture.md`. If the swarm discovers that a story cannot be implemented as specified (e.g. a crate version is wrong, an API doesn't exist), it MUST NOT silently pick an alternative.
-- The swarm MUST surface the discrepancy to the orchestrator with: (a) the specific PRD/architecture § violated, (b) the discovered fact with citation, (c) proposed options.
+- This backlog converges with `docs/PRD.md` and `docs/architecture.md`. If the contributor discovers that a story cannot be implemented as specified (e.g. a crate version is wrong, an API doesn't exist), it MUST NOT silently pick an alternative.
+- The contributor MUST surface the discrepancy to the orchestrator with: (a) the specific PRD/architecture § violated, (b) the discovered fact with citation, (c) proposed options.
 
 ---
 
@@ -134,7 +134,7 @@ Every long-running construct MUST have an explicit bound cited from `nfr-thresho
 | Process top-N | 1–50, default 5 | T-21 |
 | Sparkline window | 10–600, default 60 | T-22 |
 
-The swarm MUST NOT introduce unbounded channels, unbounded retries, or unbounded collections in any code path.
+The contributor MUST NOT introduce unbounded channels, unbounded retries, or unbounded collections in any code path.
 
 ## G15 — Panic Safety (Audit Pass 2)
 
@@ -164,7 +164,7 @@ The swarm MUST NOT introduce unbounded channels, unbounded retries, or unbounded
   `resources/ohm.sha256`. It does NOT mutate `resources/` (the committed
   binary remains the source of truth). The approval is bounded to this
   exact URL + the matching license URL on `raw.githubusercontent.com`.
-- The swarm MUST NOT add any other network dependency to either runtime or CI without HITL approval (G19).
+- The contributor MUST NOT add any other network dependency to either runtime or CI without HITL approval (G19).
 - A runtime-network-egress integration test (Story 10.1 extended) MUST verify
   sidebar.exe opens no non-loopback sockets during a 60-second smoke run
   (verified via `netstat` snapshot diff on Windows); the expected LHM loopback
@@ -172,7 +172,7 @@ The swarm MUST NOT introduce unbounded channels, unbounded retries, or unbounded
 
 ## G17 — Generation-Loop Bounds (Audit Pass 2)
 
-The swarm MUST NOT generate unbounded artifacts. Hard caps:
+The contributor MUST NOT generate unbounded artifacts. Hard caps:
 
 | Artifact | Cap | Action if exceeded |
 |---|---|---|
@@ -185,19 +185,19 @@ The swarm MUST NOT generate unbounded artifacts. Hard caps:
 | Commits per story PR | 15 | Squash TDD micro-commits |
 | Generated stub files | 0 | NEVER ship empty stubs — every file has at least one test |
 
-If the swarm hits any cap, it MUST stop and surface to the orchestrator rather than generating beyond it.
+If the contributor hits any cap, they MUST stop and surface to the orchestrator rather than generating beyond it.
 
 ## G18 — Supply Chain Automation (Audit Pass 2)
 
 - `deny.toml` (Story 0.3) is the authoritative supply-chain policy. It MUST be in CI before any code story merges.
 - `cargo deny check bans licenses advisories sources` runs on every PR.
 - `cargo audit` runs on every PR; zero unmuted RUSTSEC advisories (T-33).
-- `Cargo.lock` is committed (this is a binary workspace). A diff in `Cargo.lock` requires the swarm to explain the change in the PR description.
+- `Cargo.lock` is committed (this is a binary workspace). A diff in `Cargo.lock` requires the contributor to explain the change in the PR description.
 - Reproducible builds: `cargo build --locked --release` MUST produce a byte-identical binary on the same runner (verified by hash in Story 9.2's release dry-run).
 
 ## G19 — HITL Action-Permission Matrix (Audit Pass 2)
 
-Beyond the per-story matrix in G11, these specific ACTIONS require human approval before the swarm executes them. The orchestrator MUST surface each to the user; auto-execution is FORBIDDEN.
+Beyond the per-story matrix in G11, these specific ACTIONS require human approval before they are executed. The orchestrator MUST surface each to the user; auto-execution is FORBIDDEN.
 
 | Action | Required approval | Reason |
 |---|---|---|
@@ -223,7 +223,7 @@ Beyond the per-story matrix in G11, these specific ACTIONS require human approva
 | Modifying the test layer model (L0–L4) or per-layer budgets (T-40) | Architect + SRE sign-off | All CI depends on this |
 | Modifying the regression contract (8 DoD points) | Architect sign-off | Every PR is gated by this |
 | Accepting new UI snapshots (`cargo insta accept`) | UX review | Visual regression baseline |
-| Modifying `PROGRESS.md` schema or auto-update logic | Architect sign-off | The swarm reads this to pick stories; tampering = silent story-skipping |
+| Modifying `PROGRESS.md` schema or auto-update logic | Architect sign-off | The contributor reads this to pick stories; tampering = silent story-skipping |
 | Disabling a coverage gate or lowering a coverage target (T-42) | Architect sign-off | Hides regressions |
 
 The orchestrator enforces these via PR labels: each HITL action gets a `requires-hitl-<category>` label that blocks merge until a human removes it.
@@ -231,7 +231,7 @@ The orchestrator enforces these via PR labels: each HITL action gets a `requires
 ## G20 — Convergence with Source Docs (Audit Pass 1)
 
 - Every story in `epics-and-stories.md` cites `docs/PRD.md §<section>` AND `docs/architecture.md §<section>`.
-- If a story cites a section that has been amended (e.g. PRD §3 Tier 4 has a v2 marker), the swarm MUST acknowledge the marker in its PR description.
+- If a story cites a section that has been amended (e.g. PRD §3 Tier 4 has a v2 marker), the contributor MUST acknowledge the marker in its PR description.
 - Drift between `epics-and-stories.md` and `docs/PRD.md`/`docs/architecture.md` is a BLOCKING review issue.
 
 ## G21 — SQLite Operational Discipline (Audit Pass 1)
@@ -248,7 +248,7 @@ The orchestrator enforces these via PR labels: each HITL action gets a `requires
 - Full `cargo test --workspace` (excluding `#[ignore]`) MUST complete in ≤ 120 seconds on CI.
 - `cargo bench --bench poll_cost` MUST complete in ≤ 600 seconds (5-min windows per T-1).
 - `cargo clippy --workspace -- -D warnings` MUST complete in ≤ 180 seconds.
-- If a story's tests push any budget over, the swarm MUST split the story or optimize — never silently exceed.
+- If a story's tests push any budget over, the contributor MUST split the story or optimize — never silently exceed.
 - `#[ignore]`'d integration tests (NVML, OHM, battery) are NOT counted toward the 120s budget but MUST each complete in ≤ 30 s when run individually.
 
 ---
@@ -279,7 +279,7 @@ The orchestrator enforces these via PR labels: each HITL action gets a `requires
 - **Every PR runs the FULL test matrix (L0+L1+L2+L3), not just the touched crate.** There is no "only my crate" mode in CI.
 - A story's PR is NOT mergeable until all 8 DoD points in `regression-harness.md` §2 are satisfied.
 - "Prior stories' tests still pass" is the regression contract. A green PR for Story N proves Stories 1..N-1 still work.
-- The swarm MUST run `cargo test --workspace --all-targets` locally before opening a PR. If a prior test fails, the swarm MUST NOT open the PR — it surfaces a regression-blocker to the orchestrator instead.
+- The contributor MUST run `cargo test --workspace --all-targets` locally before opening a PR. If a prior test fails, the contributor MUST NOT open the PR — it surfaces a regression-blocker to the orchestrator instead.
 - CI artifacts: `regression-report.md` + coverage XML are uploaded on every PR for HITL review.
 
 ## G26 — Coverage Non-Regression (Audit Pass 4)
@@ -293,9 +293,9 @@ The orchestrator enforces these via PR labels: each HITL action gets a `requires
 ## G27 — Story Wiring Discipline (Audit Pass 4)
 
 - Every story MUST carry a `Wiring:` block (defined in `regression-harness.md` §3) with: `Layer`, `Depends-On`, `Blocks`, `Next`, `Parallel-With`, `DoD`.
-- The swarm MUST NOT begin a story whose `Depends-On` entries are not all `merged` in `PROGRESS.md`.
-- The swarm MUST update `PROGRESS.md` on merge (automated via Story 11.4's CI job).
-- If a story's `Depends-On` cannot be satisfied (e.g. a dependency is `blocked-on-hitl` for >72h), the swarm MUST surface the blockage to the orchestrator — it MUST NOT skip ahead.
+- The contributor MUST NOT begin a story whose `Depends-On` entries are not all `merged` in `PROGRESS.md`.
+- The contributor MUST update `PROGRESS.md` on merge (automated via Story 11.4's CI job).
+- If a story's `Depends-On` cannot be satisfied (e.g. a dependency is `blocked-on-hitl` for >72h), the contributor MUST surface the blockage to the orchestrator — it MUST NOT skip ahead.
 - "Correctness and completeness" (the user's pass-4 mandate) means: every story's Wiring block is the single source of truth for its place in the sequence. Drift between the Wiring blocks and the prose narrative is a BLOCKING review issue.
 
 ## G28 — Non-Technical-User Hardening (Audit Pass 5)

@@ -4,7 +4,7 @@
 table when Story 11.4 lands; until then this file is the authoritative manual
 status for the current worktree.
 
-The swarm reads this file at task-startup to identify the ready set (stories whose `Depends-On` entries are all `merged`). See `regression-harness.md` §6.4 for the schema and §7 for the swarm loop.
+The contributor reads this file at task-startup to identify the ready set (stories whose `Depends-On` entries are all `merged`). See `regression-harness.md` §6.4 for the schema and §7 for the build-test loop.
 
 ## Audit refresh (2026-07-13)
 
@@ -50,7 +50,7 @@ refresh is the current worktree truth after the Win11 audit:
 
 ## Status values
 - `pending` — not started; `Depends-On` not yet satisfied.
-- `ready` — `Depends-On` all merged; eligible for swarm pickup.
+- `ready` — `Depends-On` all merged; eligible for pickup.
 - `in-progress` — branch created; PR not yet open OR PR open but not merged.
 - `blocked-on-hitl` — PR merged-pending but a `requires-hitl-*` label is still set (G11/G19).
 - `merged` — PR merged to `main`; full regression matrix passed.

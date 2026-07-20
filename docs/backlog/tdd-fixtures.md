@@ -1,6 +1,6 @@
 # TDD Fixtures — sidebar-v1
 
-**Reference for setup/teardown patterns used across the backlog.** Every test in `epics-and-stories.md` cites an `F-*` pattern from this file. The swarm MUST use these verbatim patterns; reinventing fixtures per-story is forbidden (causes drift, hides bugs).
+**Reference for setup/teardown patterns used across the backlog.** Every test in `epics-and-stories.md` cites an `F-*` pattern from this file. The contributor MUST use these verbatim patterns; reinventing fixtures per-story is forbidden (causes drift, hides bugs).
 
 Patterns are Rust-flavored. Where a pattern is Windows-only, it's marked `#[cfg(target_os = "windows")]`.
 
@@ -308,7 +308,7 @@ async fn shutdown_force_flushes_within_t19_budget() {
 ---
 
 ## F14 — Regression harness triple-layer test
-**Use:** Every story's tests include at least one assertion that exercises the FULL L0→L1→L2 chain to prove no regression in prior stories' layers. Used by the swarm to validate "definition of done" before opening a PR.
+**Use:** Every story's tests include at least one assertion that exercises the FULL L0→L1→L2 chain to prove no regression in prior stories' layers. Used to validate "definition of done" before opening a PR.
 
 ```rust
 // L0 — pure unit (always runs)

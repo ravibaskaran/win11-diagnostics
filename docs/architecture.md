@@ -4,10 +4,8 @@
 **Phase:** implementation snapshot (Epic 0–8 delivered; closure work pending)
 **Status:** Current architecture and known integration gaps (see §14)
 **Date:** 2026-07-11 (implementation reconciliation)
-**Workspace:** `C:\dev\hobby\sidebar` (12-package workspace: 11 libraries + 1 binary)
-**Engram artifact:** `sdd/sidebar-v1/design` (type: `architecture`, topic_key upsert)
-**Companion document:** `PRD.md` (Engram: `sdd/sidebar-v1/proposal`)
-**Research foundation:** Engram observations `sdd-init/sidebar/*`
+**Workspace:** 12-package workspace: 11 libraries + 1 binary
+**Companion document:** `PRD.md`
 
 > **What changed in v2 (this amendment).** This is an UPDATE pass; all original architecture content is preserved and extended. Converges with PRD v2. Four amendments:
 > 1. **New `sidebar-adapter-net` provider crate** for per-NIC throughput via `GetIfTable2` (now in scope; the implementation enumerates the table and frees it with `FreeMibTable`).
@@ -588,7 +586,7 @@ Process boundary
 
 ## 7. Testing Strategy
 
-Strict TDD is **ENABLED** (per sdd-init observation `sdd-init/sidebar/testing`). Feasible coverage target: **~80% line coverage** across `sidebar-domain` + `sidebar-sensor`. Adapter crates are integration-tested on Windows CI; GUI is manual smoke.
+Strict TDD is **ENABLED**. Feasible coverage target: **~80% line coverage** across `sidebar-domain` + `sidebar-sensor`. Adapter crates are integration-tested on Windows CI; GUI is manual smoke.
 
 ### 7.1 Unit tests (run everywhere, no Windows required)
 
@@ -701,7 +699,7 @@ v0→v1→v2 chain (including `current_cycle_metadata`) for existing databases.
 
 ### OQ-2 — Rust edition (cross-ref PRD §9)
 
-sdd-init recorded edition 2021; re-evaluate 2024 once transitive-dep MSRVs align. `sysinfo` 0.39.3 requires MSRV 1.95 (retrieved 2026-07-07) which is itself a 2024-edition-capable toolchain. **Tentative: edition 2021 for v1.** No action in this phase.
+Edition 2021 recorded initially; re-evaluate 2024 once transitive-dep MSRVs align. `sysinfo` 0.39.3 requires MSRV 1.95 (retrieved 2026-07-07) which is itself a 2024-edition-capable toolchain. **Tentative: edition 2021 for v1.** No action in this phase.
 
 ### OQ-3 — egui 0.35 vs 0.34 pinning
 
@@ -940,4 +938,4 @@ HTTP sidecar, and monthly bandwidth remains per-NIC (not per TCP port).
 
 ---
 
-**End of architecture.** Companion document: `PRD.md` (Engram: `sdd/sidebar-v1/proposal`).
+**End of architecture.** Companion document: `PRD.md`.
