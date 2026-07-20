@@ -4,7 +4,7 @@
 table when Story 11.4 lands; until then this file is the authoritative manual
 status for the current worktree.
 
-The swarm reads this file at task-startup to identify the ready set (stories whose `Depends-On` entries are all `merged`). See `regression-harness.md` §6.4 for the schema and §7 for the swarm loop.
+The contributor reads this file at task-startup to identify the ready set (stories whose `Depends-On` entries are all `merged`). See `regression-harness.md` §6.4 for the schema and §7 for the build-test loop.
 
 ## Audit refresh (2026-07-13)
 
@@ -36,7 +36,7 @@ refresh is the current worktree truth after the Win11 audit:
 - **Stories 6.5 + 10.1 promoted to merged** (2026-07-13): G16 CI egress for
   the LHM upstream fetch approved → new `lhm-fetch` CI job downloads +
   verifies the pinned LHM release on every PR + push; T-31 reference hardware
-  signed off (LAPTOP-PLN56DNU). NFR-1/NFR-3/NFR-4 evidence is now
+  signed off (the reference machine). NFR-1/NFR-3/NFR-4 evidence is now
   authoritative for v1.
 - Release build verified (2026-07-13 12:23 +05:30):
   `target/x86_64-pc-windows-msvc/release/sidebar-app.exe` — 11,590,656 bytes;
@@ -50,7 +50,7 @@ refresh is the current worktree truth after the Win11 audit:
 
 ## Status values
 - `pending` — not started; `Depends-On` not yet satisfied.
-- `ready` — `Depends-On` all merged; eligible for swarm pickup.
+- `ready` — `Depends-On` all merged; eligible for pickup.
 - `in-progress` — branch created; PR not yet open OR PR open but not merged.
 - `blocked-on-hitl` — PR merged-pending but a `requires-hitl-*` label is still set (G11/G19).
 - `merged` — PR merged to `main`; full regression matrix passed.
@@ -115,7 +115,7 @@ refresh is the current worktree truth after the Win11 audit:
 | 9.1 | partial | 2026-07-11T00Z | story-9.1 | L1:2 | signpath/code-signing-policy.md (trust boundary, hash verification, edge cases, pending submission requirements) + README link + 2 structural tests. BLOCKED: SignPath Foundation external submission + SIGNPATH_API_TOKEN secret + release-approver env are HITL gates. |
 | 9.2 | partial | 2026-07-11T00Z | story-9.2 | L1:3 | release.yml 3-stage (build/sign/publish) + draft-Release + SignPath fallback. workflow_dispatch only (no auto-publish on tag). BLOCKED: SIGNPATH_API_TOKEN secret + release-approver env + winget PR submission are HITL gates. |
 | 9.3 | deferred | 2026-07-11T00Z | story-9.3 | L0:3 | Auto-update skeleton (default OFF, RELEASES_API_URL github-only, should_check always false in v1.0). Actual network GET + version-compare + toast deferred to v1.1 per story's own framing + G19 runtime-egress HITL gate. |
-| 10.1 | merged | 2026-07-13T00Z | story-10.1 | L0:22 L1:4 | poll_cost Criterion bench (real 60s T-31 idle calibration, fail-closed) + parse_threshold parser (subtractive T-1/T-2 gate, 22 unit tests) + nfr_cold_start (T-7, non-ignored) + nfr_rss (T-4/T-5, #[ignore] 30s smoke) + nfr_sqlite_rss (T-6, NEW) + runtime_no_egress (G16, #[ignore] smoke). **T-31 designated-reference-hardware sign-off recorded 2026-07-13** (LAPTOP-PLN56DNU, AMD Ryzen AI 7 350, Win11 25H2 build 26200). All NFR acceptance evidence (T-7/T-1/T-2/T-4/T-6/G16/R11/first-run/rollover) PASS on the designated reference machine. The full #[ignore] smoke CI run remains a separate release-day gate. |
+| 10.1 | merged | 2026-07-13T00Z | story-10.1 | L0:22 L1:4 | poll_cost Criterion bench (real 60s T-31 idle calibration, fail-closed) + parse_threshold parser (subtractive T-1/T-2 gate, 22 unit tests) + nfr_cold_start (T-7, non-ignored) + nfr_rss (T-4/T-5, #[ignore] 30s smoke) + nfr_sqlite_rss (T-6, NEW) + runtime_no_egress (G16, #[ignore] smoke). **T-31 designated-reference-hardware sign-off recorded 2026-07-13** (the reference machine, a modern AMD Ryzen APU, Win11 25H2). All NFR acceptance evidence (T-7/T-1/T-2/T-4/T-6/G16/R11/first-run/rollover) PASS on the designated reference machine. The full #[ignore] smoke CI run remains a separate release-day gate. |
 | 10.2 | partial | 2026-07-11T00Z | story-10.2 | L1:3 | 18-item smoke-checklist.md (Automatable vs Manual marked) + smoke-checklist.ps1 scriptable runner (items 1/3/5/6/16/17) + 3 structural tests. The 12 manual items (UAC/OBS/multi-monitor HW) require a human walker before each release. |
 | 11.1 | merged | 2026-07-11T00Z | story-11.1 | L1:4 | regression-harness.md L0-L4 layer model + 8-pt DoD; regression_harness.rs 4 structural tests (CI job declarations, layer markers, Windows-only gating, CRLF-tolerant reader); verify/layer-smoke.ps1 L4 runner; CI has distinct lint/deny/audit/L0/L1/L3/lhm-hash jobs. L2 CI job + regression-report generator + cargo-llvm-cov gate are 11.2/11.3. |
 | 11.2 | partial | 2026-07-11T00Z | story-11.2 | L1:2 | CI 'regression' job (needs lint+unit+integration+bench) runs cargo-llvm-cov (T-43), builds regression-report.md, uploads regression-report + lcov artifacts per PR. Deliberate-regression injection proof + coverage-delta-vs-main comparison step remain HITL-gated. |

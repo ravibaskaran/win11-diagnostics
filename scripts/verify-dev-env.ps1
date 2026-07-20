@@ -4,8 +4,9 @@
     Verify the sidebar development environment is fully configured for this machine.
 
 .DESCRIPTION
-    Asserts every prerequisite and tool listed in docs/dev-env.md is present
-    and runnable. Prints a green/red table. Exits non-zero on any failure.
+    Asserts every prerequisite and tool listed in T-44 (see CONTRIBUTING.md
+    + docs/backlog/nfr-thresholds.md) is present and runnable. Prints a
+    green/red table. Exits non-zero on any failure.
 
     Idempotent, session-scoped, and side-effect-free:
       - Does NOT modify $env:PATH persistently (uses a child scope; env.ps1's
@@ -43,7 +44,7 @@
     Emit JSON for CI parsing.
 
 .NOTES
-    Per docs/dev-env.md + T-44 + Story 0.7.
+    Per T-44 + Story 0.7. See CONTRIBUTING.md for the full setup guide.
 #>
 
 [CmdletBinding()]
@@ -172,7 +173,7 @@ foreach ($tool in 'cargo-deny', 'cargo-audit', 'cargo-llvm-cov', 'cargo-nextest'
     if (Test-Path $exe) {
         Add-Check 'OK' $tool (Get-Item $exe).VersionInfo.ProductVersion ''
     } else {
-        Add-Check 'FAIL' $tool "not found at: $exe" "Run: CARGO_HOME=`$env:TEMP\cb cargo binstall --no-confirm $tool ; then copy to tools\cargo-bin\ (see docs/dev-env.md §3.2)"
+        Add-Check 'FAIL' $tool "not found at: $exe" "Run: CARGO_HOME=`$env:TEMP\cb cargo binstall --no-confirm $tool ; then copy to tools\cargo-bin\ (see CONTRIBUTING.md)"
     }
 }
 
@@ -185,7 +186,7 @@ foreach ($tool in 'actionlint', 'wingetcreate') {
     if (Test-Path $exe) {
         Add-Check 'OK' $tool (Get-Item $exe).VersionInfo.ProductVersion ''
     } else {
-        Add-Check 'FAIL' $tool "not found at: $exe" 'See docs/dev-env.md §3.2 for download instructions'
+        Add-Check 'FAIL' $tool "not found at: $exe" 'See CONTRIBUTING.md for download instructions'
     }
 }
 
@@ -295,7 +296,7 @@ if ($Json) {
         }
     } else {
         Write-Host "$exitFailures of $($results.Count) checks FAILED." -ForegroundColor Red
-        Write-Host "See docs/dev-env.md for remediation instructions." -ForegroundColor Yellow
+        Write-Host "See CONTRIBUTING.md for remediation instructions." -ForegroundColor Yellow
     }
 }
 

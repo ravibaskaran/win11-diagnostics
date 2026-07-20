@@ -1,6 +1,6 @@
 # NFR Thresholds — sidebar-v1
 
-**Single source of truth for every numeric boundary in the system.** Every test that asserts a numeric NFR MUST cite this file as `nfr-thresholds.md#T-<id>` in a doc-comment. This prevents threshold drift across stories and makes the swarm's tests self-validating.
+**Single source of truth for every numeric boundary in the system.** Every test that asserts a numeric NFR MUST cite this file as `nfr-thresholds.md#T-<id>` in a doc-comment. This prevents threshold drift across stories and makes tests self-validating.
 
 Cross-references: PRD §6 (NFR statements), architecture.md §7 (testing strategy), guardrails.md G14 (resource bounds), G17 (generation bounds).
 
@@ -37,7 +37,7 @@ Cross-references: PRD §6 (NFR statements), architecture.md §7 (testing strateg
 - **Revision rationale:** Originally 80 MiB (pre-egui 0.35, pre-gl/wgpu). The
   egui immediate-mode GUI with font/texture cache + Rust runtime contributes
   ~187 MiB even with the lightweight glow renderer (verified 2026-07-12 on
-  Win11 25H2, AMD Ryzen AI 7 350). The application logic (sensors, bandwidth,
+  Win11 25H2, a modern AMD Ryzen APU). The application logic (sensors, bandwidth,
   SQLite) contributes only ~12 MiB; the remaining ~175 MiB is egui's rendering
   pipeline. The original SidebarDiagnostics C# app used ~200+ MiB. Revised to
   200 MiB to match reality while still targeting lightweight operation.
@@ -194,9 +194,9 @@ Cross-references: PRD §6 (NFR statements), architecture.md §7 (testing strateg
 
 ### T-31 — Reference machine (generalized per dev-env inventory 2026-07-07)
 - **Spec:** Any modern 8+ core x86_64 CPU, ≥ 16 GB RAM, Win11 24H2 (build 26100) OR 25H2 (build 26200).
-- **Designated v1 reference (signed off 2026-07-13):** LAPTOP-PLN56DNU —
-  AMD Ryzen AI 7 350 (8+8 cores), 24 GB RAM, Win11 25H2 build 26200,
-  AMD Radeon 860M iGPU (no NVIDIA). All NFR-1/NFR-3/NFR-4 acceptance
+- **Designated v1 reference (signed off 2026-07-13):** the reference machine —
+  a modern AMD Ryzen APU (8+8 cores), ≥16 GB RAM, Win11 25H2,
+  integrated AMD graphics (no NVIDIA). All NFR-1/NFR-3/NFR-4 acceptance
   evidence in `verify/pending-HITL-gates.md` §10.1 was measured on this
   machine and is now authoritative (not illustrative) for v1 sign-off.
   NVIDIA-only paths (Story 3.2) are validated on a separate CI runner
@@ -204,7 +204,7 @@ Cross-references: PRD §6 (NFR statements), architecture.md §7 (testing strateg
 - **Calibration:** Because reference hardware varies, the NFR-1 bench (`poll_cost`) reports a **calibration constant** per machine — the idle baseline CPU% measured over 60s before the bench runs. The T-1/T-2 thresholds are then evaluated as (measured − calibration) deltas, not absolutes. Documented in `benches/poll_cost.rs` header. Designated-reference calibration: 17.373% idle baseline (captured 2026-07-12).
 - **Original spec (deprecated):** Intel i5-1240P / 16 GB / 24H2. Retained for historical context; do NOT use for v1 acceptance.
 - **CI runner delta:** `windows-latest` differs from any specific dev machine; the calibration-constant approach (above) normalizes results across machines.
-- **Cited by:** Story 10.1, all perf-sensitive stories, `docs/dev-env.md` §1.1.
+- **Cited by:** Story 10.1, all perf-sensitive stories.
 
 ---
 
@@ -223,7 +223,7 @@ Cross-references: PRD §6 (NFR statements), architecture.md §7 (testing strateg
 - **Value:** `cargo-llvm-cov` (NOT `cargo-tarpaulin`). Tarpaulin is Linux-only (uses ptrace) and does not run on Windows.
 - **Prerequisite:** `rustup component add llvm-tools-preview`.
 - **Invocation:** `cargo llvm-cov --workspace --lcov --output-path coverage/lcov.info`.
-- **Cited by:** Story 0.2 (CI), Story 11.2 (regression gate), Story 10.1 (NFR verification), T-42 (coverage floor). `docs/dev-env.md` §3.2/§3.3.
+- **Cited by:** Story 0.2 (CI), Story 11.2 (regression gate), Story 10.1 (NFR verification), T-42 (coverage floor).
 
 ### T-44 — Dev environment prerequisites (per dev-env inventory 2026-07-07)
 - **System prerequisites (must pre-exist on the machine, cannot be folder-relocated):**
@@ -238,7 +238,7 @@ Cross-references: PRD §6 (NFR statements), architecture.md §7 (testing strateg
   - `tools/sqlite/` — sqlite3.exe (for debugging bandwidth.db).
 - **Activation:** `scripts/env.ps1` prepends the `tools/` subdirectories to PATH.
 - **Verification:** `scripts/verify-dev-env.ps1` (Story 0.6 deliverable) asserts all prerequisites + tools; exits non-zero on any failure.
-- **Cited by:** Story 0.1 (workspace), Story 0.2 (CI mirrors this locally), Story 6.5 (LHM fetch script). `docs/dev-env.md`.
+- **Cited by:** Story 0.1 (workspace), Story 0.2 (CI mirrors this locally), Story 6.5 (LHM fetch script). See CONTRIBUTING.md for the contributor setup guide.
 
 ### T-45 — LHM HTTP port + fallback chain (added 2026-07-08 with AD-2 revision)
 - **Default port:** `17127`. Chosen because it is (a) above the IANA registered-and-reserved ranges (0–1023, plus Windows dynamic-excluded ranges), (b) below the ephemeral range Windows uses by default (49152–65535), (c) free on this dev machine (verified 2026-07-08 via `Get-NetTCPConnection` + `netsh interface ipv4 show excludedportrange`), (d) not a well-known application port.
@@ -301,12 +301,12 @@ Cross-references: PRD §6 (NFR statements), architecture.md §7 (testing strateg
 - **L2 UI snapshots (`cargo test --test ui_snapshots`):** ≤ 30 s total.
 - **L3 bench (`cargo bench`):** ≤ 600 s total.
 - **L4 smoke:** manual; scriptable subset ≤ 5 min on the release runner.
-- **Hard rule:** If a story's tests would push any layer over its budget, the swarm MUST split the story or optimize — never silently exceed. See G27.
+- **Hard rule:** If a story's tests would push any layer over its budget, the contributor MUST split the story or optimize — never silently exceed. See G27.
 
 ### T-41 — Aggregate PR regression budget
 - **Value:** The full L0+L1+L2+L3 matrix (the "regression run") MUST complete in ≤ 750 s on the Windows CI runner (60 + 60 + 30 + 600 = 750).
 - **Cache:** `Swatinem/rust-cache@v2` MUST be used; cache hit brings cold-build time under the budget.
-- **Failure action:** If the regression run exceeds 750s, CI fails with `regression-budget-exceeded`. The swarm MUST split the offending story or mark it for orchestrator review.
+- **Failure action:** If the regression run exceeds 750s, CI fails with `regression-budget-exceeded`. The contributor MUST split the offending story or mark it for orchestrator review.
 
 ### T-42 — Coverage delta floor
 - **Value:** For every PR touching crate(s) C, the line coverage of C MUST NOT decrease.
@@ -315,7 +315,7 @@ Cross-references: PRD §6 (NFR statements), architecture.md §7 (testing strateg
 - **Target:** `sidebar-domain` and `sidebar-sensor` ≥ 80% line coverage; adapter/platform crates ≥ 60% (Win32 FFI is hard to cover fully); `sidebar-app` ≥ 40% (GUI).
 
 ### T-46 — Reference-machine evidence bundle (Audit Pass 5)
-- **Value:** The v1.0.0 tag MUST be backed by a single `verify/reference-machine.ps1` run on the designated T-31 reference machine (LAPTOP-PLN56DNU), producing an evidence bundle under `verify/evidence/<date>/`.
+- **Value:** The v1.0.0 tag MUST be backed by a single `verify/reference-machine.ps1` run on the designated T-31 reference machine (the reference machine), producing an evidence bundle under `verify/evidence/<date>/`.
 - **Bundle contents (mandatory):** `workspace-tests.txt` (full L0-L3 matrix output), `ignored-suite.txt` (all 13 `#[ignore]`'d integration tests — real HW / UAC / desktop), `poll_cost.txt` (NFR-1 criterion bench + calibration constant), `scriptable-smoke.txt` (the 6 automatable smoke items), `sha256.txt` (release exe SHA-256), `manual-smoke.md` (the 12 human-walked items with PASS/FAIL per row).
 - **Exit convention:** `0` on full PASS (all automated stages green + all manual items PASS); `1` on any failure. The script MUST NOT exit 0 if any automated stage failed, even if the manual items were not yet walked.
 - **Cited by:** Story 13.5, guardrails.md G28.

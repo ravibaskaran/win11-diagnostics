@@ -10,7 +10,7 @@
 # so CI doesn't need a Rust build step.
 #
 # Cited: Story 11.4 DoD, guardrails.md G27 (story wiring discipline).
-# HITL mandatory (G11/G19) — the swarm reads PROGRESS.md to pick stories;
+# HITL mandatory (G11/G19) — contributors read PROGRESS.md to pick stories;
 # tampering or schema drift = silent story-skipping.
 
 name: track-progress

@@ -53,7 +53,7 @@ on the designated T-31 reference machine. `verify/reference-machine.ps1`
 bottles all of that into one command:
 
 ```pwsh
-# Elevated PowerShell 7 on the T-31 reference machine (LAPTOP-PLN56DNU).
+# Elevated PowerShell 7 on the T-31 reference machine.
 # Run after `git pull` on main + after the release exe is built.
 pwsh verify/reference-machine.ps1
 ```

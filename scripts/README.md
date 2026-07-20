@@ -32,6 +32,6 @@ mutate persistent state (no `$PROFILE`, no registry, no `[Environment]
 
 ## Reference
 
-- `docs/dev-env.md` — full setup guide + machine inventory.
+- `CONTRIBUTING.md` — setup guide + dev environment prerequisites.
 - `docs/backlog/nfr-thresholds.md` T-44 — dev-env prerequisite contract.
 - Story 0.7 — original spec.

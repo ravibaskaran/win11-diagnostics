@@ -16,7 +16,7 @@
 //! ## NVML-unavailable safety (critical)
 //!
 //! `Nvml::init()` returns `Err(NvmlError::DriverNotLoaded)` on machines without
-//! an NVIDIA driver (e.g. the AMD-Ryzen-AI dev laptop LAPTOP-PLN56DNU).
+//! an NVIDIA driver (e.g. an integrated-graphics laptop with no NVIDIA GPU).
 //! `RealNvmlBackend::new()` MUST NOT panic on this: it eagerly attempts init
 //! and stores `Option<Nvml>`. If init failed, `refresh_and_snapshot` returns
 //! an empty [`NvmlSnapshot`] and emits a single `debug!` log — the adapter's

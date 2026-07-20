@@ -61,8 +61,8 @@ SHA-256 verification + license acquisition on every PR + push to main.
 ## Story 10.1 — NFR acceptance harness (PASS 2026-07-13)
 
 **T-31 designated-reference-hardware sign-off recorded 2026-07-13.** The
-maintainer designated the dev machine (LAPTOP-PLN56DNU, AMD Ryzen AI 7 350,
-24 GB RAM, Win11 25H2 build 26200) as the v1 reference hardware per T-31.
+maintainer designated the reference machine (a modern AMD Ryzen APU,
+≥16 GB RAM, Win11 25H2) as the v1 reference hardware per T-31.
 All NFR acceptance evidence below was measured on this machine and is now
 authoritative (not illustrative) for v1 sign-off.
 
@@ -95,7 +95,7 @@ authoritative (not illustrative) for v1 sign-off.
   DoD or T-40/T-41 budgets (G19).
 - **11.3 every snapshot acceptance** — `cargo insta accept` requires HITL
   review (G19).
-- **11.4 PROGRESS.md schema/tampering** — HITL mandatory; the swarm reads
+- **11.4 PROGRESS.md schema/tampering** — HITL mandatory; contributors read
   this file (G11/G19).
 
 ## Story 12.x — Epic 12 (PER-STORY GATES)
