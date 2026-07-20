@@ -119,7 +119,7 @@ fn env_ps1_prepends_tools_to_path_in_session() {
 
 #[test]
 fn env_ps1_does_not_mutate_persistent_path() {
-    // Story 0.7 + dev-env.md §0 contract: env.ps1 is session-scoped; it
+    // Story 0.7 contract: env.ps1 is session-scoped; it
     // MUST NOT mutate the persistent User or Machine PATH.
     let pwsh = require_pwsh!();
     let env_script = workspace_root().join("scripts").join("env.ps1");
@@ -180,7 +180,7 @@ fn verify_dev_env_ps1_exits_zero_on_configured_machine() {
 
 #[test]
 fn verify_dev_env_ps1_json_mode_emits_valid_json() {
-    // Story 0.7 + dev-env.md: -Json mode emits machine-readable JSON.
+    // Story 0.7: -Json mode emits machine-readable JSON.
     let pwsh = require_pwsh!();
     let script = workspace_root().join("scripts").join("verify-dev-env.ps1");
 

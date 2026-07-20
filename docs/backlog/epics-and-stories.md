@@ -112,10 +112,10 @@
 - **Explicit Swarm Guardrails:** HITL on adding new workspace lints (could block legitimate patterns).
 
 ### STORY 0.7: Dev Environment Scripts (activation + verification + OHM fetch)
-- **User Story:** As the Architect, I want `scripts/env.ps1`, `scripts/verify-dev-env.ps1`, and `scripts/fetch_ohm.ps1` so any contributor (human or agentic) can activate the relocatable dev env, verify all prerequisites are present, and acquire the bundled OHM binary deterministically (T-44, `docs/dev-env.md`).
-- **Technical Context:** T-44 + `docs/dev-env.md` + Story 6.5. Three PowerShell 7 scripts at `C:\dev\hobby\sidebar\scripts\` in the current workspace:
+- **User Story:** As the Architect, I want `scripts/env.ps1`, `scripts/verify-dev-env.ps1`, and `scripts/fetch_ohm.ps1` so any contributor (human or agentic) can activate the relocatable dev env, verify all prerequisites are present, and acquire the bundled OHM binary deterministically (T-44).
+- **Technical Context:** T-44 + Story 6.5. Three PowerShell 7 scripts under `scripts/` in the workspace:
   1. **`env.ps1`** — Prepends `tools/cargo-bin`, `tools/ci`, `tools/sqlite` to PATH. Verifies system prerequisites (Rust ≥1.95, MSVC linker reachable, PowerShell 7). Dot-source from `$PROFILE` or run per-session.
-  2. **`verify-dev-env.ps1`** — Asserts every tool from `docs/dev-env.md` §1 is present and prints a green/red table. Exits non-zero on any failure. Used as a pre-flight by CI and by Story 11.2's regression gate. Checks: rustc ≥1.95, cargo, clippy, rustfmt, `llvm-tools-preview` component, cargo-deny, cargo-audit, cargo-llvm-cov, cargo-nextest, actionlint, sqlite3, gh, scoop, git, MSVC linker (via `cl` or rustc link test), LibreHardwareMonitor.exe + hash match in `resources/`.
+  2. **`verify-dev-env.ps1`** — Asserts every tool from T-44 is present and prints a green/red table. Exits non-zero on any failure. Used as a pre-flight by CI and by Story 11.2's regression gate. Checks: rustc ≥1.95, cargo, clippy, rustfmt, `llvm-tools-preview` component, cargo-deny, cargo-audit, cargo-llvm-cov, cargo-nextest, actionlint, sqlite3, gh, scoop, git, MSVC linker (via `cl` or rustc link test), LibreHardwareMonitor.exe + hash match in `resources/`.
   3. **`fetch_ohm.ps1`** — Story 6.5 implementation. Downloads pinned LHM GUI release, SHA-256 verifies against `resources/ohm.sha256`, extracts to `resources/`. Idempotent (skip if hash already matches).
 - **Wiring:**
   - **Layer:** integration (the scripts themselves are integration-tested by running them)
@@ -123,7 +123,7 @@
   - **Blocks:** [6.5] (`fetch_ohm.ps1` IS Story 6.5's implementation), [11.2] (regression gate calls `verify-dev-env.ps1`)
   - **Next:** 1.1
   - **Parallel-With:** [0.3, 0.4, 0.5, 0.6]
-  - **DoD:** Running `verify-dev-env.ps1` on this machine (LAPTOP-PLN56DNU) after the user performs dev-env.md §3.1+§3.2 returns all-green; running `env.ps1` puts cargo-deny/llvm-cov/nextest/actionlint on PATH for the shell session.
+  - **DoD:** Running `verify-dev-env.ps1` on a correctly-configured machine (see CONTRIBUTING.md) returns all-green; running `env.ps1` puts cargo-deny/llvm-cov/nextest/actionlint on PATH for the shell session.
 - **Gentle-AI SDD Phase Checklist:**
   1. [ ] **Plan:** Confirm PowerShell 7 path resolution (`$PSScriptRoot`, `Split-Path`). Decide idempotency semantics for `fetch_ohm.ps1`.
   2. [ ] **Implement:** Three scripts under `scripts/`. Plus `scripts/README.md` documenting usage.
@@ -401,7 +401,7 @@
 ### STORY 3.2: `sidebar-adapter-nvml` (NVIDIA GPU)
 - **User Story:** As the Adapter Agent, I want an nvml-wrapper-backed NVIDIA GPU provider.
 - **Technical Context:** AD-3. `nvml-wrapper = 0.12.0`. NVML init failure → empty readings + `NvmlUnavailable` flag. `Tier::Basic`, `CostClass::Lightweight`. Per T-13, each NVML call wrapped in `tokio::time::timeout(100ms, spawn_blocking(...))`.
-- **⚠️ Local-test caveat (per `docs/dev-env.md` §1.1/§6.2):** This dev machine (LAPTOP-PLN56DNU) has **no NVIDIA GPU** — only an AMD Radeon 860M iGPU. NVML integration tests for this story are `#[ignore]`'d locally and MUST run on a CI runner (or a different dev machine) with NVIDIA hardware. The unit tests (mock NVML via `Nvml::init()` test stubs) still run everywhere. AMD GPU coverage on this machine is via Story 3.6 (OHM Full mode) only. R5 in PRD §8 already documents the AMD-coverage-via-OHM-only design choice.
+- **⚠️ Local-test caveat:** The reference dev environment has **no NVIDIA GPU** (integrated AMD graphics only). NVML integration tests for this story are `#[ignore]`'d locally and MUST run on a CI runner (or a different dev machine) with NVIDIA hardware. The unit tests (mock NVML via `Nvml::init()` test stubs) still run everywhere. AMD GPU coverage on this machine is via Story 3.6 (OHM Full mode) only. R5 in PRD §8 already documents the AMD-coverage-via-OHM-only design choice.
 - **Gentle-AI SDD Phase Checklist:**
   1. [ ] **Plan:** NVML lifecycle (NVML::init? lazy?).
   2. [ ] **Implement:** `crates/sidebar-adapter-nvml/src/lib.rs`.
@@ -1254,7 +1254,7 @@ Epic 10 (Verify)
 
 ### STORY 11.2: CI Regression Gate (full matrix per PR)
 - **User Story:** As the QA Infra Agent, I want CI to run the FULL L0+L1+L2+L3 matrix on every PR (not just the touched crate) so the cumulative-regression contract (G25) is enforced.
-- **Technical Context:** G25 + T-41 + T-43 + T-44 + F14. Extends Story 0.2's `ci.yml`. Adds: `cargo test --workspace --all-targets` (L0+L1 combined), `cargo test --test ui_snapshots` (L2), `cargo bench --bench '*'` (L3), coverage via **`cargo-llvm-cov`** (NOT tarpaulin — tarpaulin is Linux-only per dev-env.md §6.3 / T-43). Generates `regression-report.md` artifact. **Dev env prerequisite (T-44):** `rustup component add llvm-tools-preview` must be run on every dev/CI machine before this story's coverage gate works.
+- **Technical Context:** G25 + T-41 + T-43 + T-44 + F14. Extends Story 0.2's `ci.yml`. Adds: `cargo test --workspace --all-targets` (L0+L1 combined), `cargo test --test ui_snapshots` (L2), `cargo bench --bench '*'` (L3), coverage via **`cargo-llvm-cov`** (NOT tarpaulin — tarpaulin is Linux-only per T-43). Generates `regression-report.md` artifact. **Dev env prerequisite (T-44):** `rustup component add llvm-tools-preview` must be run on every dev/CI machine before this story's coverage gate works.
 - **Wiring:**
   - **Layer:** unit + integration + ui + bench
   - **Depends-On:** [0.2, 11.1]
@@ -2216,5 +2216,5 @@ LHM-host + 6 Epic 16 service/installer + 7 Epic 17 UX-polish + 8 Epic 18
 v1.0-parity). Companion:
 LHM-host + 6 Epic 16 service/installer + 7 Epic 17 UX-polish). Companion:
 `README.md`, `guardrails.md` (G1–G29), `nfr-thresholds.md` (T-1–T-48),
-`tdd-fixtures.md` (F1–F15), `regression-harness.md`, `PROGRESS.md`,
-`docs/dev-env.md`. Source: `docs/PRD.md`, `docs/architecture.md`,
+`tdd-fixtures.md` (F1–F15), `regression-harness.md`, `PROGRESS.md`.
+Source: `docs/PRD.md`, `docs/architecture.md`,

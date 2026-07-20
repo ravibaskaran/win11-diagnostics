@@ -204,7 +204,7 @@ Cross-references: PRD §6 (NFR statements), architecture.md §7 (testing strateg
 - **Calibration:** Because reference hardware varies, the NFR-1 bench (`poll_cost`) reports a **calibration constant** per machine — the idle baseline CPU% measured over 60s before the bench runs. The T-1/T-2 thresholds are then evaluated as (measured − calibration) deltas, not absolutes. Documented in `benches/poll_cost.rs` header. Designated-reference calibration: 17.373% idle baseline (captured 2026-07-12).
 - **Original spec (deprecated):** Intel i5-1240P / 16 GB / 24H2. Retained for historical context; do NOT use for v1 acceptance.
 - **CI runner delta:** `windows-latest` differs from any specific dev machine; the calibration-constant approach (above) normalizes results across machines.
-- **Cited by:** Story 10.1, all perf-sensitive stories, `docs/dev-env.md` §1.1.
+- **Cited by:** Story 10.1, all perf-sensitive stories.
 
 ---
 
@@ -223,7 +223,7 @@ Cross-references: PRD §6 (NFR statements), architecture.md §7 (testing strateg
 - **Value:** `cargo-llvm-cov` (NOT `cargo-tarpaulin`). Tarpaulin is Linux-only (uses ptrace) and does not run on Windows.
 - **Prerequisite:** `rustup component add llvm-tools-preview`.
 - **Invocation:** `cargo llvm-cov --workspace --lcov --output-path coverage/lcov.info`.
-- **Cited by:** Story 0.2 (CI), Story 11.2 (regression gate), Story 10.1 (NFR verification), T-42 (coverage floor). `docs/dev-env.md` §3.2/§3.3.
+- **Cited by:** Story 0.2 (CI), Story 11.2 (regression gate), Story 10.1 (NFR verification), T-42 (coverage floor).
 
 ### T-44 — Dev environment prerequisites (per dev-env inventory 2026-07-07)
 - **System prerequisites (must pre-exist on the machine, cannot be folder-relocated):**
@@ -238,7 +238,7 @@ Cross-references: PRD §6 (NFR statements), architecture.md §7 (testing strateg
   - `tools/sqlite/` — sqlite3.exe (for debugging bandwidth.db).
 - **Activation:** `scripts/env.ps1` prepends the `tools/` subdirectories to PATH.
 - **Verification:** `scripts/verify-dev-env.ps1` (Story 0.6 deliverable) asserts all prerequisites + tools; exits non-zero on any failure.
-- **Cited by:** Story 0.1 (workspace), Story 0.2 (CI mirrors this locally), Story 6.5 (LHM fetch script). `docs/dev-env.md`.
+- **Cited by:** Story 0.1 (workspace), Story 0.2 (CI mirrors this locally), Story 6.5 (LHM fetch script). See CONTRIBUTING.md for the contributor setup guide.
 
 ### T-45 — LHM HTTP port + fallback chain (added 2026-07-08 with AD-2 revision)
 - **Default port:** `17127`. Chosen because it is (a) above the IANA registered-and-reserved ranges (0–1023, plus Windows dynamic-excluded ranges), (b) below the ephemeral range Windows uses by default (49152–65535), (c) free on this dev machine (verified 2026-07-08 via `Get-NetTCPConnection` + `netsh interface ipv4 show excludedportrange`), (d) not a well-known application port.

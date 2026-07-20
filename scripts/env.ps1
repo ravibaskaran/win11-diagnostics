@@ -37,7 +37,7 @@
     scope and its children; they do NOT persist in the caller's session.
 
 .NOTES
-    Per docs/dev-env.md + T-44 + Story 0.7.
+    Per T-44 + Story 0.7. See CONTRIBUTING.md for the full setup guide.
     Tested on Win11 24H2 + 25H2, PowerShell 7.2+.
 #>
 
@@ -81,7 +81,7 @@ if (-not ((Test-Path (Join-Path $SidebarRoot 'docs\backlog')) -or
 function Add-ToSessionPath {
     param([string]$Entry)
     if (-not (Test-Path $Entry)) {
-        Write-Warning "Tools directory not found (expected at $Entry). Run scripts/fetch_ohm.ps1 or the documented install commands in docs/dev-env.md."
+        Write-Warning "Tools directory not found (expected at $Entry). Run scripts/fetch_ohm.ps1 or see CONTRIBUTING.md for the documented install commands."
         return
     }
     $entries = $env:PATH -split [IO.Path]::PathSeparator

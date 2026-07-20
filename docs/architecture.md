@@ -370,7 +370,6 @@ sidebar/                                    # workspace root
 ├── .github/workflows/
 │   ├── ci.yml                              # Windows runner: test + bench + clippy + fmt
 │   └── release.yml                         # *(v2)* build → SignPath sign → GitHub Release + winget PR
-└── .atl/ .engram/                          # existing tooling dirs
 ```
 
 ---
@@ -813,20 +812,18 @@ git tag v1.0.0  ──▶  .github/workflows/release.yml
 
 ## 12. Development Environment
 
-**Authoritative reference:** `docs/dev-env.md` (inventoried on the primary dev machine on 2026-07-07). This section is a brief summary; the dev-env doc is the source of truth.
+See `CONTRIBUTING.md` for the contributor setup guide and `docs/backlog/nfr-thresholds.md` T-44 for the prerequisite contract. Summary below.
 
 The dev environment is intentionally **relocatable** — most tooling lives under
-`C:\dev\hobby\sidebar\tools\` in the current workspace, so the folder can be
-moved between Win11 machines. The exceptions (system prerequisites that cannot
-usefully be relocated) are documented in `docs/dev-env.md` §5.
+`tools/` in the workspace, so the folder can be moved between Win11 machines.
 
 **System prerequisites** (pre-existing, not folder-relocatable): Rust ≥1.95, `llvm-tools-preview` rustup component, MSVC Build Tools + Windows SDK, PowerShell 7+, Git.
 
-**Project-local tooling** (under `C:\dev\hobby\sidebar\tools\`, relocatable): `cargo-deny`, `cargo-audit`, **`cargo-llvm-cov`** (Windows-native coverage; NOT `cargo-tarpaulin` which is Linux-only — see T-43), `cargo-nextest`, `actionlint`, `winget-create`, `sqlite3`.
+**Project-local tooling** (under `tools/`, relocatable): `cargo-deny`, `cargo-audit`, **`cargo-llvm-cov`** (Windows-native coverage; NOT `cargo-tarpaulin` which is Linux-only — see T-43), `cargo-nextest`, `actionlint`, `winget-create`, `sqlite3`.
 
 **Activation & verification scripts** (Story 0.7): `scripts/env.ps1` (PATH prepend), `scripts/verify-dev-env.ps1` (prerequisite assertion, CI pre-flight), `scripts/fetch_ohm.ps1` (Story 6.5 LHM binary acquisition, SHA-256-verified).
 
-**Reference hardware (T-31) is generalized** to "any modern 8+ core x86_64 CPU, ≥16 GB RAM, Win11 24H2/25H2" with a per-machine calibration constant for the NFR-1 bench. This accommodates the primary dev machine (AMD Ryzen AI 7 350, 24 GB, Win11 25H2 — see `docs/dev-env.md` §1.1) without requiring a specific Intel SKU.
+**Reference hardware (T-31) is generalized** to "any modern 8+ core x86_64 CPU, ≥16 GB RAM, Win11 24H2/25H2" with a per-machine calibration constant for the NFR-1 bench.
 
 ---
 

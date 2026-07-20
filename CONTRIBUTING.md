@@ -7,11 +7,10 @@ development (SDD) workflow with strict TDD. Before contributing, please read:
 
 1. [`docs/PRD.md`](docs/PRD.md) — what we're building and why.
 2. [`docs/architecture.md`](docs/architecture.md) — how it's structured.
-3. [`docs/dev-env.md`](docs/dev-env.md) — how to set up your machine.
-4. [`docs/backlog/README.md`](docs/backlog/README.md) — the audited backlog.
-5. [`docs/backlog/guardrails.md`](docs/backlog/guardrails.md) — the hard
+3. [`docs/backlog/README.md`](docs/backlog/README.md) — the audited backlog.
+4. [`docs/backlog/guardrails.md`](docs/backlog/guardrails.md) — the hard
    rules (G1..G27) every contribution must follow.
-6. [`docs/architecture.md` §14](docs/architecture.md#14-current-implementation-state-and-known-gaps)
+5. [`docs/architecture.md` §14](docs/architecture.md#14-current-implementation-state-and-known-gaps)
    — current integration gaps; do not claim the status-pill, live bandwidth
    view, or OHM child monitor is wired until Story 12.8 lands.
 

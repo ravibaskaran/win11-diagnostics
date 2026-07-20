@@ -262,7 +262,7 @@ The bandwidth tracking feature is **tier-agnostic**: it works identically in Bas
 
 **Statement.** *Every telemetry source sidebar picks up must be lightweight by definition. If anything is flagged as heavy, sidebar does not pick it up.*
 
-**Quantitative threshold.** A source is **heavy** if, measured on a reference machine (any modern 8+ core x86_64 CPU, ≥ 16 GB RAM, Win11 24H2 or 25H2 — see `docs/backlog/nfr-thresholds.md` T-31 and `docs/dev-env.md` §1.1 for the per-machine calibration approach), it contributes **> 0.5% CPU average across polling cycles** above the calibrated idle baseline, **or** it triggers expensive kernel/syscall churn disproportionate to a base tick — specifically:
+**Quantitative threshold.** A source is **heavy** if, measured on a reference machine (any modern 8+ core x86_64 CPU, ≥ 16 GB RAM, Win11 24H2 or 25H2 — see `docs/backlog/nfr-thresholds.md` T-31 for the per-machine calibration approach), it contributes **> 0.5% CPU average across polling cycles** above the calibrated idle baseline, **or** it triggers expensive kernel/syscall churn disproportionate to a base tick — specifically:
 
 - `NtQuerySystemInformation(SystemProcessInformation)` full-process enumeration more frequently than the configured base tick (default 10s), or
 - `NtQuerySystemInformation(SystemPerformanceInformation)` more than once per tick, or
@@ -507,7 +507,7 @@ sdd-init recorded edition 2021 (re-evaluate 2024 once MSRVs align). `sysinfo` 0.
 
 ## 11. Development Environment
 
-**Authoritative reference:** `docs/dev-env.md` (inventoried on the primary dev machine LAPTOP-PLN56DNU, Win11 25H2, on 2026-07-07).
+See `CONTRIBUTING.md` for the contributor setup guide and `docs/backlog/nfr-thresholds.md` T-44 for the prerequisite contract. Summary below.
 
 **System prerequisites** (must pre-exist on any contributor's machine — not relocatable):
 - Rust ≥ 1.95 (MSRV forced by `sysinfo` 0.39.3).
@@ -515,15 +515,15 @@ sdd-init recorded edition 2021 (re-evaluate 2024 once MSRVs align). `sysinfo` 0.
 - MSVC Build Tools + Windows SDK (for the `windows` crate FFI link).
 - PowerShell 7+, Git for Windows.
 
-**Project-local tooling** (under `D:\dev\sidebar\tools\`, relocatable):
+**Project-local tooling** (under `tools/`, relocatable):
 - `cargo-deny`, `cargo-audit`, `cargo-llvm-cov` (NOT `cargo-tarpaulin` — Linux-only), `cargo-nextest` via `cargo binstall --install-root`.
 - `actionlint`, `winget-create`, `sqlite3` via scoop or direct download.
 
 **Activation:** `scripts/env.ps1` prepends `tools/` to PATH. `scripts/verify-dev-env.ps1` (Story 0.7) asserts all prerequisites; used as a CI pre-flight gate.
 
-**Coverage tool note:** The backlog originally specified `cargo-tarpaulin` for coverage (Story 11.2, T-42). **Corrected to `cargo-llvm-cov`** everywhere — tarpaulin uses ptrace and is Linux-only. See `docs/dev-env.md` §6.3, T-43.
+**Coverage tool note:** The backlog originally specified `cargo-tarpaulin` for coverage (Story 11.2, T-42). **Corrected to `cargo-llvm-cov`** everywhere — tarpaulin uses ptrace and is Linux-only. See T-43.
 
-**Local hardware caveat:** The primary dev machine has an AMD Radeon 860M iGPU and no NVIDIA GPU. NVML-dependent tests (Story 3.2) are `#[ignore]`'d locally; AMD GPU coverage is via Story 3.6 (OHM Full mode). See `docs/dev-env.md` §1.1, §6.2.
+**Hardware note:** The reference dev environment has integrated AMD graphics and no NVIDIA GPU. NVML-dependent tests (Story 3.2) are `#[ignore]`'d; AMD GPU coverage is via Story 3.6 (OHM Full mode).
 
 ---
 
