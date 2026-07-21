@@ -1,0 +1,8 @@
+# CODEOWNERS — per GitHub's code-review assignment rules.
+# Docs: https://docs.github.com/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+#
+# This is a single-maintainer project today. All paths route to the owner.
+# Add additional owners (reviewers, sub-owners for specific crates) as the
+# project grows.
+
+*       @ravibaskaran

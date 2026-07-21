@@ -29,7 +29,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.0.0"            # bumped on first release tag (Story 9.2)
+version = "0.1.0"            # bumped per release; CHANGELOG.md documents changes
 edition = "2021"             # OQ-2/OQ-3 — stay on 2021 for v1
 rust-version = "1.95"        # MSRV forced by sysinfo 0.39.3 (architecture.md AD-3)
 license = "MIT"              # decision per user 2026-07-09; fully permissive

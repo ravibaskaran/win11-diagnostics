@@ -1,8 +1,10 @@
 # Build artifacts
 /target/
+/dist/*
+!/dist/.gitkeep
 **/*.rs.bk
 
-# Installer outputs (Inno Setup compiler output at repo root)
+# Installer outputs (kept in /dist/ — see above)
 sidebar-setup.exe
 
 # IDE

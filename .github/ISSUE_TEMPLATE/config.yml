@@ -1,0 +1,11 @@
+# Issue template configuration.
+# Docs: https://docs.github.com/communities/using-templates-to-encourage-useful-issues-and-pull-requests/configuring-issue-templates-for-your-repository
+
+blank_issues_enabled: true
+contact_links:
+  - name: Security report (private)
+    url: https://github.com/ravibaskaran/win11-diagnostics/security/advisories/new
+    about: Found a security issue? Report it privately via GitHub Security Advisories instead of opening a public issue.
+  - name: Questions + discussions
+    url: https://github.com/ravibaskaran/win11-diagnostics/discussions
+    about: Have a question or want to discuss sidebar? Use GitHub Discussions.

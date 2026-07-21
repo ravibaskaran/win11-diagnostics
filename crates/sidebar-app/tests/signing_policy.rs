@@ -128,8 +128,16 @@ fn ohm_sha256_pin_is_well_formed() {
     );
 }
 
-/// Story 9.2 — release.yml MUST exist with build/sign/publish stages gated
-/// on the `release-approver` environment. Cited: Story 9.2 DoD, G19.
+/// Story 9.2 — release.yml MUST exist with a build/publish flow that fetches
+/// the LHM runtime, builds the installer, packages the portable ZIP, and
+/// publishes as a draft (HITL review before going public). Cited: Story 9.2
+/// DoD, G19.
+///
+/// v0.1.0 status: UNSIGNED. The SignPath sign: job is stripped until
+/// SignPath Foundation approval lands; this test was updated to pin the
+/// unsigned pipeline. When signing is wired back in, re-add assertions for
+/// the `sign:` job, `release-approver` environment, `SIGNPATH_API_TOKEN`,
+/// and `signpath/github-action-submit-signing-request@v2`.
 #[test]
 fn release_yml_exists_with_build_sign_publish_stages() {
     let path = workspace_root()
@@ -139,27 +147,22 @@ fn release_yml_exists_with_build_sign_publish_stages() {
     let raw = fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
     let normalized = raw.replace("\r\n", "\n");
-    for stage in ["build:", "sign:", "publish:"] {
-        assert!(
-            normalized.contains(stage),
-            "release.yml must define the {stage} stage"
-        );
-    }
-    assert!(
-        normalized.contains("release-approver"),
-        "release.yml must gate on the release-approver environment (G19 HITL)"
-    );
+
+    // Trigger — manual release only, no auto-publish on tag (G19).
     assert!(
         normalized.contains("workflow_dispatch"),
         "release.yml must trigger on workflow_dispatch (no auto-publish on tag, G19)"
     );
+
+    // Build + publish in a single job (no separate sign: stage until SignPath
+    // is wired up — see the test doc comment above).
     assert!(
-        normalized.contains("SIGNPATH_API_TOKEN"),
-        "release.yml must reference the SIGNPATH_API_TOKEN secret"
+        normalized.contains("build-and-publish:"),
+        "release.yml must define the build-and-publish: job"
     );
     assert!(
-        normalized.contains("actions: read"),
-        "SignPath must be allowed to download the uploaded GitHub artifact"
+        normalized.contains("run: cargo build --release"),
+        "release.yml must build the release binary"
     );
     assert!(
         normalized.contains("run: ./scripts/fetch_ohm.ps1\n"),
@@ -169,37 +172,38 @@ fn release_yml_exists_with_build_sign_publish_stages() {
         normalized.contains("cp -R resources/. staging/"),
         "release payload must include the complete LHM runtime bundle"
     );
+
+    // ISCC installer build step — produces dist/sidebar-setup.exe.
     assert!(
-        normalized.contains("signpath/github-action-submit-signing-request@v2"),
-        "release.yml must use the current SignPath GitHub signing-request action"
+        normalized.contains("ISCC.exe"),
+        "release.yml must invoke ISCC.exe to build the installer"
     );
-    for input in [
-        "organization-id:",
-        "project-slug:",
-        "signing-policy-slug:",
-        "github-artifact-id:",
-        "wait-for-completion: true",
-    ] {
-        assert!(
-            normalized.contains(input),
-            "release.yml must provide the SignPath input {input}"
-        );
-    }
+    assert!(
+        normalized.contains("/DAppVersion="),
+        "release.yml must pass the version to ISCC via /DAppVersion="
+    );
+
+    // Portable ZIP step + naming.
+    assert!(
+        normalized.contains("sidebar-portable-"),
+        "release.yml must produce the sidebar-portable-<version>.zip asset"
+    );
+
+    // Release body must include SHA-256 checksums for verification.
+    assert!(
+        normalized.contains("sha256sum") || normalized.contains("Get-FileHash"),
+        "release.yml must compute SHA-256 checksums for the published assets"
+    );
+
+    // HITL gate — draft releases only, no auto-publish.
     assert!(
         normalized.contains("draft: true"),
         "release.yml must publish as draft for HITL review"
     );
+
+    // Required for any job that uses actions/checkout or gh-release.
     assert!(
-        normalized.contains("continue-on-error: true"),
-        "SignPath failure must reach the explicit unsigned-draft fallback"
-    );
-    assert!(
-        normalized.contains("steps.prepare_payload.outputs.unsigned_release"),
-        "the signing job must export unsigned status to the publish job"
-    );
-    assert!(
-        normalized.contains("copy_lhm_payload()")
-            && normalized.contains("cp -R \"$item\" staging/signed/"),
-        "both signed and unsigned payloads must include the LHM sidecar"
+        normalized.contains("actions: read"),
+        "release.yml must grant actions: read (used by checkout + release actions)"
     );
 }

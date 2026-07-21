@@ -1,13 +1,25 @@
-; Story 16.3 — Inno Setup script for sidebar v1.0.0
+; sidebar Inno Setup script (v0.1.0)
 ; Builds sidebar-setup.exe: installs sidebar-app.exe + sidebar-monitor-svc.exe +
-; sidebar-monitor-host.exe + LHM runtime to %PROGRAMFILES%\sidebar.
-; Registers + starts the Windows Service. Creates Start Menu shortcut.
+; sidebar-monitor-host.exe + LHM runtime to %PROGRAMFILES%\Sidebar.
+; Service registration is DISABLED (commented out in [Run]) until the
+; named-pipe consumer lands. Creates Start Menu + optional desktop shortcut.
 ;
-; Cited: Story 16.3, T-47, G19.
+; Build locally:
+;   ISCC.exe installer\sidebar.iss
+; Output lands at:
+;   dist\sidebar-setup.exe
+;
+; The release workflow (.github/workflows/release.yml) invokes this with
+; /DAppVersion=<version> so the Add/Remove Programs entry reflects the
+; release tag. Without /D, the literal AppVersion below is used.
+
+#ifndef AppVersion
+  #define AppVersion "0.1.0"
+#endif
 
 [Setup]
 AppName=Sidebar
-AppVersion=1.0.0
+AppVersion={#AppVersion}
 AppPublisher=ravibaskaran
 AppPublisherURL=https://github.com/ravibaskaran/win11-diagnostics
 AppSupportURL=https://github.com/ravibaskaran/win11-diagnostics/issues
@@ -16,7 +28,7 @@ DefaultGroupName=Sidebar
 UninstallDisplayIcon={app}\sidebar-app.exe
 Compression=lzma2
 SolidCompression=yes
-OutputDir=..
+OutputDir=..\dist
 OutputBaseFilename=sidebar-setup
 PrivilegesRequired=admin
 PrivilegesRequiredOverridesAllowed=dialog
@@ -38,8 +50,9 @@ Source: "..\target\x86_64-pc-windows-msvc\release\sidebar-monitor-svc.exe"; Dest
 Source: "..\resources\sidebar-monitor-host\sidebar-monitor-host.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\resources\LibreHardwareMonitorLib.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\resources\LibreHardwareMonitor.LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
-; The complete LHM runtime (managed DLLs, config, locales)
-Source: "..\resources\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "sidebar-monitor-host\*"
+; The complete LHM runtime (managed DLLs, config, locales).
+; Excludes: debug symbols (.pdb) and XML docs — not needed by end users.
+Source: "..\resources\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "sidebar-monitor-host\*, *.pdb, *.xml"
 
 [Icons]
 Name: "{group}\Sidebar"; Filename: "{app}\sidebar-app.exe"
