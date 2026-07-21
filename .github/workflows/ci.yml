@@ -65,9 +65,16 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - uses: rustsec/audit-check@v2.0.0
+      # Install cargo-audit with --locked. The rustsec/audit-check@v2.0.0
+      # action builds cargo-audit from source without --locked, which fails
+      # whenever a transitive dep (e.g. kstring 2.0.4) bumps its MSRV past the
+      # runner's rustc. Installing with --locked honors Cargo.lock so the
+      # install is deterministic against cargo-audit's own pinned dep tree.
+      - uses: taiki-e/install-action@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          tool: cargo-audit
+      - name: cargo audit
+        run: cargo audit
 
   # Story 6.5 — LHM binary integrity gate. Offline-deterministic: validates
   # the committed `resources/LibreHardwareMonitor.exe` against the committed
@@ -77,9 +84,16 @@ jobs:
   lhm-hash:
     name: "LHM hash gate (Story 6.5, offline -CheckOnly)"
     runs-on: windows-latest
-    timeout-minutes: 3
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+      # The bundled LHM binary is gitignored (large third-party binary); fetch
+      # it into resources/ first, then -CheckOnly validates the SHA-256 pin.
+      # Without this fetch step, -CheckOnly fails on a clean checkout because
+      # resources/LibreHardwareMonitor.exe doesn't exist yet.
+      - name: Fetch pinned LHM runtime
+        shell: pwsh
+        run: ./scripts/fetch_ohm.ps1
       - name: Validate bundled LHM against resources/ohm.sha256
         shell: pwsh
         run: |
