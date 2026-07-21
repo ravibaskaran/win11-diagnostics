@@ -1,0 +1,39 @@
+title: "Q&A: <your question here>"
+labels: ["question"]
+body:
+  - type: textarea
+    id: context
+    attributes:
+      label: What are you trying to do?
+      description: One paragraph — the goal, not just the symptom. The more context about what you're trying to accomplish, the better the answer.
+      placeholder: |
+        I'm trying to ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: tried
+    attributes:
+      label: What have you tried?
+      description: Settings you've checked, docs you've read, workarounds you've attempted. Saves the answerer from suggesting things you already did.
+      placeholder: |
+        - Read the README section on ...
+        - Tried toggling ...
+        - Checked %APPDATA%\sidebar\...
+
+  - type: input
+    id: version
+    attributes:
+      label: sidebar version
+      description: From Settings → About, or the installer filename.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: markdown
+    attributes:
+      value: |
+        ---
+
+        **Tip:** for bug reports (something is broken), use the **Bug report**
+        issue template instead — Discussions is for questions + how-tos.

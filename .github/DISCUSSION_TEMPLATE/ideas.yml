@@ -1,0 +1,39 @@
+title: "Idea: <one-line summary>"
+labels: ["idea"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Don't describe the feature yet — describe the pain. What can't you do today? What's annoying?
+      placeholder: |
+        I want to see X but sidebar doesn't show it. / Sidebar does Y but
+        I wish it did Z instead because ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: What solution do you imagine?
+      description: A rough sketch is fine. If you don't have one, leave blank — the maintainer + community will propose options.
+      placeholder: |
+        A new metric row for ... / A setting to ... / A different behavior when ...
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you've considered
+      description: Other ways to solve the same problem + why they fall short.
+      placeholder: |
+        - Could use a different app for ... but loses the bandwidth tracking.
+        - Could manually ... but it's tedious.
+
+  - type: markdown
+    attributes:
+      value: |
+        ---
+
+        Thanks for the idea! This is a single-maintainer project today, so
+        not every idea can land. Good ideas often turn into issues once the
+        scope is agreed — the maintainer will help you decide.
