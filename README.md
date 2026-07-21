@@ -16,15 +16,19 @@ unavailable.
 
 ---
 
-## Install (for everyday users)
+## Install
 
 **Requirements:** Windows 10 or 11, 64-bit. About 15 MB of free space.
 
-1. Download **`sidebar-setup.exe`** from the latest
+### Option A — Installer (recommended)
+
+1. Download **`sidebar-setup-<version>.exe`** from the latest
    [GitHub Release](https://github.com/ravibaskaran/win11-diagnostics/releases).
 2. Double-click it. If Windows shows "Windows protected your PC" (SmartScreen),
    click **More info** → **Run anyway**. This appears because the installer
-   isn't yet code-signed; it's safe.
+   isn't yet code-signed (SignPath Foundation application pending); it's safe.
+   See [signpath/code-signing-policy.md](signpath/code-signing-policy.md) for
+   the trust posture.
 3. Follow the installer. It places Sidebar in
    `C:\Program Files\Sidebar` and adds a Start Menu shortcut (and an optional
    desktop shortcut).
@@ -34,17 +38,31 @@ unavailable.
    totals), and **theme**. Click **Continue**. The sidebar docks itself and
    starts showing data.
 
-**What you'll see:** CPU load and temperature, memory usage, disk and network
-throughput, and a monthly bandwidth counter. Most sensors work without any
-extra setup (Basic mode). Temperature, fan, and voltage readings need one extra
-click — see **Full mode** below.
-
 **To uninstall:** Settings → Apps → Sidebar → Uninstall. Your bandwidth history
 stays behind in `%APPDATA%\sidebar` in case you reinstall; delete that folder
 to remove it completely.
 
-**Updating:** Download the new `sidebar-setup.exe` and run it — it upgrades
-in place. Your settings and bandwidth history are preserved.
+**Updating:** Download the new installer and run it — it upgrades in place.
+Your settings and bandwidth history are preserved.
+
+### Option B — Portable ZIP
+
+1. Download **`sidebar-portable-<version>.zip`** from the latest
+   [GitHub Release](https://github.com/ravibaskaran/win11-diagnostics/releases).
+2. Extract the ZIP to any folder.
+3. Run `sidebar.exe`. Basic mode works immediately.
+
+The portable edition does not install a Windows Service, so enabling Full mode
+shows a UAC prompt on every launch. For set-and-forget elevation, use the
+installer (Option A). See `installer/portable/README.txt` for the full
+portable-edition notes.
+
+### What you'll see
+
+CPU load and temperature, memory usage, disk and network throughput, and a
+monthly bandwidth counter. Most sensors work without any extra setup (Basic
+mode). Temperature, fan, and voltage readings need one extra click — see
+**Full mode** below.
 
 ---
 
@@ -197,11 +215,6 @@ Key settings:
 
 ---
 
-## Download
-
-Pre-built binaries will be available on the [GitHub Releases](https://github.com/ravibaskaran/win11-diagnostics/releases)
-page once code signing is set up. Until then, you can build from source.
-
 ## Build from source
 
 **Prerequisites:**
@@ -209,6 +222,9 @@ page once code signing is set up. Until then, you can build from source.
 - MSVC Build Tools 2022+ (Visual Studio Installer → "Desktop development with C++")
 - PowerShell 7+ (`winget install Microsoft.PowerShell`)
 - Git
+- (For the installer only) [Inno Setup 6](https://jrsoftware.org/isdl.php)
+
+### Build the sidebar binary
 
 ```pwsh
 git clone https://github.com/ravibaskaran/win11-diagnostics.git
@@ -226,6 +242,19 @@ Copy-Item .\resources\* .\target\x86_64-pc-windows-msvc\release\ -Recurse -Force
 # Run it
 .\target\x86_64-pc-windows-msvc\release\sidebar-app.exe
 ```
+
+### Build the installer locally
+
+To produce the same `sidebar-setup.exe` that ships in GitHub Releases:
+
+```pwsh
+# After building the binary + fetching LHM (above)...
+ISCC.exe installer\sidebar.iss
+```
+
+Output lands at `dist\sidebar-setup.exe`. Override the version stamped into the
+installer's Add/Remove Programs entry with `/DAppVersion=0.2.0`. See
+[`installer/README.md`](installer/README.md) for the full installer build flow.
 
 ---
 

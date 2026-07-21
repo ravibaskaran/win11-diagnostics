@@ -1,62 +1,64 @@
-# Code-Signing Policy — sidebar-v1 (Story 9.1)
+# Code-Signing Policy — sidebar
 
-## Overview
+## Current status: UNSIGNED
 
-`sidebar.exe` is code-signed via the [SignPath Foundation](https://signpath.org/)
-in CI at release time. The bundled `LibreHardwareMonitor.exe` (MPL-2.0) is
-hash-pinned via `resources/ohm.sha256` and verified on every CI run via
-`fetch_ohm.ps1 -CheckOnly` (Story 6.5).
+**v0.1.0 ships unsigned.** Releases built by
+[`.github/workflows/release.yml`](../.github/workflows/release.yml) are not
+code-signed. Windows SmartScreen will show "Windows protected your PC" on the
+installer's first launch — users click **More info → Run anyway**. The
+[`README.md`](../README.md) install section documents this.
 
-This document is the authoritative policy referenced by:
+This is the authoritative policy referenced by:
 - `SECURITY.md` (user-facing trust statement)
-- `README.md` (download instructions)
-- `.github/workflows/release.yml` (Story 9.2 — the signing CI job)
-- `docs/backlog/guardrails.md` G18 (supply-chain automation)
-- `docs/privacy-policy.md` (data-handling statement required by SignPath)
+- `README.md` (download + SmartScreen instructions)
+- `.github/workflows/release.yml` (release pipeline)
+- `docs/privacy-policy.md` (data-handling statement)
+
+## Plan: signed releases via SignPath Foundation
+
+The project is in the process of applying to the
+[SignPath Foundation](https://signpath.org/) for free code-signing for
+open-source projects. Once approved:
+
+1. The `sign:` job (currently stripped from `release.yml`) will be re-added:
+   it submits `sidebar.exe`, `sidebar-monitor-svc.exe`,
+   `sidebar-monitor-host.exe`, and `sidebar-setup.exe` to SignPath for
+   signing, then publishes the signed artifacts to the GitHub Release.
+2. A `release-approver` GitHub Environment with MFA-enabled reviewers will
+   gate the sign + publish steps.
+3. The winget manifest will be submitted with a stable, signed release URL +
+   SHA-256 (both require the first signed release to publish first).
+4. SmartScreen reputation will build over time as users install the signed
+   builds; the warning will eventually disappear for verified binaries.
+
+Until then: **all releases are unsigned**. Users verify integrity via the
+SHA-256 checksums published in each release body (computed by `release.yml`
+for `sidebar.exe`, `sidebar-setup-<version>.exe`, and
+`sidebar-portable-<version>.zip`).
 
 ## Trust boundary
 
-- **Host binary (`sidebar-app.exe`)**: MIT-licensed, signed by SignPath
-  Foundation in CI. No self-signing. If SignPath is unavailable, CI may create
-  an explicitly labelled **draft-only** unsigned artifact for maintainer
-  review; it must not be treated as a signed public release.
-- **Sensor host binary (`sidebar-monitor-host.exe`, Story 15.1)**: MIT-licensed
-  (the C# source is in the repo), runs elevated, loads LibreHardwareMonitorLib.dll.
-  Signed by SignPath Foundation in CI. Hash-pinned like the LHM binary.
-- **Service binary (`sidebar-monitor-svc.exe`, Story 16.1)**: MIT-licensed, runs
-  as `LocalSystem`, owns the sensor host. Signed by SignPath Foundation in CI.
-  This is the highest-trust binary in the product — a LocalSystem service
-  requires the strictest review (G11/G19 HITL on every change).
-- **Installer (`sidebar-setup.exe`, Story 16.3)**: The Inno Setup output EXE,
-  signed by SignPath Foundation in CI. It is the user-facing trust entry point.
+- **Host binary (`sidebar-app.exe` / `sidebar.exe`)**: MIT-licensed. Currently
+  unsigned. Will be signed by SignPath Foundation in CI once approved.
+- **Sensor host binary (`sidebar-monitor-host.exe`)**: MIT-licensed (the C#
+  source is in `resources/sidebar-monitor-host/`), runs elevated, loads
+  `LibreHardwareMonitorLib.dll`. Currently unsigned. Will be signed.
+- **Service binary (`sidebar-monitor-svc.exe`)**: MIT-licensed, intended to
+  run as `LocalSystem`. Currently unsigned. Service registration is disabled
+  in the installer (see `installer/sidebar.iss` `[Run]` section); the binary
+  ships but is not registered. Will be signed when the named-pipe consumer
+  lands + the service is re-enabled.
+- **Installer (`sidebar-setup.exe`)**: Inno Setup output. Currently unsigned.
+  Will be signed by SignPath Foundation in CI.
 - **Bundled LHM library (`LibreHardwareMonitorLib.dll`)**: MPL-2.0, loaded by
-  `sidebar-monitor-host.exe`. We re-verify the SHA-256 pin at every CI run.
-  We do NOT re-sign the bundled library. (Note: Epic 15 replaces the LHM GUI
-  binary with the library directly; the `LibreHardwareMonitor.exe` trust
-  boundary entry becomes historical once Story 15.3 deletes the HTTP path.)
-- **Bundled LHM GUI (`LibreHardwareMonitor.exe`, DEPRECATED by Epic 15)**:
-  MPL-2.0, upstream-signed. Retained only for the portable fallback path until
-  Story 15.3 removes the HTTP dependency entirely.
-- **User distribution channels**: GitHub Releases (installer EXE) + winget
-  (`InstallerType: inno`). No direct download from any other source.
-
-## SignPath Foundation submission
-
-**Status: pending external submission (HITL).** SignPath Foundation requires:
-1. OSI-approved license verification (host MIT, bundled MPL-2.0 — both qualify).
-2. Public repo (`github.com/ravibaskaran/win11-diagnostics`).
-3. Public **code-signing policy** page reachable from the repo homepage
-   (this document; surfaced in the GitHub Releases body via
-   `.github/workflows/release.yml`).
-4. Public **privacy policy** page reachable from the repo homepage
-   (`docs/privacy-policy.md`, linked from `README.md` and `SECURITY.md`).
-5. MFA-enabled approvers.
-6. Project slug: `sidebar`; signing policy slug: `release`.
-
-The submission is a manual HITL action (G11/G19). Once approved, the
-`SIGNPATH_API_TOKEN` secret + `release-approver` GitHub Environment are
-provisioned by the maintainer, and Story 9.2's `release.yml` can complete
-the signed-release pipeline.
+  `sidebar-monitor-host.exe`. We verify the SHA-256 pin
+  (`resources/ohm.sha256`) on every CI run via `fetch_ohm.ps1 -CheckOnly`
+  (Story 6.5). We do NOT re-sign the bundled library.
+- **Bundled LHM GUI (`LibreHardwareMonitor.exe`)**: MPL-2.0, upstream-signed.
+  Retained only for the portable fallback path.
+- **Distribution channels**: GitHub Releases (installer EXE + portable ZIP) +
+  winget (deferred — `InstallerType: inno`, will be submitted after the first
+  signed release). No direct download from any other source.
 
 ## Hash verification
 
@@ -66,18 +68,23 @@ the signed-release pipeline.
 fe216a48a48a6048156a133a39b960437d781a4c9214e5abc0f26f666f61ba22  LibreHardwareMonitor.exe
 ```
 
-The `lhm-hash` CI job (Story 6.5) runs `fetch_ohm.ps1 -CheckOnly` on every
+The `lhm-hash` CI check (Story 6.5) runs `fetch_ohm.ps1 -CheckOnly` on every
 PR + push to main. A hash mismatch fails the build immediately.
+
+Release artifacts (installer + portable ZIP + the sidebar.exe inside) get
+their SHA-256 checksums computed by `release.yml` and listed in each release's
+body. Users verifying a download should compare against those published
+checksums.
 
 ## Edge cases
 
-- **SignPath rejection / downtime**: Story 9.2's `release.yml` keeps the
+- **LHM hash mismatch on release**: CI fails fast. The release tag is NOT
+  cut until the hash matches the committed pin.
+- **LHM upstream 404 (retired release)**: `fetch_ohm.ps1` emits an actionable
+  error pointing to the pinned release URL. The maintainer must explicitly
+  bump the pin.
+- **SignPath rejection / downtime once wired**: `release.yml` will keep the
   workflow observable by producing an explicitly labelled unsigned **draft**
   with a prominent warning. Maintainers must not promote that draft or submit
   it to winget as a signed release. Users are NEVER silently given an unsigned
   binary labeled as signed.
-- **LHM hash mismatch on release**: CI fails fast. The release tag is NOT
-  cut until the hash matches the committed pin.
-- **LHM upstream 404 (retired release)**: `fetch_ohm.ps1` emits an
-  actionable error pointing to the pinned release URL. The maintainer must
-  explicitly bump the pin (R7, HITL).
