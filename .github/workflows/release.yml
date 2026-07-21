@@ -1,20 +1,23 @@
-# Story 9.2 — Release workflow (build -> sign -> package -> publish).
+# Release workflow: build -> stage -> ISCC installer -> portable ZIP -> publish GitHub Release.
 #
-# Triggered manually via workflow_dispatch (NO auto-publish on tag per G19).
-# Uses the `release-approver` GitHub Environment with required reviewers for
-# HITL gating. Reproducible-build hash assertion warns (not fails) per G18.
+# Triggered manually via workflow_dispatch with a version input.
 #
-# Stages:
+# v0.1.0 status: UNSIGNED. SignPath Foundation application is pending; this
+# workflow ships unsigned artifacts until signing is wired up. SmartScreen
+# will show "Windows protected your PC" — the README documents the bypass.
+# Re-add the sign: job (see git history pre-v0.1.0) once SignPath is approved.
+#
+# Stages (single job):
 #   1. Build: cargo build --release --target x86_64-pc-windows-msvc
-#   2. Hash assertion: compute sidebar-app.exe SHA-256, warn if it doesn't
-#      match the recorded baseline (G18 warn-not-fail).
-#   3. Sign: SignPath API call (sidebar project, release policy). A failed
-#      signing request produces an explicitly unsigned draft for HITL review.
-#   4. Package: ZIP sidebar.exe + the pinned LHM sidecar + its license.
-#   5. Publish: GitHub Release (draft). winget PR submission is a manual
-#      post-release step (rate-limited external service per Story 9.2 HITL).
+#   2. Fetch pinned LHM runtime + verify SHA-256 (Story 6.5)
+#   3. Stage: sidebar.exe + LHM runtime in staging/
+#   4. Build installer: ISCC.exe installer/sidebar.iss -> dist/sidebar-setup.exe
+#   5. Package portable ZIP: staging/ + README.txt -> sidebar-portable-<version>.zip
+#   6. Publish: GitHub Release (draft — HITL review before publishing)
 #
-# Cited: Story 9.2 DoD, guardrails.md G18/G19, signpath/code-signing-policy.md.
+# Artifacts attached to the release:
+#   - sidebar-setup-<version>.exe   (installer — recommended)
+#   - sidebar-portable-<version>.zip (portable build — no installer)
 
 name: release
 
@@ -22,7 +25,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version (e.g. 0.1.0)'
+        description: 'Release version (e.g. 0.1.0 — no leading v)'
         required: true
         type: string
 
@@ -31,172 +34,114 @@ permissions:
   contents: write
 
 jobs:
-  build:
-    name: "Build (release, x86_64-pc-windows-msvc)"
+  build-and-publish:
+    name: "Build + publish (release, x86_64-pc-windows-msvc)"
     runs-on: windows-latest
     timeout-minutes: 30
-    outputs:
-      unsigned_artifact_id: ${{ steps.upload_unsigned.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
       - uses: Swatinem/rust-cache@v2
+
       - name: cargo build --release
         run: cargo build --release --target x86_64-pc-windows-msvc
+
       - name: Fetch pinned LHM runtime package
         shell: pwsh
         run: ./scripts/fetch_ohm.ps1
+
       - name: Verify LHM binary pin (Story 6.5)
         shell: pwsh
         run: ./scripts/fetch_ohm.ps1 -CheckOnly
+
       - name: Stage artifacts
         shell: bash
         run: |
           mkdir -p staging
+          # Rename the binary to the public-facing name. The portable ZIP
+          # + installer both ship this as `sidebar.exe`.
           cp target/x86_64-pc-windows-msvc/release/sidebar-app.exe staging/sidebar.exe
-          # Ship the complete LHM runtime (managed DLLs, config, locales, and
-          # license), not only the entry-point executable. OhmSupervisor
-          # resolves this bundle next to sidebar.exe in a portable ZIP.
+          # Ship the complete LHM runtime (managed DLLs, config, locales,
+          # license) beside sidebar.exe so Full mode works out of the box.
           cp -R resources/. staging/
-          # Hash assertion (G18: warn-not-fail).
-          ACTUAL=$(sha256sum staging/sidebar.exe | awk '{print $1}')
-          echo "sidebar.exe SHA-256: $ACTUAL"
-          echo "::notice::sidebar.exe SHA-256 is $ACTUAL"
-      - name: Build Inno Setup installer (sidebar-setup.exe)
-        # Story 16.3 + v1.0 cert B1 — the installer is the PRIMARY distribution
-        # artifact for non-technical users (double-click setup, Start Menu
-        # shortcut, Add/Remove Programs entry). ISCC is preinstalled on the
-        # windows-latest runner image. The .iss pulls the freshly-built
-        # sidebar-app.exe from target/ and the LHM runtime from resources/.
-        # The installer exe is unsigned at this stage — same security posture
-        # as the portable ZIP; SignPath signing of the installer is a future
-        # enhancement (requires a separate signing policy for setup.exe).
+          # Include the portable README inside the ZIP (renamed to README.txt).
+          cp installer/portable/README.txt staging/README.txt
+
+      - name: Compute sidebar.exe SHA-256
+        id: sidebar_hash
+        shell: bash
+        run: |
+          HASH=$(sha256sum staging/sidebar.exe | awk '{print $1}')
+          echo "hash=$HASH" >> "$GITHUB_OUTPUT"
+          echo "::notice::sidebar.exe SHA-256 is $HASH"
+
+      - name: Build Inno Setup installer (dist/sidebar-setup.exe)
         shell: pwsh
         run: |
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) {
             throw "ISCC.exe not found at $iscc — windows-latest image changed?"
           }
-          & $iscc installer\sidebar.iss
+          & $iscc /DAppVersion=${{ inputs.version }} installer\sidebar.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
-          $setup = Get-Item sidebar-setup.exe
+          $setup = Get-Item dist\sidebar-setup.exe
           Write-Host "Built $($setup.FullName) ($([math]::Round($setup.Length/1MB,2)) MB)"
-          $hash = (Get-FileHash sidebar-setup.exe -Algorithm SHA256).Hash
-          echo "::notice::sidebar-setup.exe SHA-256 is $hash"
-      - id: upload_unsigned
-        uses: actions/upload-artifact@v4
-        with:
-          name: unsigned-build
-          path: staging/
-      - id: upload_installer
-        name: Upload installer artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: sidebar-installer
-          path: sidebar-setup.exe
 
-  sign:
-    name: "Sign (SignPath Foundation)"
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    needs: build
-    outputs:
-      unsigned_release: ${{ steps.prepare_payload.outputs.unsigned_release }}
-    # The release-approver environment gates the actual signing + publish.
-    environment: release-approver
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: unsigned-build
-          path: staging/
-      - name: Sign sidebar.exe via SignPath
-        id: sign
-        continue-on-error: true
-        uses: signpath/github-action-submit-signing-request@v2
-        with:
-          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
-          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
-          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
-          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG }}
-          github-artifact-id: ${{ needs.build.outputs.unsigned_artifact_id }}
-          wait-for-completion: true
-          output-artifact-directory: staging/signed
-      - name: Prepare release payload
-        id: prepare_payload
+      - name: Compute installer SHA-256
+        id: installer_hash
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash dist\sidebar-setup.exe -Algorithm SHA256).Hash.ToLower()
+          "hash=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          echo "::notice::sidebar-setup.exe SHA-256 is $hash"
+
+      - name: Rename installer for release
+        shell: bash
+        run: mv dist/sidebar-setup.exe sidebar-setup-${{ inputs.version }}.exe
+
+      - name: Package portable ZIP
         shell: bash
         run: |
-          copy_lhm_payload() {
-            for item in staging/*; do
-              base="$(basename "$item")"
-              if [ "$base" != "sidebar.exe" ] && [ "$base" != "signed" ]; then
-                cp -R "$item" staging/signed/
-              fi
-            done
-          }
-          if [ "${{ steps.sign.outcome }}" = "success" ]; then
-            echo "SignPath returned a signed executable."
-            mkdir -p staging/signed
-            copy_lhm_payload
-            echo "unsigned_release=0" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning::SignPath signing failed; creating an explicitly unsigned draft for HITL review."
-            rm -rf staging/signed
-            mkdir -p staging/signed
-            cp staging/sidebar.exe staging/signed/sidebar.exe
-            copy_lhm_payload
-            echo "unsigned_release=1" >> "$GITHUB_OUTPUT"
-          fi
-      - uses: actions/upload-artifact@v4
-        with:
-          name: signed-build
-          path: staging/signed/
-
-  publish:
-    name: "Publish (GitHub Release)"
-    # winget PR submission is a manual post-release step — rate-limited
-    # external service per Story 9.2 HITL; not automated here.
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    needs: sign
-    environment: release-approver
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: signed-build
-          path: staging/
-      - name: Download installer artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: sidebar-installer
-          path: ./installers/
-      - name: Package ZIP
-        run: |
           cd staging
-          zip -r ../sidebar-${{ inputs.version }}.zip .
-      - name: Rename installer for release
+          zip -r ../sidebar-portable-${{ inputs.version }}.zip .
+
+      - name: Compute portable ZIP SHA-256
+        id: zip_hash
+        shell: bash
         run: |
-          mv installers/sidebar-setup.exe sidebar-setup-${{ inputs.version }}.exe
-      - name: Create GitHub Release
+          HASH=$(sha256sum sidebar-portable-${{ inputs.version }}.zip | awk '{print $1}')
+          echo "hash=$HASH" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release (draft)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ inputs.version }}
+          name: v${{ inputs.version }}
           files: |
-            sidebar-${{ inputs.version }}.zip
             sidebar-setup-${{ inputs.version }}.exe
+            sidebar-portable-${{ inputs.version }}.zip
           body: |
-            Release v${{ inputs.version }}
-
-            **Status**: ${{ needs.sign.outputs.unsigned_release == '1' && 'UNSIGNED (SignPath fallback; draft only)' || 'Signed via SignPath Foundation' }}
-
             ## Downloads
 
             - **`sidebar-setup-${{ inputs.version }}.exe`** — recommended for most users. Double-click to install; creates Start Menu + optional desktop shortcuts and an Add/Remove Programs entry.
-            - **`sidebar-${{ inputs.version }}.zip`** — portable build (no installer). Unzip anywhere and run `sidebar.exe`.
+            - **`sidebar-portable-${{ inputs.version }}.zip`** — portable build (no installer). Unzip anywhere and run `sidebar.exe`. See the bundled `README.txt`.
 
-            See [signpath/code-signing-policy.md](signpath/code-signing-policy.md) for the trust policy.
-          draft: true  # HITL review before public visibility
+            ## SHA-256 checksums
+
+            | File | SHA-256 |
+            |---|---|
+            | `sidebar-setup-${{ inputs.version }}.exe` | `${{ steps.installer_hash.outputs.hash }}` |
+            | `sidebar-portable-${{ inputs.version }}.zip` | `${{ steps.zip_hash.outputs.hash }}` |
+            | (staged `sidebar.exe` inside the ZIP) | `${{ steps.sidebar_hash.outputs.hash }}` |
+
+            ## Signing status
+
+            **UNSIGNED.** v0.1.0 ships unsigned. Windows SmartScreen will show "Windows protected your PC" on first launch — click **More info → Run anyway**. Code signing via SignPath Foundation is pending and will land in a future release. See [signpath/code-signing-policy.md](signpath/code-signing-policy.md) for the trust posture.
+
+            ## What's new
+
+            See [CHANGELOG.md](CHANGELOG.md) for the full change history.
+          draft: true  # HITL review before public visibility — click "Publish release" on the release page
           prerelease: true
