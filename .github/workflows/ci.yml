@@ -60,21 +60,30 @@ jobs:
           command: check bans licenses advisories sources
 
   audit:
+    # RUSTSEC advisory gate. cargo-deny's `advisories` arm (in the deny job
+    # below) subsumes this with the project's documented ignore list
+    # (deny.toml [advisories].ignore). We keep cargo audit as a separate,
+    # independent belt-and-suspenders gate — but use taiki-e/install-action
+    # (instead of rustsec/audit-check@v2.0.0) because the latter builds
+    # cargo-audit without --locked and breaks whenever a transitive dep bumps
+    # its MSRV past the runner's rustc. Deny's ignore IDs are mirrored here as
+    # --ignore flags so the two gates agree.
     name: "cargo audit (RUSTSEC advisories)"
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      # Install cargo-audit with --locked. The rustsec/audit-check@v2.0.0
-      # action builds cargo-audit from source without --locked, which fails
-      # whenever a transitive dep (e.g. kstring 2.0.4) bumps its MSRV past the
-      # runner's rustc. Installing with --locked honors Cargo.lock so the
-      # install is deterministic against cargo-audit's own pinned dep tree.
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-audit
-      - name: cargo audit
-        run: cargo audit
+      - name: cargo audit (with deny.toml-mirrored ignores)
+        # Mirror deny.toml [advisories].ignore so the two gates agree.
+        # Each flag mutes one RUSTSEC ID; update both files together.
+        run: |
+          cargo audit \
+            --ignore RUSTSEC-2026-0192 \
+            --ignore RUSTSEC-2026-0194 \
+            --ignore RUSTSEC-2026-0195
 
   # Story 6.5 — LHM binary integrity gate. Offline-deterministic: validates
   # the committed `resources/LibreHardwareMonitor.exe` against the committed
