@@ -37,6 +37,14 @@ repository = "https://github.com/ravibaskaran/win11-diagnostics"
 homepage = "https://github.com/ravibaskaran/win11-diagnostics"
 description = "Windows 11 hardware diagnostics sidebar — Rust clone of SidebarDiagnostics"
 publish = false              # not yet released; flip when first version tags
+# crates.io discoverability — ≤5 keywords, lowercase, alphanumeric+hyphen.
+keywords = ["windows", "hardware", "monitor", "sidebar", "system"]
+# Must match an official category slug: https://crates.io/category_slugs
+categories = ["os::windows-apis", "gui", "hardware-support"]
+
+# External badges surfaced on crates.io / docs.rs once `publish = true`.
+[workspace.badges]
+maintenance = { status = "actively-developed" }
 
 # ---------------------------------------------------------------------------
 # Shared dependency versions — pinned at the workspace level so all crates

@@ -1,0 +1,48 @@
+# EditorConfig — keeps non-Rust files consistent across editors/IDEs.
+# Docs: https://editorconfig.org/
+#
+# Rust (*.rs) is governed by `rustfmt` (rust-toolchain.toml pins the
+# toolchain that ships rustfmt); this file deliberately leaves *.rs alone
+# so the two formatters don't fight.
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.{md,markdown}]
+# Markdown: keep trailing two spaces (significant line break) + keep tab/space
+# in code-fence blocks intact. trim_trailing_whitespace would strip the
+# hard-wrapped-line-break marker.
+trim_trailing_whitespace = false
+
+[*.{yml,yaml}]
+indent_size = 2
+
+[*.{toml,ini}]
+indent_size = 2
+
+[*.{ps1,sh}]
+indent_size = 4
+
+[*.iss]
+# Inno Setup Pascal-style script — 2-space indent per the Inno community style.
+indent_size = 2
+
+[*.cs]
+indent_size = 4
+
+[*.{txt}]
+# Plain text READMEs (e.g. installer/portable/README.txt) — leave as-is.
+trim_trailing_whitespace = false
+
+[Makefile]
+indent_style = tab
+
+[justfile]
+indent_style = tab

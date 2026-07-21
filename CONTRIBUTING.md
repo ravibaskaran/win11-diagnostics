@@ -76,3 +76,10 @@ time-bounded in `deny.toml`; do not broaden the exception scope silently.
 By contributing, you agree that your contributions are licensed under the
 project's MIT license (see [`LICENSE`](LICENSE)). The bundled
 `LibreHardwareMonitor.exe` remains MPL-2.0 and is upstream software.
+
+## Code of conduct
+
+By participating in this project, you agree to uphold the
+[Contributor Covenant](CODE_OF_CONDUCT.md) code of conduct. Instances of
+abusive, harassing, or otherwise unacceptable behavior may be reported
+privately via [GitHub Security Advisories](https://github.com/ravibaskaran/win11-diagnostics/security/advisories/new).

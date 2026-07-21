@@ -1,0 +1,47 @@
+# Dependabot config — keeps Cargo deps + GitHub Actions versions patched.
+# Docs: https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+
+version: 2
+
+updates:
+  # Cargo dependencies (workspace crates + Cargo.lock).
+  # Weekly cadence avoids weekend noise; grouped to land related deps in one PR.
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      # Patch + minor updates land together (low-risk; auto-mergeable once CI is
+      # green if you enable auto-merge on the PR).
+      patch-and-minor:
+        update-types:
+          - "patch"
+          - "minor"
+    labels:
+      - "dependencies"
+      - "rust"
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+
+  # GitHub Actions versions — workflow action versions (actions/checkout,
+  # dtolnay/rust-toolchain, etc.) drift otherwise.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      actions:
+        update-types:
+          - "minor"
+          - "patch"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "ci"
+      include: "scope"
