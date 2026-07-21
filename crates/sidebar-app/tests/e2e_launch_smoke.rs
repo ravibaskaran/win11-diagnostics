@@ -24,9 +24,15 @@ use std::process::Command;
 fn sidebar_exe() -> std::path::PathBuf {
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let candidates = [
+        // Standard release paths (cargo build --release)
         manifest_dir.join("../../target/release/sidebar-app.exe"),
         manifest_dir.join("../../target/x86_64-pc-windows-msvc/release/sidebar-app.exe"),
+        // cargo-llvm-cov uses its own target dir (target/llvm-cov-target/)
+        manifest_dir.join("../../target/llvm-cov-target/release/sidebar-app.exe"),
+        manifest_dir.join("../../target/llvm-cov-target/x86_64-pc-windows-msvc/release/sidebar-app.exe"),
+        // Debug fallback
         manifest_dir.join("../../target/debug/sidebar-app.exe"),
+        manifest_dir.join("../../target/llvm-cov-target/debug/sidebar-app.exe"),
     ];
     for candidate in &candidates {
         if candidate.exists() {
@@ -36,7 +42,7 @@ fn sidebar_exe() -> std::path::PathBuf {
         }
     }
     panic!(
-        "sidebar-app.exe not found in target/{{release,x86_64-pc-windows-msvc/release,debug}}/ — run cargo build first"
+        "sidebar-app.exe not found in any target/release, target/x86_64-pc-windows-msvc/release, target/llvm-cov-target/*, or target/debug — run cargo build first"
     );
 }
 
