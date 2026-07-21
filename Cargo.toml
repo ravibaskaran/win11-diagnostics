@@ -77,7 +77,7 @@ thiserror = "1"              # MIT OR Apache-2.0 — Error derive (sidebar-domai
 tokio-util = "0.7"           # MIT — CancellationToken (Story 7.5 shutdown)
 
 # Dev-only (test fixtures + benches)
-criterion = "0.5"            # MIT OR Apache-2.0 — NFR-1 perf bench (Story 10.1)
+criterion = "0.8"            # MIT OR Apache-2.0 — NFR-1 perf bench (Story 10.1)
 proptest = "1"               # MIT OR Apache-2.0 — property tests (Story 1.4, 5.1)
 tempfile = "3"               # MIT OR Apache-2.0 — TempDir fixture (F1)
 insta = "1.40"               # MIT OR Apache-2.0 — UI snapshot tests (F8, Story 11.3)
