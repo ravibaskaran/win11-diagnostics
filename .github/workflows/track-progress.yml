@@ -78,7 +78,7 @@ jobs:
           print(f"Updated PROGRESS.md row for {story} -> {status}")
           PYEOF
       - name: Commit back PROGRESS.md
-        uses: stefanzweifel/git-auto-commit-action@v5
+        uses: stefanzweifel/git-auto-commit-action@v7
         with:
           commit_message: "chore(progress): auto-update from PR merge (Story 11.4)"
           file_pattern: docs/backlog/PROGRESS.md
