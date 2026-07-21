@@ -73,7 +73,7 @@ mockall = "0.12"             # MIT OR Apache-2.0 — trait mocking (SensorProvid
 tracing = "0.1"              # MIT — structured logging
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }  # MIT — log subscriber
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }  # MIT OR Apache-2.0 — NaiveDate for billing (Story 1.4)
-thiserror = "1"              # MIT OR Apache-2.0 — Error derive (sidebar-domain::error, Story 0.6)
+thiserror = "2"              # MIT OR Apache-2.0 — Error derive (sidebar-domain::error, Story 0.6)
 tokio-util = "0.7"           # MIT — CancellationToken (Story 7.5 shutdown)
 
 # Dev-only (test fixtures + benches)

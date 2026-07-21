@@ -3283,7 +3283,7 @@ dependencies = [
  "serde_json",
  "sidebar-domain",
  "sidebar-sensor",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tracing",
  "ureq",
 ]
@@ -3339,7 +3339,7 @@ dependencies = [
  "sidebar-sensor",
  "sysinfo",
  "tempfile",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-util",
  "toml 0.8.23",
@@ -3370,7 +3370,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "serde",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "toml 0.8.23",
  "tracing",
 ]
