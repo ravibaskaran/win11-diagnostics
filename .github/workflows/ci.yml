@@ -165,16 +165,20 @@ jobs:
   integration:
     name: "cargo test --workspace --tests (L1, T-40 budget: 60s)"
     runs-on: windows-latest
-    timeout-minutes: 8
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
       # The dev_env_scripts integration tests invoke scripts/verify-dev-env.ps1,
-      # which asserts the full dev-env contract is present — including the
-      # bundled LHM binary + sqlite3. Neither ships in the repo (both are
-      # gitignored dev-side downloads per .gitignore). Populate them before
-      # the test gate so CI mirrors what CONTRIBUTING.md asks of a contributor.
+      # which asserts the full 16-point dev-env contract is present — including
+      # the bundled LHM binary, sqlite3, and the project-local cargo subcommands
+      # (cargo-deny, cargo-audit, cargo-llvm-cov, cargo-nextest) + CI tools
+      # (actionlint, winget-create). None of these ship in the repo (all are
+      # gitignored dev-side downloads per .gitignore). Populate them before the
+      # test gate so CI mirrors what CONTRIBUTING.md asks of a contributor.
       - name: Fetch pinned LHM runtime (for verify-dev-env.ps1)
         shell: pwsh
         run: ./scripts/fetch_ohm.ps1
@@ -192,7 +196,36 @@ jobs:
           $exe = Join-Path $extract 'sqlite3.exe'
           if (-not (Test-Path $exe)) { throw "sqlite3.exe missing in archive at $exe" }
           Copy-Item $exe (Join-Path $dir.FullName 'sqlite3.exe') -Force
-          Write-Host "Staged sqlite3.exe to tools/sqlite/sqlite3.exe"
+      - name: Stage cargo subcommands into tools/cargo-bin/ (cargo-deny, cargo-audit, cargo-llvm-cov, cargo-nextest)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p tools/cargo-bin
+          # cargo install --root installs to a fresh prefix; we then copy the
+          # bins into the project's tools/cargo-bin/ so verify-dev-env.ps1
+          # (which expects them there) finds them.
+          for tool in cargo-deny cargo-audit cargo-llvm-cov cargo-nextest; do
+            echo "Staging $tool"
+            cargo install "$tool" --locked --quiet --root target/tools-install --bins
+          done
+          cp -f target/tools-install/bin/cargo-*.exe tools/cargo-bin/
+          ls tools/cargo-bin/
+      - name: Stage CI tools into tools/ci/ (actionlint, winget-create)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dir = New-Item -ItemType Directory -Path 'tools/ci' -Force
+          # actionlint — GitHub Actions linter
+          $alUrl = 'https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_windows_amd64.zip'
+          $alZip = Join-Path $env:RUNNER_TEMP 'actionlint.zip'
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest -Uri $alUrl -OutFile $alZip
+          Expand-Archive -LiteralPath $alZip -DestinationPath $env:RUNNER_TEMP/actionlint-extract -Force
+          Copy-Item (Join-Path $env:RUNNER_TEMP 'actionlint-extract/actionlint.exe') (Join-Path $dir.FullName 'actionlint.exe') -Force
+          # winget-create — winget manifest authoring
+          $wgUrl = 'https://github.com/microsoft/winget-create/releases/download/v1.9.3.0/wingetcreate.exe'
+          Invoke-WebRequest -Uri $wgUrl -OutFile (Join-Path $dir.FullName 'wingetcreate.exe')
+          Write-Host "Staged actionlint + wingetcreate to tools/ci/"
       - name: cargo test --workspace --tests
         run: cargo test --workspace --tests
 
