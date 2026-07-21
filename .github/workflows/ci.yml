@@ -210,11 +210,16 @@ jobs:
           curl -LsSf "https://github.com/cargo-bins/cargo-binstall/releases/download/v${BINSTALL_VERSION}/cargo-binstall-x86_64-pc-windows-msvc.zip" -o /tmp/binstall.zip
           unzip -o /tmp/binstall.zip -d /tmp/binstall-extract
           export PATH="/tmp/binstall-extract:$PATH"
+          # Install each tool into a fresh prefix we control, then copy the
+          # bins into tools/cargo-bin/. (cargo-binstall's default install
+          # location varies by platform + env-var state on Windows runners;
+          # --install-root pins it.)
+          STAGE="${PWD}/target/cargo-stage"
           for tool in cargo-deny cargo-audit cargo-llvm-cov cargo-nextest; do
             echo "Staging $tool"
-            cargo binstall --no-confirm --quiet "$tool"
-            cp -f "$HOME/.cargo/bin/$tool.exe" tools/cargo-bin/
+            cargo binstall --no-confirm --quiet --install-root "$STAGE" "$tool"
           done
+          cp -f "$STAGE/bin/"cargo-*.exe tools/cargo-bin/
           ls tools/cargo-bin/
       - name: Stage CI tools into tools/ci/ (actionlint, winget-create)
         shell: pwsh
