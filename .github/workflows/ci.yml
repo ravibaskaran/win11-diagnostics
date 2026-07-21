@@ -165,7 +165,7 @@ jobs:
   integration:
     name: "cargo test --workspace --tests (L1, T-40 budget: 60s)"
     runs-on: windows-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -201,12 +201,15 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p tools/cargo-bin
-          # cargo-binstall downloads prebuilt binaries — seconds vs minutes
-          # for cargo install (which compiles from source). The four cargo
-          # subcommands here would otherwise burn the 10-minute timeout on
-          # a fresh build (cargo-llvm-cov alone is ~5 min from source).
-          cargo install cargo-binstall --locked --quiet --root target/binstall-install --bins
-          export PATH="$PWD/target/binstall-install/bin:$PATH"
+          # Install cargo-binstall by downloading its prebuilt Windows binary
+          # (compiling cargo-binstall itself from source takes ~9 min and
+          # blows the job timeout before any of the four real tools even
+          # start). cargo-binstall then fetches the four cargo subcommands
+          # as prebuilt binaries — seconds each, not minutes-from-source.
+          BINSTALL_VERSION="1.15.4"
+          curl -LsSf "https://github.com/cargo-bins/cargo-binstall/releases/download/v${BINSTALL_VERSION}/cargo-binstall-x86_64-pc-windows-msvc.zip" -o /tmp/binstall.zip
+          unzip -o /tmp/binstall.zip -d /tmp/binstall-extract
+          export PATH="/tmp/binstall-extract:$PATH"
           for tool in cargo-deny cargo-audit cargo-llvm-cov cargo-nextest; do
             echo "Staging $tool"
             cargo binstall --no-confirm --quiet "$tool"
