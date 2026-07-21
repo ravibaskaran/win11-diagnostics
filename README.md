@@ -284,6 +284,8 @@ The bundled `LibreHardwareMonitor.exe` and its license remain **MPL-2.0**
 ## Contributing
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the development workflow.
+By participating, you agree to uphold the [Contributor Covenant](CODE_OF_CONDUCT.md)
+code of conduct.
 
 ## Acknowledgments
 
