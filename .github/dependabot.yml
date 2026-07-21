@@ -6,6 +6,9 @@ version: 2
 updates:
   # Cargo dependencies (workspace crates + Cargo.lock).
   # Weekly cadence avoids weekend noise; grouped to land related deps in one PR.
+  # Semver-MAJOR bumps are ignored — they need deliberate porting work (API
+  # reworks, feature-flag changes, MSRV bumps). Re-enable per-dep when ready
+  # by adding it to allow.maintained or removing the ignore block.
   - package-ecosystem: cargo
     directory: "/"
     schedule:
@@ -19,6 +22,12 @@ updates:
         update-types:
           - "patch"
           - "minor"
+    ignore:
+      # Don't auto-propose breaking majors (e.g. toml 0.x -> 1.x, thiserror
+      # 1.x -> 2.x, rusqlite multi-minor jumps). Track + schedule them in a
+      # deliberate upgrade pass after v1.0 instead.
+      - dependency-type: "all"
+        update-type: "version-update:semver-major"
     labels:
       - "dependencies"
       - "rust"
