@@ -217,7 +217,7 @@ jobs:
           STAGE="${PWD}/target/cargo-stage"
           for tool in cargo-deny cargo-audit cargo-llvm-cov cargo-nextest; do
             echo "Staging $tool"
-            cargo binstall --no-confirm --quiet --install-root "$STAGE" "$tool"
+            cargo binstall --no-confirm --quiet --install-path "$STAGE" "$tool"
           done
           cp -f "$STAGE/bin/"cargo-*.exe tools/cargo-bin/
           ls tools/cargo-bin/
