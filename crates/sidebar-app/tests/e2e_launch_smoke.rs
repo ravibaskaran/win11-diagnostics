@@ -29,7 +29,8 @@ fn sidebar_exe() -> std::path::PathBuf {
         manifest_dir.join("../../target/x86_64-pc-windows-msvc/release/sidebar-app.exe"),
         // cargo-llvm-cov uses its own target dir (target/llvm-cov-target/)
         manifest_dir.join("../../target/llvm-cov-target/release/sidebar-app.exe"),
-        manifest_dir.join("../../target/llvm-cov-target/x86_64-pc-windows-msvc/release/sidebar-app.exe"),
+        manifest_dir
+            .join("../../target/llvm-cov-target/x86_64-pc-windows-msvc/release/sidebar-app.exe"),
         // Debug fallback
         manifest_dir.join("../../target/debug/sidebar-app.exe"),
         manifest_dir.join("../../target/llvm-cov-target/debug/sidebar-app.exe"),
