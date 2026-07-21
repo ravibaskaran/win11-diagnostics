@@ -12,7 +12,8 @@ This is the authoritative policy referenced by:
 - `SECURITY.md` (user-facing trust statement)
 - `README.md` (download + SmartScreen instructions)
 - `.github/workflows/release.yml` (release pipeline)
-- `docs/privacy-policy.md` (data-handling statement)
+- `docs/privacy-policy.md` (data-handling statement; SignPath Foundation
+  requires a public privacy policy page as a submission prerequisite)
 
 ## Plan: signed releases via SignPath Foundation
 

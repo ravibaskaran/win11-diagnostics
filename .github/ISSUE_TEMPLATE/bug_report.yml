@@ -1,0 +1,77 @@
+name: Bug report
+description: Report something that's broken or behaves unexpectedly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report. A few things to check first:
+        - Search [existing issues](https://github.com/ravibaskaran/win11-diagnostics/issues?q=is%3Aissue) to avoid duplicates.
+        - The [Troubleshooting](https://github.com/ravibaskaran/win11-diagnostics#troubleshooting) section in the README covers the most common symptoms.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug. What did you expect? What actually happened?
+      placeholder: |
+        Steps to reproduce:
+        1. ...
+        2. ...
+
+        Expected: ...
+        Actual: ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Sensor mode
+      description: Which mode were you in when the bug occurred?
+      options:
+        - Basic (no admin)
+        - Full (with UAC / LibreHardwareMonitor)
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: sidebar version
+      description: Find this in Settings → About, or check the installer filename.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      description: "Run `winver` to check. e.g. Windows 11 24H2, Windows 10 22H2."
+      placeholder: "Windows 11 25H2"
+    validations:
+      required: true
+
+  - type: input
+    id: hardware
+    attributes:
+      label: Hardware (optional)
+      description: Especially relevant for sensor issues. CPU/GPU model, laptop vs desktop.
+      placeholder: "AMD Ryzen AI 7, integrated graphics, laptop"
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs (optional)
+      description: sidebar logs to `%APPDATA%\sidebar\logs\`. Paste the tail (~50 lines) covering the bug. Redact anything personal.
+      render: shell
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Code of conduct
+      options:
+        - label: I have searched existing issues and the Troubleshooting section.
+          required: true

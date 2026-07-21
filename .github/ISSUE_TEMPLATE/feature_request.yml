@@ -1,0 +1,54 @@
+name: Feature request
+description: Suggest a new metric, setting, or behavior
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion! Before opening, please search
+        [existing issues](https://github.com/ravibaskaran/win11-diagnostics/issues?q=is%3Aissue+label%3Aenhancement)
+        to avoid duplicates.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Don't describe the feature yet — describe the pain. What can't you do today? What's annoying?
+      placeholder: |
+        I want to see X but sidebar doesn't show it. / Sidebar does Y but
+        I wish it did Z instead because ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: What solution would you like?
+      description: If you have an idea, describe it. If not, leave blank — the maintainer will propose options.
+      placeholder: |
+        A new metric row for ... / A setting to ... / A different behavior when ...
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which area does this touch?
+      multiple: true
+      options:
+        - New sensor / metric
+        - Settings panel
+        - Bandwidth tracking
+        - Alerts / thresholds
+        - Themes / display
+        - First-run wizard
+        - Installer / portable
+        - Other
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Code of conduct
+      options:
+        - label: I have searched existing feature requests.
+          required: true

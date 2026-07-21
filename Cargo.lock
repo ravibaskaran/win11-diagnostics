@@ -3243,7 +3243,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "sidebar-adapter-battery"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "mockall",
  "sidebar-domain",
@@ -3254,7 +3254,7 @@ dependencies = [
 
 [[package]]
 name = "sidebar-adapter-net"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "mockall",
  "sidebar-domain",
@@ -3265,7 +3265,7 @@ dependencies = [
 
 [[package]]
 name = "sidebar-adapter-nvml"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "mockall",
  "nvml-wrapper",
@@ -3276,7 +3276,7 @@ dependencies = [
 
 [[package]]
 name = "sidebar-adapter-ohm"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "mockall",
  "serde",
@@ -3290,7 +3290,7 @@ dependencies = [
 
 [[package]]
 name = "sidebar-adapter-pdh"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "mockall",
  "sidebar-domain",
@@ -3301,7 +3301,7 @@ dependencies = [
 
 [[package]]
 name = "sidebar-adapter-sysinfo"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "mockall",
  "sidebar-domain",
@@ -3312,7 +3312,7 @@ dependencies = [
 
 [[package]]
 name = "sidebar-app"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "cargo_metadata",
  "chrono",
@@ -3351,7 +3351,7 @@ dependencies = [
 
 [[package]]
 name = "sidebar-bandwidth"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "chrono",
  "proptest",
@@ -3366,7 +3366,7 @@ dependencies = [
 
 [[package]]
 name = "sidebar-domain"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "chrono",
  "serde",
@@ -3377,7 +3377,7 @@ dependencies = [
 
 [[package]]
 name = "sidebar-persistence"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "rusqlite",
  "sidebar-domain",
@@ -3387,7 +3387,7 @@ dependencies = [
 
 [[package]]
 name = "sidebar-platform"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "mockall",
  "serde_json",
@@ -3401,7 +3401,7 @@ dependencies = [
 
 [[package]]
 name = "sidebar-sensor"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "mockall",
  "sidebar-domain",
