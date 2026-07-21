@@ -218,14 +218,16 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $dir = New-Item -ItemType Directory -Path 'tools/ci' -Force
-          # actionlint — GitHub Actions linter
-          $alUrl = 'https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_windows_amd64.zip'
-          $alZip = Join-Path $env:RUNNER_TEMP 'actionlint.zip'
           $ProgressPreference = 'SilentlyContinue'
+          # actionlint — GitHub Actions linter. URL pattern includes the
+          # version twice: actionlint_<ver>_windows_amd64.zip.
+          $alVer = '1.7.12'
+          $alUrl = "https://github.com/rhysd/actionlint/releases/download/v$alVer/actionlint_${alVer}_windows_amd64.zip"
+          $alZip = Join-Path $env:RUNNER_TEMP 'actionlint.zip'
           Invoke-WebRequest -Uri $alUrl -OutFile $alZip
           Expand-Archive -LiteralPath $alZip -DestinationPath $env:RUNNER_TEMP/actionlint-extract -Force
           Copy-Item (Join-Path $env:RUNNER_TEMP 'actionlint-extract/actionlint.exe') (Join-Path $dir.FullName 'actionlint.exe') -Force
-          # winget-create — winget manifest authoring
+          # winget-create — winget manifest authoring (single .exe release)
           $wgUrl = 'https://github.com/microsoft/winget-create/releases/download/v1.9.3.0/wingetcreate.exe'
           Invoke-WebRequest -Uri $wgUrl -OutFile (Join-Path $dir.FullName 'wingetcreate.exe')
           Write-Host "Staged actionlint + wingetcreate to tools/ci/"
