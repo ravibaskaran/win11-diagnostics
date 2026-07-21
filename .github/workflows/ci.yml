@@ -38,7 +38,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -54,7 +54,7 @@ jobs:
     timeout-minutes: 5
     # Story 0.3 landed deny.toml — this is now a hard gate (was advisory).
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check bans licenses advisories sources
@@ -72,7 +72,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-audit
@@ -95,7 +95,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # The bundled LHM binary is gitignored (large third-party binary); fetch
       # it into resources/ first, then -CheckOnly validates the SHA-256 pin.
       # Without this fetch step, -CheckOnly fails on a clean checkout because
@@ -123,7 +123,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: "Download + verify pinned LHM from upstream (no resources/ mutation)"
         shell: pwsh
         run: |
@@ -156,7 +156,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: cargo test --workspace --lib
@@ -167,7 +167,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools-preview
@@ -237,7 +237,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: cargo test --test ui_snapshots
@@ -250,7 +250,7 @@ jobs:
     # Story 11.1 owns the layer smoke bench. Story 10.1 adds the NFR benches;
     # the same job will run them when they land.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check for a bench target
         id: bench_exists
         shell: bash
@@ -283,7 +283,7 @@ jobs:
     timeout-minutes: 15
     needs: [lint, unit, integration, ui-snapshots, bench]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Fetch the base branch too so we can compute coverage delta vs main.
           fetch-depth: 0
