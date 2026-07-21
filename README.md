@@ -1,5 +1,10 @@
 # win11-diagnostics
 
+[![CI](https://github.com/ravibaskaran/win11-diagnostics/actions/workflows/ci.yml/badge.svg)](https://github.com/ravibaskaran/win11-diagnostics/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Rust 1.95+](https://img.shields.io/badge/rust-1.95%2B-orange.svg)](https://rustup.rs/)
+[![Release](https://img.shields.io/github/v/release/ravibaskaran/win11-diagnostics?include_prereleases)](https://github.com/ravibaskaran/win11-diagnostics/releases)
+
 > *Glanceable system health, calmly.*
 
 A lightweight, always-on desktop sidebar for Windows 11 that shows live
