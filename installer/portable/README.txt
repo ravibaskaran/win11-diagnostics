@@ -1,11 +1,11 @@
-sidebar — Portable Edition (Story 16.6)
+sidebar — Portable Edition
 
 This ZIP contains the portable edition of sidebar. It runs WITHOUT an
 installer and WITHOUT admin rights for Basic mode.
 
 USAGE:
   1. Extract the ZIP to any folder.
-  2. Run sidebar-app.exe.
+  2. Run sidebar.exe.
   3. Basic mode works immediately (CPU, RAM, disk, network, battery).
 
 FULL MODE (temperature, fans, voltages):
@@ -20,7 +20,6 @@ FULL MODE (temperature, fans, voltages):
 
 PRIVACY:
   No telemetry. No network egress. All readings stay on your machine.
-  See docs/privacy-policy.md for the full statement.
 
 CREDITS:
   - LibreHardwareMonitor (MPL-2.0) — hardware sensor library
