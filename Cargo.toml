@@ -82,7 +82,7 @@ proptest = "1"               # MIT OR Apache-2.0 — property tests (Story 1.4, 
 tempfile = "3"               # MIT OR Apache-2.0 — TempDir fixture (F1)
 insta = "1.40"               # MIT OR Apache-2.0 — UI snapshot tests (F8, Story 11.3)
 egui_kittest = "0.35"        # MIT — egui snapshot harness (F8, Story 11.3)
-cargo_metadata = "0.19"      # MIT — workspace introspection (workspace-shape tests)
+cargo_metadata = "0.23"      # MIT — workspace introspection (workspace-shape tests)
 semver = "1"                 # MIT OR Apache-2.0 — version parsing (MSRV contract test)
 
 # ---------------------------------------------------------------------------
