@@ -69,7 +69,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"
 rusqlite = { version = "0.32", features = ["bundled"] }  # MIT — SQLite bindings; `bundled` compiles sqlite3 in (~1 MB, T-6)
 toml = "0.8"                 # MIT OR Apache-2.0 — config.toml parse (AD-9)
 serde = { version = "1", features = ["derive"] }  # MIT OR Apache-2.0 — serialization
-mockall = "0.12"             # MIT OR Apache-2.0 — trait mocking (SensorProvider, Clock)
+mockall = "0.15"             # MIT OR Apache-2.0 — trait mocking (SensorProvider, Clock)
 tracing = "0.1"              # MIT — structured logging
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }  # MIT — log subscriber
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }  # MIT OR Apache-2.0 — NaiveDate for billing (Story 1.4)
