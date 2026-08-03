@@ -73,7 +73,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@v2.85.5
         with:
           tool: cargo-audit
       - name: cargo audit (with deny.toml-mirrored ignores)
@@ -259,7 +259,7 @@ jobs:
       # dev-env contract so verify-dev-env.ps1 passes here too.
       - uses: ./.github/actions/stage-dev-env
       - name: Install cargo-llvm-cov (T-43)
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@v2.85.5
         with:
           tool: cargo-llvm-cov
       - name: Generate coverage report (lcov + summary)
